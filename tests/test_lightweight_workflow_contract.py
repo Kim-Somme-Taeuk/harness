@@ -255,6 +255,20 @@ def test_develop_skills_publish_same_progress_contract():
     assert "Do not add an `attempts` key" in fix_first
 
 
+def test_develop_has_no_separate_plan_completion_audit():
+    """The formal code reviewer's per-AC proof is the only completion audit."""
+    for rel in (
+        "plugin/skills/develop/SKILL.md",
+        "plugin-codex/internal-skills/develop/SKILL.md",
+        "plugin/skills/develop/parallel-fanout.md",
+        "plugin/skills/run/SKILL.md",
+    ):
+        body = (REPO / rel).read_text(encoding="utf-8").lower()
+        assert "completion audit" not in body, rel
+    smoke = (REPO / "plugin/skills/develop/runtime-smoke.md").read_text(encoding="utf-8")
+    assert "Phase 4 visual smoke" not in smoke
+
+
 def test_replay_corpus_uses_only_supported_task_modes():
     corpus = json.loads(
         (REPO / "doc/harness/replays/golden-corpus.json").read_text(encoding="utf-8")
