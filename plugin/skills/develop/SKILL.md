@@ -249,12 +249,6 @@ After all ACs done. Each runs only if prerequisite exists.
 - **3.8 Build check** — compile / typecheck the diff (or full project). Build failures are always T1 (our code). Fix immediately.
 - **3.9 Runtime smoke** — see `runtime-smoke.md`. Project-type-specific (browser / API / CLI). Smoke commands run inside the qa-* agent (Verification delegation, C-18). Main only spawns + reads results.
 
-### Phase 4: Plan Completion Audit (haiku)
-
-Haiku agent cross-references every AC against `git diff --stat` and classifies each as DONE / PARTIAL / NOT DONE / CHANGED + category (CODE / TEST / MIGRATION / CONFIG / DOCS). Be conservative with DONE (file touched ≠ AC done); be generous with CHANGED (goal met by different means).
-
-For PARTIAL / NOT DONE, classify cause: scope-cut / context-exhaustion / misunderstood / blocked / forgotten / evolved. Fix forgotten and misunderstood immediately; report scope-cut + blocked in the checkpoint/final evidence; mark evolved as CHANGED with the new approach.
-
 ### Phase 4.5–4.8: Quality Audit Pipeline
 
 Read `quality-audit-pipeline.md` in full. Phase 4.5 gathers coverage, visual,

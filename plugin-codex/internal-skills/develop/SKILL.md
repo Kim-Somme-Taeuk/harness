@@ -215,12 +215,6 @@ After all ACs done. Each runs only if prerequisite exists.
 - **3.8 Build check** — compile / typecheck the diff (or full project). Build failures are always T1 (our code). Fix immediately.
 - **3.9 Runtime smoke** — read `${HARNESS_PLUGIN_ROOT}/internal-skills/develop/runtime-smoke.md`. Project-type-specific (browser / API / CLI). Browser smoke runs when browser tools are available; otherwise required browser smoke becomes browser-lens `BLOCKED_ENV`.
 
-### Phase 4: Plan Completion Audit
-
-On Claude this is a haiku sub-agent. On Codex, use `spawn_agent` when available for an independent completion audit; otherwise run the same pass inline as fallback. Cross-reference every AC against PLAN targets, implementation notes, and test evidence, then classify each as DONE / PARTIAL / NOT DONE / CHANGED + category (CODE / TEST / MIGRATION / CONFIG / DOCS). Be conservative with DONE; be generous with CHANGED (goal met by different means).
-
-For PARTIAL / NOT DONE, classify cause: scope-cut / context-exhaustion / misunderstood / blocked / forgotten / evolved. Fix forgotten and misunderstood immediately; report scope-cut + blocked in checkpoint/final evidence; mark evolved as CHANGED with the new approach.
-
 ### Phase 4.5-4.8: Quality Audit
 
 Read `${HARNESS_PLUGIN_ROOT}/internal-skills/develop/quality-audit-pipeline.md`. Phase 4.5 gathers

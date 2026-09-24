@@ -241,6 +241,5 @@ Unresolved decisions: ...
 ```
 
 Also emit an `Engineering Review Report` with counts for files/codepaths reviewed, severities, test gaps, and
-architecture issues. Recommend a design review for UI scope, DX review when
-`dx_scope: true`, and CEO re-review when scope changed. Log only genuine 5+
+architecture issues. Recommend CEO re-review when scope changed. Log only genuine 5+
 minute operational discoveries to `doc/harness/learnings.jsonl`.

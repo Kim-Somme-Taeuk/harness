@@ -97,10 +97,7 @@ Full procedure:
 
 | Phase | Ran | Reviewer | Findings | User Challenges |
 |-------|-----|----------|----------|-----------------|
-| 1 CEO | yes | <subagent/coordinator-only> | <N> | <N> |
-| 2 Design | <yes/skipped> | <subagent/coordinator-only/—> | <N/—> | <N/—> |
-| 3 Eng | yes | <subagent/coordinator-only> | <N> | <N> |
-| 4 DX | <yes/skipped> | <subagent/coordinator-only/—> | <N/—> | <N/—> |
+| 1 Plan Review | yes | <subagent/coordinator-only> | <N> | <N> |
 
 **Auto-decided:** <N> | **Taste recorded:** <N> | **User Challenges:** <N>
 **Planning procedure:** <compact/full>
@@ -129,13 +126,10 @@ Full procedure:
 
 | Phase | Ran | Status | Findings |
 |-------|-----|--------|----------|
-| 1 CEO Review | yes | complete | <N> confirmed |
-| 2 Design Review | <yes/no (no UI scope)> | — | — |
-| 3 Eng Review | yes | complete | <N> confirmed |
-| 4 DX Review | <yes/no (no DX scope)> | — | — |
+| 1 Plan Review | yes | complete | <N> confirmed |
 
-**VERDICT:** REVIEWED — plan has passed the full review pipeline. If any phase
-ran coordinator-only, use `REVIEWED_DEGRADED — <phases> ran coordinator-only`
+**VERDICT:** REVIEWED — plan has passed the full review pipeline. If Phase 1
+ran coordinator-only, use `REVIEWED_DEGRADED — Phase 1 ran coordinator-only`
 and set completion status DONE_WITH_CONCERNS instead.
 ```
 
@@ -219,7 +213,7 @@ STATUS: <DONE | DONE_WITH_CONCERNS | BLOCKED>
 Task:    TASK__<id>
 Plan:    doc/harness/tasks/TASK__<id>/PLAN.md
 
-Phases run:        <list, e.g. 0, 1, 2, 3, 4, 5, 6>
+Phases run:        <list, e.g. 0, 1, 5, 6>
 Planning procedure:<compact/full>
 Execution mode:    <standard/micro>
 Auto-decided:      <N> decisions

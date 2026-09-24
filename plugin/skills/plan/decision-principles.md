@@ -18,10 +18,7 @@ Applied to every contested item between the coordinator and the reviewer. First 
 | P6 | Bias toward action | Forward progress over paralysis. Flag concerns, don't block. |
 
 **Per-phase priority:**
-- Phase 1 (CEO): P6 + P3
-- Phase 2 (Design): P5 + P6
-- Phase 3 (Engineering): P5 + P3
-- Phase 4 (DX): P5 + P3
+- Phase 1 (Plan Review, CEO+Eng merged): P6 + P3 + P5
 
 ---
 
@@ -58,7 +55,7 @@ When `auto_decide` is active:
 - Resolve every Mechanical and Taste via 6 Principles (first applicable wins).
 - Keep every auto-decision in working context and materialize it in PLAN.md.
 - Record all auto-decided Taste items in PLAN.md's Decision Audit Trail; do not render them at the user-facing gate.
-- Default CEO to SELECTIVE EXPANSION; DX to DX POLISH.
+- Default CEO to SELECTIVE EXPANSION.
 - Complete all mandatory phase outputs at full depth.
 
 **MUST NOT:**

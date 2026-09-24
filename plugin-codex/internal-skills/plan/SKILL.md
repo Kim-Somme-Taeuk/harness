@@ -4,7 +4,7 @@ description: Harness planning pipeline with a compact low-risk branch and a full
 user-invocable: false
 ---
 
-Codex planning pipeline with compact and full procedures. Conservatively eligible low-risk work uses a bounded assessment; all other work uses the 7-phase reviewed procedure. Both publish through the protected-artifact MCP.
+Codex planning pipeline with compact and full procedures. Conservatively eligible low-risk work uses a bounded assessment; all other work uses the full single-reviewer Plan Review (Phase 0 → 1 → 5 → 6). Both publish through the protected-artifact MCP.
 
 > Current artifact model: acceptance criteria live in `PLAN.md`; `write_plan`
 > publishes it with required lens declarations in `TASK.json`.
@@ -23,7 +23,7 @@ This skill is split across four sub-files (Claude tree until AC-005 ports them):
 | File | Content |
 |------|---------|
 | `intake.md` | Phase 0 (spawned detection, recovery, task context, scope detection, planning-procedure branch) |
-| `review-phases.md` | Phases 1-4 (review template + per-lens dimensions, checklists, findings table) |
+| `review-phases.md` | Phase 1 (merged CEO+Eng review template, dimensions, checklists, findings table) |
 | `decision-principles.md` | 6 Decision Principles, classification, auto-decide rules, completion status, repo ownership, ask format |
 | `write-artifacts.md` | Phase 6 (PLAN.md / TASK.json lens declarations + MCP writes, learnings, close) |
 
@@ -43,7 +43,7 @@ Phase 5 (procedure-aware user gate) stays inline below. Read sub-files from `${H
 - **Never abort.** Full planning surfaces review failures and never silently shortens. Compact may escalate to full after inspection, but never bypasses its fail-closed assessment.
 - **Auto-decide mode.** When active, resolves Mechanical and Taste items via the 6 Decision Principles, never unresolved material user decisions.
 - **Spawned session.** `spawned_session: true` or `HARNESS_SPAWNED=1` → force auto-decide within explicitly delegated authority and relay undelegated material decisions.
-- **Sequential execution by procedure.** Compact runs 0 → bounded assessment → 5.0 → 5.3 only when challenged → 6. Full runs 0 → 1 → 2 → 3 → 4 → 5 → 6.
+- **Sequential execution by procedure.** Compact runs 0 → bounded assessment → 5.0 → 5.3 only when challenged → 6. Full runs 0 → 1 → 5 → 6.
 
 ## Voice
 
@@ -58,7 +58,7 @@ Plan-orchestrator voice: opinionated, concrete, builder-to-builder.
 - Korean/English bilingual context: technical terms stay English, explanations may use Korean.
 - The user has context you do not. Both procedures ask only unresolved material decisions; review depth never manufactures an approval requirement.
 
-Good: "Phase 3 Eng. AC-004 verification command already passes pre-edit (grep hit at write-artifacts.md:140). EUREKA — re-scope AC-004 to a smaller addition. Surface before writing PLAN.md."
+Good: "Phase 1. AC-004 verification command already passes pre-edit (grep hit at write-artifacts.md:140). EUREKA — re-scope AC-004 to a smaller addition. Surface before writing PLAN.md."
 Bad: "I've completed the engineering review phase and identified some considerations regarding AC-004 that may warrant additional examination."
 
 ## Anti-shortcut clause
@@ -86,12 +86,11 @@ Complete every section before moving on. Use concrete content in each required s
 
 ## Sub-skill execution protocol (Codex variant)
 
-Each review phase reads its corresponding Codex internal prompt and executes the methodology inline:
+Phase 1 reads both corresponding Codex internal prompts and executes the
+combined methodology inline:
 
-- Phase 1 → `${HARNESS_PLUGIN_ROOT}/internal-skills/plan-ceo-review/SKILL.md` (read + execute inline)
-- Phase 2 → `${HARNESS_PLUGIN_ROOT}/internal-skills/plan-design-review/SKILL.md` (only if ui_scope=true)
-- Phase 3 → `${HARNESS_PLUGIN_ROOT}/internal-skills/plan-eng-review/SKILL.md`
-- Phase 4 → `${HARNESS_PLUGIN_ROOT}/internal-skills/plan-devex-review/SKILL.md` (only if dx_scope=true)
+- `${HARNESS_PLUGIN_ROOT}/internal-skills/plan-ceo-review/SKILL.md` (premise/scope, read + execute inline)
+- `${HARNESS_PLUGIN_ROOT}/internal-skills/plan-eng-review/SKILL.md` (architecture/tests/failure, read + execute inline)
 
 These sub-skills are heavy review pipelines on the Claude side. On Codex, route them through one independent reviewer subagent via `spawn_agent` when available; otherwise run inline and record the phase as `coordinator-only` in PLAN.md Review Status.
 
@@ -116,7 +115,7 @@ When used, it contains `{"state": "...", "phase": "...", "source": "plan-skill"}
 
 ## Reviewer Protocol (Codex variant)
 
-Phases 1-4 first discover `spawn_agent`. When it is available, spawn exactly
+Phase 1 first discovers `spawn_agent`. When it is available, spawn exactly
 one independent reviewer subagent per phase. Only when no independent route
 exists, run ONE inline critical-reviewer pass and record the phase as
 `coordinator-only`. Every pass:
@@ -140,12 +139,9 @@ Full protocol, dimensions, checklists, and findings table: `review-phases.md` (C
 
 1. **Phase 0** — always runs and selects `compact` or `full` planning procedure; TASK.json remains `standard` or `micro` only.
 2. **Compact branch** — conservatively classified low-risk standard work gets one bounded assessment, unresolved material decisions only, then canonical publication.
-3. **Full branch Phase 1 — CEO Review** — premise extraction and authorization classification are mandatory analysis.
-4. **Full branch Phase 2 — Design Review** — only if `ui_scope=true`.
-5. **Full branch Phase 3 — Engineering Review** — runs with an independent reviewer subagent when available.
-6. **Full branch Phase 4 — DX Review** — only if `dx_scope=true`.
-7. **Phase 5 — Consolidated Decision Gate** — either procedure asks once only when unresolved material decisions remain.
-8. **Phase 6 — Write artefacts** — always writes through `write_plan`; then removes optional PLAN_SESSION.json scratch.
+3. **Full branch Phase 1 — Plan Review** — premise extraction and authorization classification are mandatory analysis. One reviewer subagent (when available) merges CEO (premise/scope) and Engineering (architecture/tests/failure) methodology; adds a UI checklist when `ui_scope=true`.
+4. **Phase 5 — Consolidated Decision Gate** — either procedure asks once only when unresolved material decisions remain.
+5. **Phase 6 — Write artefacts** — always writes through `write_plan`; then removes optional PLAN_SESSION.json scratch.
 
 The compact assessment must inspect the named code/docs and recheck every
 escalation family against discovered dependencies, callers, data flows,
@@ -168,11 +164,8 @@ Branch once after §5.0:
 ### 5.0 Pre-Gate verification (max 2 retries)
 
 For `full`, verify required outputs before collecting decisions:
-- [ ] Phase 1: premises source-classified and authorized or queued; CEO findings retained; phase-transition summary
-- [ ] Phase 2 (if ran): Design findings retained; phase-transition summary
-- [ ] Phase 3: Engineering findings retained; phase-transition summary
-- [ ] Phase 4 (if ran): DX findings retained; phase-transition summary
-- [ ] PLAN.md Review Status has ≥ 1 row per completed phase
+- [ ] Phase 1: premises source-classified and authorized or queued; CEO+Eng findings retained; phase-transition summary; UI checklist present when `ui_scope=true`
+- [ ] PLAN.md Review Status has ≥ 1 row for Phase 1
 - [ ] Any coordinator-only fallback is logged with the concrete unavailable independent route for each affected phase.
 
 If missing after 2 retries, proceed to 5.1 with warning block:
@@ -209,7 +202,7 @@ That is the entire user-facing summary.
 
 ### 5.1.1 Collect all decisions
 
-From the available findings rows across Phases 1-4: Mechanical (silently applied), Taste, User Challenge.
+From Phase 1's available findings rows: Mechanical (silently applied), Taste, User Challenge.
 
 ### 5.2 Retain Taste decisions for PLAN.md (no gate render)
 
@@ -267,7 +260,7 @@ Emit §5.1 summary, then ask:
 > A) Approve — proceed to develop (Recommended). Move to Phase 6 artefact write.
 > B) Reject — discard and reset to Phase 0.
 >
-> Any other reply is treated as Modify — describe what you want changed (taste-decision overrides, scope adjustments, "re-run Phase 3 with X premise", clarifying questions). The orchestrator interprets the free-text and either revises the plan or answers the question, then re-offers the gate.
+> Any other reply is treated as Modify — describe what you want changed (taste-decision overrides, scope adjustments, "re-run Phase 1 with X premise", clarifying questions). The orchestrator interprets the free-text and either revises the plan or answers the question, then re-offers the gate.
 
 **Handling:**
 - **Approve:** proceed to Phase 6.
@@ -287,7 +280,7 @@ TASK.json execution_mode remains exactly `standard|micro`; never persist
 | Procedure | Eligibility | Review shape | Mandatory output |
 |-----------|-------------|--------------|------------------|
 | `compact` | bounded, unambiguous, low blast radius, all scope/test decisions evident | one code/context assessment; ask only unresolved material decisions | canonical PLAN.md with stable ACs, in/out scope, allowed/test/forbidden paths, verification, durable-doc decision |
-| `full` | explicit request, uncertain inputs, or any escalation trigger | capability-routed CEO/Engineering plus scoped Design/DX phases | full canonical PLAN.md |
+| `full` | explicit request, uncertain inputs, or any escalation trigger | capability-routed Plan Review (CEO+Eng merged, plus a UI checklist when ui_scope=true) | full canonical PLAN.md |
 
 Escalate to full for security/auth/permissions/secrets, data/schema/migrations,
 public API or observable UI behavior, destructive operations, dependency/
@@ -336,6 +329,6 @@ close fingerprint, Goal continuation, and verified installation boundaries.
 - **Full depth means full depth.** Complete every loaded methodology section with its required evidence and decisions.
 - **Artifacts are deliverables.** PLAN.md and valid required lenses in TASK.json must exist before Phase 6 closes the session.
 - **Intent is preserved in PLAN.** Every PLAN.md includes `Original Request / Intent Summary`. If `REQUEST.md` exists, summarize it and cite it. If it is absent, gitignored, or under 15 non-empty lines, summarize the current user prompt and explicitly label the source as `conversation summary` so future reviewers can evaluate intent without relying on task-local request artifacts.
-- **Sequential order.** Compact: Phase 0 → bounded assessment → 5 (only if challenged) → 6. Full: Phase 0 → 1 → 2 → 3 → 4 → 5 → 6.
+- **Sequential order.** Compact: Phase 0 → bounded assessment → 5 (only if challenged) → 6. Full: Phase 0 → 1 → 5 → 6.
 
 ---

@@ -122,7 +122,7 @@ completion: PLAN.md exists in task_dir. If BLOCKED: stop and report.
 Skill("harness:develop", "<task_id>")
 ```
 
-The develop skill reads PLAN.md, implements changes, runs plan completion audit, scope drift detection, bisectable commits, verification gate, runtime QA subagents, and any needed durable-doc updates. On completion, fresh hook-owned QA completion receipts exist and `task_verify` reports PASS. If BLOCKED: stop, report, ask user.
+The develop skill reads PLAN.md, implements changes, runs scope drift detection, bisectable commits, verification gate, runtime QA subagents, and any needed durable-doc updates. On completion, fresh hook-owned QA completion receipts exist and `task_verify` reports PASS. If BLOCKED: stop, report, ask user.
 
 Before entering develop, re-entering after QA/UX FAIL, verifying, or closing,
 incorporate explicit user corrections from the conversation. Promote durable

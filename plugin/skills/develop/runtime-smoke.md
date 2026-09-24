@@ -78,7 +78,7 @@ Steps:
    ```
    Include these metrics in the phase result. qa-browser can compare against
    them after implementation when the values remain in context.
-8. **Keep dev server running** — Phase 4 visual smoke agent will reuse it.
+8. **Keep dev server running** — Phase 4.5 visual smoke agent will reuse it.
 
 **API projects (`project_type: api` or API endpoints in diff):**
 

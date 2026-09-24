@@ -56,7 +56,7 @@ anything.
 ```
 mcp__plugin_harness_harness__task_start { task_id: "<ARGUMENTS>" }
 ```
-Extract: `risk_level`, `planning_mode`, `compat.execution_mode`, `workflow_locked`, `maintenance_task`, `ui_scope`, `dx_scope`, `must_read`.
+Extract: `risk_level`, `planning_mode`, `compat.execution_mode`, `workflow_locked`, `maintenance_task`, `ui_scope`, `must_read`.
 
 ## Phase 0.4: Read task pack
 
@@ -68,7 +68,7 @@ Read in order: `TASK.json`, `REQUEST.md` (if exists), existing `PLAN.md` (if exi
 git log --oneline -20 2>/dev/null || true
 git diff --stat HEAD 2>/dev/null || git diff --stat 2>/dev/null || true
 ```
-Store as `GIT_CONTEXT`. Prepend `## Git context` block to the reviewer brief in Phases 1 and 3.
+Store as `GIT_CONTEXT`. Prepend `## Git context` block to the Phase 1 reviewer brief.
 
 ## Phase 0.4.2: Base branch detection
 
@@ -146,13 +146,9 @@ Read task pack text. Scan keywords (no grep bash).
 
 **UI keywords:** ui_scope, frontend, component, css, html, react, vue, design system, stylesheet, layout, visual, button, modal, dashboard, sidebar, nav, dialog
 
-**DX keywords:** dx_scope, api, cli, sdk, devex, developer experience, ergonomics, tooling, integration, plugin, endpoint, REST, GraphQL, gRPC, webhook, command, flag, argument, terminal, shell, library, package, npm, pip, import, require, developer docs, getting started, onboarding, debug, implement, error message
+**2+ match threshold.** False-positive exclusions: `\bpage\b` alone, `\bUI\b` acronym (thread/process).
 
-**2+ match threshold** per scope. False-positive exclusions: `\bpage\b` alone, `\bUI\b` acronym (thread/process), `\bapi\b` in API-keys, `\bcli\b` for non-developer tool.
-
-**Structural DX overrides (set dx_scope=true immediately):** "product IS a developer tool"; "AI agent is primary user".
-
-Honor existing `ui_scope:true` or `dx_scope:true` in task pack without re-eval.
+Honor existing `ui_scope:true` in task pack without re-eval.
 
 ## Phase 0.7: Planning procedure branch
 
@@ -186,4 +182,4 @@ context, cross-component impact, or unresolved decision, abandon compact and
 restart at full Phase 1 before Phase 5/6. The initial prompt classification is
 never sufficient by itself.
 
-**Auto-decide detection:** check `auto_decide: true` in task pack or flag. Independent of planning procedure. If set, retain it in working context and optional scratch, CEO defaults SELECTIVE EXPANSION, DX defaults DX POLISH, and apply "What Auto-Decide Means" rules.
+**Auto-decide detection:** check `auto_decide: true` in task pack or flag. Independent of planning procedure. If set, retain it in working context and optional scratch, CEO defaults SELECTIVE EXPANSION, and apply "What Auto-Decide Means" rules.

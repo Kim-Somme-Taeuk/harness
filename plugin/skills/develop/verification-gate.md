@@ -16,7 +16,7 @@ git status --porcelain
 If the working tree has **uncommitted changes**:
 - Uncommitted changes mean tests run against code that differs from what was committed.
 - **Staged but uncommitted changes**: commit them first. Tests should verify committed state.
-- **Unstaged changes from Phase 4/6 fixes**: commit them, then re-run Phase 6.5 test freshness check.
+- **Unstaged changes from Phase 4.5–4.9/6 fixes**: commit them, then re-run Phase 6.5 test freshness check.
 - **Only proceed when `git status --porcelain` is empty** (all changes committed).
 
 This ensures test results accurately reflect the code state that will be merged.

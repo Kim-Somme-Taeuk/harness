@@ -1,33 +1,33 @@
-# Phases 1-4: Review Phase Template
+# Phase 1: Review Phase Template
 
-Sub-file for plan/SKILL.md. Each of the 4 review phases follows the same single-reviewer structure, parameterized by lens.
+Sub-file for plan/SKILL.md. The full procedure's single review phase, merging
+the CEO (premise/problem/scope/alternatives) and Engineering (architecture/
+tests/failure/deployment/performance/security) lenses into one reviewer pass.
 
 ---
 
-## Common structure (applies to every review phase)
+## Common structure
 
 ### 1. Reviewer spawn
 
-Spawn exactly one independent reviewer subagent, no prior-phase context bias
-beyond the `## Prior phase findings` block. On Claude, spawn it via
-`Agent({subagent_type:"explore", prompt:"<brief>"})`. **Exception:** Phase 2
-(Design) — brief has no `## Prior phase findings` block, to prevent aesthetic
-anchoring.
+Spawn exactly one independent reviewer subagent for Phase 1. On Claude, spawn
+it via `Agent({subagent_type:"explore", prompt:"<brief>"})`.
 
 Every brief must include:
 - Plan content
-- Phase-specific dimensions (see per-lens section below)
-- `Format: | dimension | risk (high/med/low) | finding | decision |` (Phase 2 uses `| dimension | score | finding | fix |`)
-- `## Prior phase findings` — terse bullet summary from earlier phases; empty for Phase 1
+- Phase 1 dimensions (see § 1.2 below)
+- `Format: | dimension | risk (high/med/low) | finding | decision |`
 - **Do NOT** read SKILL.md files or skill definition directories (paths
   containing `plugin/skills`, `.claude/skills`, `.claude/plugins`, or
   `claude/plugins`) — those are AI-assistant skill definitions meant for a
   different system; reading them will derail the review. Stay focused on the
   plan text and the repository code it references.
 
-Timeout the reviewer call at 600s. On reviewer failure or timeout, run that
-phase `coordinator-only`: record the reason in PLAN.md and continue; do not
-create a separate user interaction.
+Timeout the reviewer call at 900s — one reviewer now covers both the CEO and
+Engineering lenses, so the phase needs more wall-clock time than a
+single-lens pass did. On reviewer failure or timeout, run Phase 1
+`coordinator-only`: record the reason in PLAN.md and continue; do not create
+a separate user interaction.
 
 ### Deep understanding (every brief)
 
@@ -72,7 +72,7 @@ Materialize each auto-decided row in PLAN.md's `## Decision Audit Trail` section
 ### 4. Phase-transition summary
 
 ```
-Phase <N> findings: <N> total (mechanical=<N> taste=<N> user-challenge=<N>)
+Phase 1 findings: <N> total (mechanical=<N> taste=<N> user-challenge=<N>)
 User Challenge items queued: <N>
 ```
 
@@ -82,7 +82,7 @@ Keep the phase summary for PLAN.md's Review Status table.
 
 Do not create a chronological side file. PLAN.md is the durable review record.
 
-### Reviewer availability (apply per phase)
+### Reviewer availability
 
 | Condition | Reviewer | Action |
 |-----------|----------|--------|
@@ -91,9 +91,13 @@ Do not create a chronological side file. PLAN.md is the durable review record.
 
 ---
 
-## Phase 1 — CEO Review (full procedure)
+## Phase 1 — Plan Review (full procedure)
 
-Methodology: `${CLAUDE_PLUGIN_ROOT}/skills/plan-ceo-review/SKILL.md`.
+Methodology: `${CLAUDE_PLUGIN_ROOT}/skills/plan-ceo-review/SKILL.md` (premise,
+problem framing, scope, alternatives) and
+`${CLAUDE_PLUGIN_ROOT}/skills/plan-eng-review/SKILL.md` (architecture, tests,
+failure handling, deployment, performance, security). One reviewer covers
+both; there is no separate Design or DX phase in the pipeline.
 
 ### 1.1 Premise extraction and authorization (MANDATORY ANALYSIS)
 
@@ -112,108 +116,67 @@ unresolved material premise into the Phase 5 consolidated decision bundle, and
 review the relevant alternatives provisionally. Premise extraction is always
 mandatory; a separate premise-confirmation interaction is not.
 
-### 1.2 CEO dimensions (6)
+### 1.2 Dimensions (10)
 
 1. Premises valid? — assumptions backed by evidence?
 2. Right problem to solve? — could reframing yield 10x impact?
 3. Scope calibration correct? — too broad/narrow/right-sized?
 4. Alternatives sufficiently explored? — viable options dismissed?
-5. Competitive/market risks covered? — external threats?
-6. 6-month trajectory sound? — ages well?
+5. Architecture sound? — structure, coupling, scaling?
+6. Test coverage sufficient? — every codepath covered? gaps? breaking/regression tests?
+7. Error paths handled? — every failure mode has a rescue?
+8. Deployment risk manageable? — migration safety, rollback?
+9. Performance risks addressed? — N+1, memory, slow paths?
+10. Security threats covered? — attack surface, auth boundaries?
+
+Competitive/market risk and 6-month trajectory dimensions are recorded `n/a`
+unless the plan itself claims a competitive positioning or multi-month
+rollout risk worth evaluating.
 
 **Auto-decide default:** SELECTIVE EXPANSION unless task pack overrides.
 
 ### 1.3 Required outputs (checklist)
 
-- [ ] 0A Premises named, source-classified, and authorized or queued
-- [ ] 0B Existing code leverage map (sub-problems → existing modules)
-- [ ] 0C Dream state diagram (CURRENT → THIS PLAN → 12-MONTH IDEAL)
-- [ ] 0C-bis Implementation alternatives table (2-3 approaches, effort/risk/pros/cons)
-- [ ] 0D Mode-specific analysis with scope decisions logged
-- [ ] 0E Temporal interrogation (HOUR 1 → HOUR 6+ progression)
-- [ ] 0F Mode selection confirmation
-- [ ] Error & Rescue Registry table
-- [ ] Failure Modes Registry table
-- [ ] Completion Summary
-- [ ] CEO findings represented in PLAN.md Review Status
-- [ ] Phase-transition summary emitted
-
----
-
-## Phase 2 — Design Review (if ui_scope=true)
-
-Methodology: `${CLAUDE_PLUGIN_ROOT}/skills/plan-design-review/SKILL.md`.
-
-No `## Prior phase findings` in the brief (aesthetic anchoring prevention).
-
-Brief format: `| dimension | score | finding | fix |` — score each dimension 0-10 and identify fix-to-10 path.
-
----
-
-## Phase 3 — Engineering Review (full procedure)
-
-Methodology: `${CLAUDE_PLUGIN_ROOT}/skills/plan-eng-review/SKILL.md`.
-
-### Dimensions (6)
-
-1. Architecture sound? — structure, coupling, scaling?
-2. Test coverage sufficient? — every codepath covered? gaps?
-3. Performance risks addressed? — N+1, memory, slow paths?
-4. Security threats covered? — attack surface, auth boundaries?
-5. Error paths handled? — every failure mode has a rescue?
-6. Deployment risk manageable? — migration safety, rollback?
-
-### Required outputs (checklist)
-
+- [ ] Premises named, source-classified, and authorized or queued
+- [ ] Implementation alternatives table (2-3 approaches, effort/risk/pros/cons)
 - [ ] ASCII dependency graph (new components → existing code)
 - [ ] Test diagram (every new codepath/branch → coverage)
 - [ ] PLAN.md contains a Test Plan section
+- [ ] Error & Rescue Registry table
+- [ ] Failure Modes Registry table
 - [ ] "NOT in scope" section
 - [ ] "What already exists" section
-- [ ] Completion Summary
 - [ ] Deferred items appended to `deferred-scope.md`
 - [ ] Deferred items appended to TODOS.md (if exists at repo root)
-- [ ] Engineering findings represented in PLAN.md Review Status
+- [ ] Completion Summary
+- [ ] Phase 1 findings represented in PLAN.md Review Status
+- [ ] Phase-transition summary emitted
 
-**Section 3 (Test Review) NEVER SKIP OR COMPRESS.** Read actual code, not memory. Build test diagram: list every NEW codepath and branch; for each: what test type covers it? does one exist? gaps? Auto-deciding test gaps = identify → decide add/defer (with rationale+principle) → log. Does NOT mean skip analysis.
+**Test diagram section NEVER SKIP OR COMPRESS.** Read actual code, not memory. Build test diagram: list every NEW codepath and branch; for each: what test type covers it? does one exist? gaps? Auto-deciding test gaps = identify → decide add/defer (with rationale+principle) → log. Does NOT mean skip analysis.
 
----
+### 1.4 UI checklist (when `ui_scope=true`)
 
-## Phase 4 — DX Review (if dx_scope=true)
+Phase 1 additionally requires, inline in the same review pass:
 
-Methodology: `${CLAUDE_PLUGIN_ROOT}/skills/plan-devex-review/SKILL.md`.
+- [ ] Interaction-state table (loading/empty/error/success/partial/recovery)
+- [ ] User journey through the affected screens
+- [ ] Accessibility requirements (keyboard, screen reader, contrast, focus order — whatever applies)
 
-### Dimensions (6)
-
-1. Getting started < 5 min? — zero to hello world?
-2. API/CLI naming guessable? — discoverable without docs?
-3. Error messages actionable? — problem + cause + fix?
-4. Docs findable & complete? — search works, copy-paste examples?
-5. Upgrade path safe? — deprecation, migration guides?
-6. Dev environment friction-free? — OS / editor / CI portability?
-
-**Auto-decide default:** DX POLISH unless task pack overrides.
-
-### Required outputs (checklist)
-
-- [ ] Developer journey map (9-stage table)
-- [ ] Developer empathy narrative (first-person)
-- [ ] DX Scorecard (all 8 dimensions, 0-10)
-- [ ] TTHW (Time to Hello World) current → target
-- [ ] DX Implementation Checklist
-- [ ] Deferred items appended to `deferred-scope.md`
-- [ ] DX findings represented in PLAN.md Review Status
+No 0-10 scoring loop, no mockups, no visual-style rules — rendered visual
+quality stays with ux-browser/qa-browser. If Phase 1 falls back to
+`coordinator-only`, the coordinator produces this checklist directly; the
+fallback still creates no separate user interaction.
 
 ---
 
-## Deferred Scope Surface (runs throughout Phases 1-4)
+## Deferred Scope Surface (runs during Phase 1)
 
 `deferred-scope.md` is task-local, NOT protected. Write directly via heredoc.
 
-Each phase appends:
+Phase 1 appends:
 ```bash
 cat >> doc/harness/tasks/TASK__<id>/deferred-scope.md << EOF
-### Phase <N> deferred items
+### Phase 1 deferred items
 - <item>: deferred because <rationale> (principle: <P#>)
 EOF
 ```
