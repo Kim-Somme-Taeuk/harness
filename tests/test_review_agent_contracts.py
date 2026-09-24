@@ -48,6 +48,9 @@ def test_claude_and_codex_role_cores_are_byte_identical():
     for role in ("developer", "defect-hunter", "code-reviewer", "security-reviewer"):
         assert _role_core(f"plugin/agents/{role}.md") == _role_core(
             f"plugin-codex/agents/{role}.md"
+        ), (
+            f"{role} role core drifted between runtimes; after changing the "
+            "developer core, also run tests/evals/developer_behavior/run_live.py"
         )
 
 
@@ -134,6 +137,158 @@ def test_developer_core_preserves_ponytail_decision_and_safety_contract():
     assert "route from the capabilities exposed by the current session" in " ".join(
         develop.split()
     )
+
+
+DEVELOP_SKILLS = (
+    "plugin/skills/develop/SKILL.md",
+    "plugin-codex/internal-skills/develop/SKILL.md",
+)
+DEVELOPER_CORES = ("plugin/agents/developer.md", "plugin-codex/agents/developer.md")
+
+
+def test_developer_core_output_contract_and_dependency_admission():
+    for path in DEVELOPER_CORES:
+        core = _role_core(path)
+        _assert_all(
+            core,
+            (
+                "Status: implemented | blocked | needs-coordinator-review",
+                "Known ceiling: <ceiling> — upgrade when <trigger>",
+                "Assumption: <choice> — because <PLAN/code evidence>",
+                "omit the line when there is none",
+                "coordinator treats both forms as equivalent",
+                "No impossible-state defenses",
+                "Admit a new package only when a current AC needs it",
+                "package manifest and lockfile are within your ownership",
+            ),
+            path,
+        )
+    worker = _text("plugin/agents/ac-worker.md")
+    _assert_all(
+        worker,
+        (
+            "AC-003: implemented | blocked | needs-coordinator-review",
+            "Known ceiling: <ceiling> — upgrade when <trigger>",
+            "Assumption: <choice> — because <PLAN/code evidence>",
+        ),
+        "plugin/agents/ac-worker.md",
+    )
+
+
+def test_developer_core_splits_blocking_from_defaultable_ambiguity():
+    for path in DEVELOPER_CORES:
+        core = _role_core(path)
+        _assert_all(
+            core,
+            (
+                "PLAN.md describes intent; the code is ground truth",
+                "It is blocking when a wrong guess would change the outcome, scope, safety, or external state",
+                "Otherwise it is defaultable",
+            ),
+            path,
+        )
+        assert "surface the conflict and your assumptions before implementing" not in _normalized(core)
+    _assert_all(
+        _text("plugin/agents/ac-worker.md"),
+        (
+            "An ambiguity is blocking when a wrong guess would change the outcome, scope, safety, or external state and neither PLAN.md nor the code settles it",
+            "Otherwise it is defaultable",
+        ),
+        "plugin/agents/ac-worker.md",
+    )
+    for path in DEVELOP_SKILLS:
+        _assert_all(
+            _text(path),
+            (
+                "Ambiguity is blocking when PLAN.md and the code cannot settle it",
+                "Decide defaultable ambiguity yourself, report it as `Assumption:`",
+            ),
+            path,
+        )
+
+
+def test_claude_sequential_coordinator_reads_developer_core_before_editing():
+    claude = _text("plugin/skills/develop/SKILL.md")
+    _assert_all(
+        claude,
+        (
+            "Before the first sequential edit, the coordinator Reads the role core of `${CLAUDE_PLUGIN_ROOT}/agents/developer.md`",
+            "parent context is not propagation",
+            "AC workers carry their own ladder copy in `plugin/agents/ac-worker.md`",
+        ),
+        "plugin/skills/develop/SKILL.md",
+    )
+    assert "Workers read `plugin/agents/developer.md`" not in claude
+    _assert_all(
+        _text("plugin-codex/internal-skills/develop/SKILL.md"),
+        ("read that file before editing; parent context is not sufficient",),
+        "plugin-codex/internal-skills/develop/SKILL.md",
+    )
+    for path in (*DEVELOP_SKILLS, "plugin/skills/develop/quality-audit-pipeline.md"):
+        _assert_all(
+            _text(path),
+            ("the lane-owning worker, or the coordinator for sequential ACs",),
+            path,
+        )
+
+
+def test_known_ceilings_are_promoted_to_a_greppable_doc_ledger_before_close():
+    for path in DEVELOP_SKILLS:
+        body = _text(path)
+        _assert_all(
+            body,
+            (
+                "Copy every reported `Known ceiling:` line under a `Known ceiling` heading",
+                "never copy an absent ceiling",
+                "Required when a `Known ceiling:` was reported",
+            ),
+            path,
+        )
+        phase_86 = body[body.index("### Phase 8.6"):body.index("### Phase 8.7")]
+        assert phase_86.index("Known ceiling") < phase_86.index("task_verify"), path
+
+
+def test_develop_tests_are_proportional_to_changed_behavior():
+    for path in DEVELOP_SKILLS:
+        body = _text(path)
+        _assert_all(
+            body,
+            (
+                "modifies existing non-trivial behavior",
+                "a trivial declarative or one-line change needs no new test",
+                "Phase 6 owns commit order",
+                "add tests only for uncovered non-trivial changed behavior",
+            ),
+            path,
+        )
+        assert "Commit separately: `test: regression test for" not in body, path
+
+
+def test_fix_first_is_a_self_check_not_a_code_growth_table():
+    develop = ROOT / "plugin/skills/develop"
+    fix_first = _text("plugin/skills/develop/fix-first-pattern.md")
+    _assert_all(
+        fix_first,
+        (
+            "Pre-review self-check",
+            "3-Attempt Escalation Rule",
+            "Do not add an `attempts` key to canonical PROGRESS.md",
+            "hypothesis-driven-debugging.md",
+        ),
+        "plugin/skills/develop/fix-first-pattern.md",
+    )
+    for stale in ("AUTO-FIX", "Add standard pattern", "Extract to named constant"):
+        assert stale not in fix_first, stale
+    for path in DEVELOP_SKILLS:
+        line = next(l for l in _text(path).splitlines() if "**3.6 Fix-first pattern**" in l)
+        for stale in ("magic numbers", "missing guards", "AUTO-FIX"):
+            assert stale not in line, (path, stale)
+    stale_refs = ("investigate skill", "investigate-skill", 'Skill("investigate"', "adversarial self-check")
+    files = [*develop.glob("*.md"), ROOT / "plugin-codex/internal-skills/develop/SKILL.md"]
+    for file in files:
+        text = file.read_text(encoding="utf-8")
+        for stale in stale_refs:
+            assert stale not in text, (file.name, stale)
 
 
 def test_review_agents_are_read_only_and_have_exact_verdict_contract():

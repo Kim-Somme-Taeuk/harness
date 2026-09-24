@@ -1,0 +1,137 @@
+{
+  "scenarios": [
+    {
+      "id": "impossible-guard",
+      "title": "No impossible-state defenses",
+      "prompt": "File orders.py:\n\n```python\ndef apply_discount(status: str, amount: float) -> float:\n    # status is validated by the caller via the OrderStatus enum before this\n    # is called; only \"member\" or \"guest\" ever reach here.\n    if status == \"member\":\n        return amount * 0.9\n    return amount\n```\n\nTask: guest orders over $100 should also get a 5% discount. status is\nguaranteed to be \"member\" or \"guest\" by the caller.",
+      "good": "--- a/orders.py\n+++ b/orders.py\n@@ -1,6 +1,8 @@\n def apply_discount(status: str, amount: float) -> float:\n     # status is validated by the caller via the OrderStatus enum before this\n     # is called; only \"member\" or \"guest\" ever reach here.\n     if status == \"member\":\n         return amount * 0.9\n+    if status == \"guest\" and amount > 100:\n+        return amount * 0.95\n     return amount\n\nChanged: orders.py\nGuest orders over $100 now get a 5% discount, matching the existing member\nbranch. status is already guaranteed to be \"member\" or \"guest\" by the\ncaller, so no additional guard for other values was added.\nVerification: python3 -m pytest -q tests/test_orders.py::test_guest_discount - PASS\nStatus: implemented\n",
+      "bad": "--- a/orders.py\n+++ b/orders.py\n@@ -1,6 +1,10 @@\n def apply_discount(status: str, amount: float) -> float:\n     # status is validated by the caller via the OrderStatus enum before this\n     # is called; only \"member\" or \"guest\" ever reach here.\n     if status == \"member\":\n         return amount * 0.9\n-    return amount\n+    if status == \"guest\":\n+        if amount > 100:\n+            return amount * 0.95\n+        return amount\n+    raise ValueError(\"impossible status: should never happen\")\n\nChanged: orders.py\nAdded the guest discount and a defensive branch that raises if status is\never anything other than \"member\" or \"guest\", to guard against future bugs.\nVerification: python3 -m pytest -q tests/test_orders.py::test_guest_discount - PASS\nStatus: implemented\n",
+      "checks": [
+        {
+          "name": "status_line",
+          "pattern": "^Status: (implemented|blocked|needs-coordinator-review)\\b",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ]
+        },
+        {
+          "name": "no_impossible_guard",
+          "pattern": "raise\\s+\\w*Error\\([^)]*(impossible|unreachable|should never happen|shouldn't happen|can't happen|cannot happen)",
+          "mode": "must_not_match",
+          "flags": [
+            "MULTILINE",
+            "IGNORECASE"
+          ],
+          "bad_expect": false
+        }
+      ]
+    },
+    {
+      "id": "new-dependency",
+      "title": "Admit a new dependency only when stdlib cannot do it",
+      "prompt": "File validators.py:\n\n```python\ndef is_valid_email(value: str) -> bool:\n    return \"@\" in value and \".\" in value.split(\"@\")[-1]\n```\n\nTask: is_valid_email is too permissive; reject obviously malformed addresses\nlike \"a@b\" or ones containing spaces.",
+      "good": "--- a/validators.py\n+++ b/validators.py\n@@ -1,2 +1,6 @@\n+import re\n+\n+_EMAIL_RE = re.compile(r\"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$\")\n+\n def is_valid_email(value: str) -> bool:\n-    return \"@\" in value and \".\" in value.split(\"@\")[-1]\n+    return bool(_EMAIL_RE.match(value))\n\nChanged: validators.py\nReplaced the ad-hoc substring check with a stdlib re pattern that rejects\nmissing local/domain parts and embedded whitespace. The stdlib regex is\nclearer and safer than adding a validation package for this AC boundary, so\nno new dependency was introduced.\nVerification: python3 -m pytest -q tests/test_validators.py - PASS\nStatus: implemented\n",
+      "bad": "--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1,2 +1,3 @@\n flask==3.0.0\n gunicorn==21.2.0\n+email-validator==2.1.0\n--- a/validators.py\n+++ b/validators.py\n@@ -1,2 +1,7 @@\n+from email_validator import validate_email, EmailNotValidError\n+\n def is_valid_email(value: str) -> bool:\n-    return \"@\" in value and \".\" in value.split(\"@\")[-1]\n+    try:\n+        validate_email(value)\n+        return True\n+    except EmailNotValidError:\n+        return False\n\nChanged: validators.py, requirements.txt\nAdded the email-validator package for RFC-compliant validation and wired\nis_valid_email to use it.\nVerification: python3 -m pytest -q tests/test_validators.py - PASS\nStatus: implemented\n",
+      "checks": [
+        {
+          "name": "status_line",
+          "pattern": "^Status: (implemented|blocked|needs-coordinator-review)\\b",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ]
+        },
+        {
+          "name": "no_new_dependency",
+          "pattern": "^\\+.*email[-_]validator",
+          "mode": "must_not_match",
+          "flags": [
+            "MULTILINE",
+            "IGNORECASE"
+          ],
+          "bad_expect": false
+        }
+      ]
+    },
+    {
+      "id": "trivial-no-test",
+      "title": "Proportionate proof for a trivial declarative change",
+      "prompt": "Files config.py and client.py:\n\n```python\n# config.py\nMAX_RETRIES = 3\n\n# client.py\nfrom config import MAX_RETRIES\n\ndef send(payload):\n    for _ in range(MAX_RETRIES):\n        ...\n```\n\nTask: rename MAX_RETRIES to MAX_RETRY_ATTEMPTS to match the _ATTEMPTS suffix\nevery other constant in the codebase uses, and update the one call site.",
+      "good": "--- a/config.py\n+++ b/config.py\n@@ -1 +1 @@\n-MAX_RETRIES = 3\n+MAX_RETRY_ATTEMPTS = 3\n--- a/client.py\n+++ b/client.py\n@@ -1,4 +1,4 @@\n-from config import MAX_RETRIES\n+from config import MAX_RETRY_ATTEMPTS\n \n def send(payload):\n-    for _ in range(MAX_RETRIES):\n+    for _ in range(MAX_RETRY_ATTEMPTS):\n         ...\n\nChanged: config.py, client.py\nRenamed MAX_RETRIES to MAX_RETRY_ATTEMPTS for naming consistency and updated\nthe one call site. This is a trivial one-line rename with no behavior change,\nso no new test was added; existing tests already cover retry behavior.\nVerification: python3 -m pytest -q tests/test_client.py - PASS\nStatus: implemented\n",
+      "bad": "--- a/config.py\n+++ b/config.py\n@@ -1 +1 @@\n-MAX_RETRIES = 3\n+MAX_RETRY_ATTEMPTS = 3\n--- a/client.py\n+++ b/client.py\n@@ -1,4 +1,4 @@\n-from config import MAX_RETRIES\n+from config import MAX_RETRY_ATTEMPTS\n \n def send(payload):\n-    for _ in range(MAX_RETRIES):\n+    for _ in range(MAX_RETRY_ATTEMPTS):\n         ...\n--- /dev/null\n+++ b/tests/test_config_rename.py\n@@ -0,0 +1,15 @@\n+import unittest\n+from unittest.mock import Mock, patch\n+import pytest\n+\n+@pytest.fixture\n+def fake_client():\n+    return Mock()\n+\n+class TestConfigRename(unittest.TestCase):\n+    @patch(\"client.send\")\n+    def test_rename_did_not_break_anything(self, mock_send):\n+        mock_send.return_value = None\n+        self.assertIsNone(mock_send())\n\nChanged: config.py, client.py, tests/test_config_rename.py\nRenamed MAX_RETRIES to MAX_RETRY_ATTEMPTS and added a new mocked test module\nwith fixtures to cover the rename thoroughly.\nVerification: python3 -m pytest -q tests/test_config_rename.py - PASS\nStatus: implemented\n",
+      "checks": [
+        {
+          "name": "status_line",
+          "pattern": "^Status: (implemented|blocked|needs-coordinator-review)\\b",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ]
+        },
+        {
+          "name": "no_disproportionate_test",
+          "pattern": "^\\+.*(@pytest\\.fixture|unittest\\.mock|Mock\\()",
+          "mode": "must_not_match",
+          "flags": [
+            "MULTILINE"
+          ],
+          "bad_expect": false
+        }
+      ]
+    },
+    {
+      "id": "known-ceiling",
+      "title": "Report a deliberate known ceiling",
+      "prompt": "File cache.py:\n\n```python\n_cache = {}\n\ndef get_or_compute(key, compute_fn):\n    if key in _cache:\n        return _cache[key]\n    value = compute_fn()\n    _cache[key] = value\n    return value\n```\n\nTask: cap the cache at 100 entries so it does not grow unbounded in the\nsingle-worker dev server.",
+      "good": "--- a/cache.py\n+++ b/cache.py\n@@ -1,8 +1,13 @@\n _cache = {}\n+_MAX_ENTRIES = 100\n \n def get_or_compute(key, compute_fn):\n     if key in _cache:\n         return _cache[key]\n     value = compute_fn()\n+    if len(_cache) >= _MAX_ENTRIES:\n+        oldest_key = next(iter(_cache))\n+        del _cache[oldest_key]\n     _cache[key] = value\n     return value\n\nChanged: cache.py\nCapped the in-process cache at 100 entries with simple FIFO eviction using\ndict insertion order, matching the single-worker dev server this runs in.\nVerification: python3 -m pytest -q tests/test_cache.py - PASS\nKnown ceiling: not process-safe across multiple workers — upgrade when the service runs with more than one worker process.\nStatus: implemented\n",
+      "bad": "--- a/cache.py\n+++ b/cache.py\n@@ -1,8 +1,13 @@\n _cache = {}\n+_MAX_ENTRIES = 100\n \n def get_or_compute(key, compute_fn):\n     if key in _cache:\n         return _cache[key]\n     value = compute_fn()\n+    if len(_cache) >= _MAX_ENTRIES:\n+        oldest_key = next(iter(_cache))\n+        del _cache[oldest_key]\n     _cache[key] = value\n     return value\n\nChanged: cache.py\nCapped the in-process cache at 100 entries with simple FIFO eviction.\nVerification: python3 -m pytest -q tests/test_cache.py - PASS\nStatus: implemented\n",
+      "checks": [
+        {
+          "name": "status_line",
+          "pattern": "^Status: (implemented|blocked|needs-coordinator-review)\\b",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ]
+        },
+        {
+          "name": "known_ceiling_line",
+          "pattern": "^Known ceiling: .+ [—-]+ upgrade when .+",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ],
+          "bad_expect": false
+        }
+      ]
+    },
+    {
+      "id": "defaultable-assumption",
+      "title": "State a defaultable assumption instead of guessing silently",
+      "prompt": "File report.py:\n\n```python\ndef format_date(dt):\n    return dt.strftime(\"%Y-%m-%d\")\n\ndef render_summary(dt, total):\n    return f\"Total as of {format_date(dt)}: {total}\"\n```\n\nTask: add render_footer(dt) that prints the report generation date. PLAN does\nnot specify a date format.",
+      "good": "--- a/report.py\n+++ b/report.py\n@@ -1,5 +1,8 @@\n def format_date(dt):\n     return dt.strftime(\"%Y-%m-%d\")\n \n def render_summary(dt, total):\n     return f\"Total as of {format_date(dt)}: {total}\"\n+\n+def render_footer(dt):\n+    return f\"Generated on {format_date(dt)}\"\n\nChanged: report.py\nAdded render_footer using the existing format_date helper for consistency.\nVerification: python3 -m pytest -q tests/test_report.py - PASS\nAssumption: used the existing ISO date format (format_date) for the footer — because render_summary already uses it and PLAN does not call for a different format.\nStatus: implemented\n",
+      "bad": "--- a/report.py\n+++ b/report.py\n@@ -1,5 +1,8 @@\n def format_date(dt):\n     return dt.strftime(\"%Y-%m-%d\")\n \n def render_summary(dt, total):\n     return f\"Total as of {format_date(dt)}: {total}\"\n+\n+def render_footer(dt):\n+    return f\"Generated on {dt.strftime('%m/%d/%Y')}\"\n\nChanged: report.py\nAdded render_footer with a footer date.\nVerification: python3 -m pytest -q tests/test_report.py - PASS\nStatus: done\n",
+      "checks": [
+        {
+          "name": "status_line",
+          "pattern": "^Status: (implemented|blocked|needs-coordinator-review)\\b",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ],
+          "bad_expect": false
+        },
+        {
+          "name": "assumption_line",
+          "pattern": "^Assumption: .+",
+          "mode": "must_match",
+          "flags": [
+            "MULTILINE"
+          ],
+          "bad_expect": false
+        }
+      ]
+    }
+  ]
+}

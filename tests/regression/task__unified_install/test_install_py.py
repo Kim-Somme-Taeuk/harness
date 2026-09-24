@@ -1045,6 +1045,7 @@ def test_install_codex_plugin_cache_uses_manifest_version(tmp_path):
         assert "${CLAUDE_PLUGIN_ROOT}" not in text, shared
         assert "`plugin/skills/develop/" not in text, shared
         assert "`plugin/skills/plan-" not in text, shared
+        assert "`plugin/agents/" not in text, shared
         for suffix in re.findall(r"\$\{HARNESS_PLUGIN_ROOT\}(/[A-Za-z0-9_./-]+)", text):
             assert (cached / suffix.lstrip("/")).exists(), (shared, suffix)
     assert (cached / "skills" / "setup" / "bootstrap.md").is_file()
