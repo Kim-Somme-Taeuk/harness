@@ -6,6 +6,17 @@
 
 ### Changed
 
+- **Developer contract reaches every implementer** — Claude develop now has
+  the sequential coordinator Read the `developer.md` role core before editing
+  (Codex parity). The core ends with `Status:` / `Known ceiling:` /
+  `Assumption:` output lines, admits new packages only under an explicit rule,
+  and splits blocking from defaultable ambiguity (also in `ac-worker.md` and
+  both Confusion Protocols). `fix-first-pattern.md` is now a short self-check
+  plus the 3-attempt rule; its AUTO-FIX table is gone. Phase 3.5/4.85 require
+  new tests only for non-trivial behavior, and Phase 8.6 copies reported
+  ceilings into durable docs. New `tests/evals/developer_behavior/`:
+  `grade.py --selftest` in pytest, opt-in `run_live.py` baseline-vs-core eval.
+  See `doc/changes/2026-09-24-developer-ponytail-gap-followups.md`.
 - **Single manifest version** — the manifest `harness_version` integer is
   merged into the top-level `version` field (now 6); `doc/harness/.version`
   and `doc/harness/.format-version` are removed. **Action required:** run

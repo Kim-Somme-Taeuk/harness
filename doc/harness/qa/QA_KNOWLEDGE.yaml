@@ -358,7 +358,7 @@ qa_notes:
   contract_lint_mutation_probes:
     discovered: 2026-09-03
     freshness: current
-    freshness_updated: 2026-09-18T06:40:00Z
+    freshness_updated: 2026-09-24T08:55:19Z
     invalidated_by_paths:
       - plugin/scripts/contract_lint.py
       - tests/test_contract_lint_real_tree.py

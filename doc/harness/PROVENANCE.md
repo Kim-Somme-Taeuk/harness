@@ -115,13 +115,30 @@ proportionate value under the CONTRACTS C-13 budget.
 **Source:** Ponytail `skills/ponytail/SKILL.md`.
 
 **Imported:** the minimum-sufficient ladder now carried verbatim in role terms
-by `plugin/agents/developer.md:34` — understand and trace the real flow first,
+by `plugin/agents/developer.md` § Ponytail-derived minimum-sufficient ladder — understand and trace the real flow first,
 then stop at the first sufficient rung: current necessity, existing-code reuse,
 standard library, native platform, already-installed dependency, smallest clear
 local expression, minimum new code. Plus the operational rules: inspect direct
 and sibling callers, fix a bug once at the shared root cause, prefer deletion
 and boring existing primitives after comprehension, and leave one focused
 runnable regression check.
+
+**Imported 2026-09-24 (Ponytail `e3ba2aa`, skills unchanged since the pin):**
+the "never stall on an answer you can default" rule, as a split between
+blocking ambiguity (return `needs-coordinator-review`) and defaultable
+ambiguity (report `Assumption:` and proceed); "no impossible-state defenses";
+the new-dependency admission rule; test proportionality ("YAGNI applies to
+tests") in develop Phase 3.5/4.85. `ponytail-debt`'s ledger purpose is kept
+without source comments: implementers report `Known ceiling: <ceiling> —
+upgrade when <trigger>`, and develop Phase 8.6 copies each into the owning
+durable doc, so `grep -rn "Known ceiling" doc/` is the ledger. Ponytail's
+behavior benchmarks (`benchmarks/behavior.yaml`, `robustness-audit.js`)
+became `tests/evals/developer_behavior/`: `grade.py --selftest` proves the
+grader against known-good and known-bad references offline, and the opt-in
+`run_live.py` compares a baseline arm with a developer-core arm. Run it on any
+change to the developer role core. `fix-first-pattern.md`'s AUTO-FIX table was
+dropped because it added guards, constants, and extractions that contradict
+the ladder.
 
 **Refused:** raw line count as the objective. The harness standard is named
 **minimum sufficient code, not minimum LOC**. Also refused: forced one-liners,
@@ -135,7 +152,9 @@ cleanup, and error-propagation invariants.
 
 **Evidence:** `plugin/agents/developer.md`,
 `doc/designs/minimal-implementer-and-code-review-gate.md`,
-`doc/changes/2026-07-22-ponytail-developer-reviewer-prompt-parity.md`.
+`doc/changes/2026-07-22-ponytail-developer-reviewer-prompt-parity.md`,
+`doc/changes/2026-09-24-developer-ponytail-gap-followups.md`,
+`tests/evals/developer_behavior/`.
 
 ---
 
