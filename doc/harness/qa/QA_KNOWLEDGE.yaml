@@ -358,13 +358,13 @@ qa_notes:
   contract_lint_mutation_probes:
     discovered: 2026-09-03
     freshness: current
-    freshness_updated: 2026-09-24T08:55:19Z
+    freshness_updated: 2026-09-24T14:41:34Z
     invalidated_by_paths:
       - plugin/scripts/contract_lint.py
       - tests/test_contract_lint_real_tree.py
       - plugin-codex/internal-skills/develop/SKILL.md
     notes:
-      - "contract_lint guards are mutation-verifiable in seconds. Duplicate id: insert a second '### C-01' block -> [HARD] duplicate contract id, CLI exit 1. Marker tamper: sed harness:managed-begin -> [HARD] markers missing/duplicated/inverted, exit 1. Broken Enforced-by path: rewrite a backticked path to a nonexistent file -> [SOFT], CLI exit stays 0 (soft is advisory) but tests/test_contract_lint_real_tree.py asserts report.soft == [] so the suite still reddens. Weight: append 2 lines to plugin-codex/internal-skills/develop/SKILL.md (499 lines at 66e0fa3, so any 2-line append crosses the 500 cap) -> [SOFT] C-13 weight, but only with --plugin-root plugin-codex; the CLI default ./plugin never reaches the codex twin."
+      - "contract_lint guards are mutation-verifiable in seconds. Duplicate id: insert a second '### C-01' block -> [HARD] duplicate contract id, CLI exit 1. Marker tamper: sed harness:managed-begin -> [HARD] markers missing/duplicated/inverted, exit 1. Broken Enforced-by path: rewrite a backticked path to a nonexistent file -> [SOFT], CLI exit stays 0 (soft is advisory) but tests/test_contract_lint_real_tree.py asserts report.soft == [] so the suite still reddens. Weight: append lines to plugin-codex/internal-skills/develop/SKILL.md until it exceeds 500 (499 lines at 66e0fa3; 493 after 2026-09-24, so now 8 lines are needed) -> [SOFT] C-13 weight, but only with --plugin-root plugin-codex; the CLI default ./plugin never reaches the codex twin."
       - "Trimming plugin-codex/internal-skills/develop/SKILL.md to 450 lines keeps test_contract_lint_real_tree.py fully green (5 passed when measured 2026-09-03; the file collects 11 at 66e0fa3 -- check the exit code, not the count) -- the cap-boundary test derives its threshold from the file length, not from SKILL_WEIGHT_LIMIT."
   suite_isolation_ab_recipes:
     discovered: 2026-09-03

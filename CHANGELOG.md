@@ -6,6 +6,13 @@
 
 ### Changed
 
+- **One plan reviewer, no develop completion audit** — full planning runs a
+  single Phase 1 Plan Review (CEO premise/scope + Eng architecture/tests, 900s)
+  with a UI-states/journey/accessibility checklist when `ui_scope` is true; the
+  separate Design, Eng, and DX phases and `dx_scope` detection are gone.
+  Develop Phase 4 haiku Plan Completion Audit is removed; formal code review's
+  per-AC proof covers it. See
+  `doc/changes/2026-09-24-plan-review-single-reviewer-consolidation.md`.
 - **Developer contract reaches every implementer** — Claude develop now has
   the sequential coordinator Read the `developer.md` role core before editing
   (Codex parity). The core ends with `Status:` / `Known ceiling:` /

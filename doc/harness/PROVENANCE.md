@@ -102,6 +102,11 @@ rewriting the tooling-specific entries.
 Writing Style and curated jargon glossary, which added weight without
 proportionate value under the CONTRACTS C-13 budget.
 
+**Harness change 2026-09-24:** the plan pipeline now runs one reviewer that
+applies the ceo and eng methodology together, plus a UI checklist (states,
+journey, accessibility) when `ui_scope` is true. The design and devex skills
+stay installed for direct invocation but are no longer pipeline phases.
+
 **Evidence:** `plugin/skills/plan-ceo-review/SKILL.md`,
 `plugin/skills/plan-devex-review/dx-hall-of-fame.md`,
 `doc/changes/2026-05-07-plan-ceo-review-gstack-voice-alignment.md`,
