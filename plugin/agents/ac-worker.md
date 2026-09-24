@@ -94,7 +94,16 @@ AC-003: implemented | blocked | needs-coordinator-review
 Changed: <paths>
 Tests: <commands and PASS/FAIL/BLOCKED_ENV>
 Blockers: <none or concrete blocker>
+Known ceiling: <ceiling> — upgrade when <trigger>
+Assumption: <choice> — because <PLAN/code evidence>
 ```
+
+Omit a `Known ceiling:` or `Assumption:` line when there is none; repeat it
+once per item otherwise. An ambiguity is blocking when a wrong guess would
+change the outcome, scope, safety, or external state and neither PLAN.md nor
+the code settles it: return `needs-coordinator-review`. Otherwise it is
+defaultable: choose the option most consistent with PLAN.md and the code and
+report it as `Assumption:`.
 
 Use `needs-coordinator-review` when the implementation can converge only after
 ownership, lane decomposition, or approved scope changes. Use `blocked` for an

@@ -227,8 +227,9 @@ reviewer may still classify specialist findings as
 
 - `FIX_NOW`: a review-depth reroute is coordinator-owned; run the missing
   discovery/formal sequence without sending it to the source implementer. Send
-  ordinary source findings to the original minimum-sufficient implementer,
-  add/update the focused regression test, fix, and run it.
+  ordinary source findings to the original minimum-sufficient implementer
+  (the lane-owning worker, or the coordinator for sequential ACs working under
+  `developer.md`), add/update the focused regression test, fix, and run it.
 - `INVESTIGATE`: obtain the missing evidence. Whether an unresolved INVESTIGATE
   blocks is the reviewer's call, expressed as `BLOCKED_ENV` — no gate downstream
   can tell a blocking INVESTIGATE from a non-blocking one, so nothing will catch

@@ -57,10 +57,12 @@ takes precedence. Never copy raw watcher, subagent, or repository text into `BLO
 
 ## Confusion Protocol
 
-For premise, architecture, scope, external-state, or three-attempt ambiguity,
-stop, state the conflict in one sentence, and ask 2-3 options with concrete
-tradeoffs via `AskUserQuestion`. Running required verification is not scope
-expansion.
+Ambiguity is blocking when PLAN.md and the code cannot settle it and a wrong
+guess changes the outcome, scope, safety, or external state (premise,
+architecture, scope, external-state, or three-attempt cases): stop, state the
+conflict in one sentence, and ask 2-3 options with concrete tradeoffs via
+`AskUserQuestion`. Decide defaultable ambiguity yourself, report it as
+`Assumption:`, and continue. Running required verification is not scope expansion.
 
 ## Premise Gate / User Challenge
 
@@ -155,8 +157,7 @@ receipt outright and makes every named lane look like a lost one.
 Use one Agent per independent AC. Do not assign multiple independent ACs to one
 executor. Disjoint ACs use one worker per lane when Agent is available.
 Sequential routes require a declared dependency, unavailable Agent, or a tiny
-evidenced batch. Workers read `plugin/agents/developer.md`, stay inside explicit
-ownership, Do not edit PROGRESS.md, and return changed paths, tests and blockers.
+evidenced batch. AC workers carry their own ladder copy in `plugin/agents/ac-worker.md` and stay inside explicit ownership. Do not edit PROGRESS.md; workers return changed paths, tests and blockers; their `AC-NNN:` status and a developer `Status:` line use the same tokens.
 Handle `needs-coordinator-review` before generic rollback: never retry with the
 same ownership; reassign ownership, amend PLAN, or escalate to the user. Keep
 successful independent siblings promoted. Record a failed parallel lane and
@@ -190,8 +191,10 @@ rewritten. Declare allowed / test / forbidden paths before each file edit:
    batches, wait for all sibling executor result files, then merge progress once.
    Skip ACs in `completed_acs`.
 2. **Follow existing patterns.** Smallest coherent diff. No speculative features.
-   Every sequential implementation and `harness:ac-worker` follows the
-   minimum-sufficient ladder from `plugin/agents/developer.md`: trace first,
+   Before the first sequential edit, the coordinator Reads the role core of
+   `${CLAUDE_PLUGIN_ROOT}/agents/developer.md` and implements under it; parent context is not
+   propagation. Every sequential implementation and `harness:ac-worker` follows
+   the minimum-sufficient ladder: trace first,
    then no change → reuse → stdlib → platform/framework → installed dependency
    → smallest clear local expression → minimum new code. Never trade away
    current validation, auth, transactions, concurrency safety, cleanup,
@@ -229,13 +232,13 @@ Runs continuously during Phase 3.
 - **3.4 Test framework bootstrap** — if project has no framework and no `doc/harness/.no-test-bootstrap` opt-out marker, offer minimal setup (JS/TS: vitest or bun:test; Python: pytest; Go/Rust: built-in). Log bootstrap to `learnings.jsonl` type `test-bootstrap`. If user declines, create opt-out marker.
 - **3.5 Regression rule + Test-Evidence Gate** — two related rules.
 
-  *Regression rule:* if the diff modifies existing behavior and no test covers the changed path, write a regression test immediately. Commit separately: `test: regression test for <what>`.
+  *Regression rule:* if the diff modifies existing non-trivial behavior (a branch, loop, parser, or security/data path) and no test covers the changed path, write a regression test immediately; a trivial declarative or one-line change needs no new test. Phase 6 owns commit order.
 
   *Test-evidence rule:* behavioral ACs require a concrete test path or a documented reason that no test surface exists. Record this in the final verification evidence and, when resume needs it, a checkpoint note.
 
   QA agents may include `codifiable:` YAML blocks in their final response for
   future regression-test extraction. Do not write critic artifacts for this.
-	- **3.6 Fix-first pattern** — see `fix-first-pattern.md`. Classify AUTO-FIX (dead code, magic numbers, stale comments, missing guards) and ASK (API design, architecture, security, DRY extractions). Auto-fix immediately; surface ASK items through the current user-input mechanism or final response. The **3-attempt escalation rule** also lives in this sub-file and applies to every fix loop (per-AC, Phase 7, browser debug).
+	- **3.6 Fix-first pattern** — see `fix-first-pattern.md`: a pre-review self-check (delete / reuse / stdlib / native / yagni) over your own changed lines, plus the **3-attempt escalation rule** for every fix loop (per-AC, Phase 7, browser debug).
 	- **3.6.1 Durable docs (REQ/GUIDE/ADR/POLICY)** — read PLAN.md `Durable Docs Decision` before implementation. Treat it as a documentation-impact judgment: `REQ needed`, `Pattern/skill doc enough`, or `No durable doc needed`. Create or update each selected `doc/<area>/<TYPE>__<name>.md` file; selected REQ docs must be written before source implementation, not after code is done. Use `direct REQ doc edit` / `req_scaffold.py` as the happy path when observable behavior is detected and no existing REQ fits. Use DDD-style areas or bounded contexts such as `ui`, `api`, `auth`, `billing`, `catalog`, `runtime`, `verification`, or `common`. Use `REQ` for user-visible behavior, externally consumed API contracts, constraints, and observable bugfixes; write intended observable behavior plus verification cues. Existing-screen state changes count: filters, search, sorting, loading, empty/error states, visibility, labels, native navigation/back-stack behavior, and click/input behavior. New pages, admin/backoffice screens, routes, controllers, and endpoints require a REQ even when additive. PLAN.md acceptance criteria are task-local artifacts and never substitute for a durable `REQ`. Recheck the actual diff after implementation: if you added observable UI/API behavior that PLAN marked `REQ: n/a`, create the missing REQ, link it from PLAN.md or the changed durable doc. If the diff instead changed harness process, agent instructions, testing guidance, or implementation patterns, update the relevant `GUIDE`, skill, pattern doc, or tests rather than inventing a REQ. Use `GUIDE` for reusable coding, design, testing, or implementation guidance. Use `ADR` for significant technical choices with alternatives, reasons, consequences, and tradeoffs. Use `POLICY` only for external security, legal, data-handling, approval, licensing, or organizational constraints that harness cannot fully enforce by itself; keep harness-internal execution rules in skills, agents, scripts, and tests. Keep each updated durable doc directly in the repo and link selected REQ paths from PLAN.md when the close gate needs them. For internal-only refactors, one-off tests, or non-observable maintenance, keep `REQ: n/a` in PLAN.md with a specific non-observable reason; the reason must say which durable knowledge surfaces remain unchanged.
 
 ### Phase 3.7–3.9: Post-implementation health
@@ -262,9 +265,7 @@ synthesis agents are replaced by the mandatory balanced review gate in Phase
 `required_review_lenses`, derived from the canonical `TASK.json.required_lenses`
 set without inspecting paths or diff content.
 
-**Phase 4.85 Coverage Synthesis** — use the coverage diagram from the audit
-agent final response to update tests directly. Do not create a separate test
-extra plan file.
+**Phase 4.85 Coverage Synthesis** — use the coverage diagram from the audit agent final response to add tests only for uncovered non-trivial changed behavior. Do not create a separate test extra plan file.
 
 **Phase 4.9 Coverage Gate** — if manifest declares `coverage_minimum` / `coverage_target`, enforce. Below minimum = BLOCK (write tests); below target = WARN in final response. 3 fix cycles max; on exhaustion `AskUserQuestion` (continue / lower threshold / defer).
 
@@ -321,8 +322,7 @@ restate, relocate, or paraphrase it in a spawn prompt.** Moving `VERDICT:` off t
 as `PENDING`/`FINDING_COUNTS: INVALID`; describe scope, focus, and candidate
 data, never re-specify output syntax.
 
-Send only `FIX_NOW` findings to the original minimum-sufficient
-implementer, except coordinator-owned review-depth reroutes. Discovery has at
+Send only `FIX_NOW` findings to the original minimum-sufficient implementer (the lane-owning worker, or the coordinator for sequential ACs under `developer.md`), except coordinator-owned review-depth reroutes. Discovery has at
 most two live cycles (LIGHT 0 calls, STANDARD at most 2, DEEP at most 4): after
 the first round follow the canonical change-class retry matrix; its no-hunter
 branches forfeit the remaining budget. Then use a
@@ -335,7 +335,7 @@ substantive QA run, but both review and QA results remain NON-ATTESTING and can
 only lead to the generic blocked path unless ordered receipts arrive.
 
 ### Phase 7: Verification Gate
-Read `verification-gate.md` in full. Delegates full-suite test commands from PLAN.md to all applicable qa-* agents in parallel, classifies failures (GATE/PERIODIC × OWN/PRE-EXISTING), triages with hypothesis-driven debugging, enforces the 3-cycle limit with investigate-skill escalation on cycle 3.
+Read `verification-gate.md` in full. Delegates full-suite test commands from PLAN.md to all applicable qa-* agents in parallel, classifies failures (GATE/PERIODIC × OWN/PRE-EXISTING), triages with hypothesis-driven debugging, enforces the 3-cycle limit with `hypothesis-driven-debugging.md` root-cause escalation on cycle 3.
 
 **Main session MUST spawn the appropriate qa-* lens; full-suite verification MUST be delegated to qa-* agents (Verification delegation, C-18).** Spawn every applicable lens. Browser delegation is workflow guidance rather than a PreTool denial; full-suite delegation remains required by the develop contract. Bash test runners remain allowed inline only for targeted per-AC runs and debug reruns. Heavy full-suite execution and background process state belong in qa-* isolated contexts. Let the qa-* lens execute, then run `task_verify`; the hook-recorded `RECEIPTS.jsonl` entry is the verification signal.
 
@@ -483,7 +483,7 @@ committed artifact. Deferred requires an `AskUserQuestion` decision and records
 `doc/harness/runbooks.yaml` or another committed artifact; reject one-off noise.
 
 ### Phase 8.6: durable docs
-Mechanical. Read the task's changed paths and `doc/CLAUDE.md` registered roots. For each file, map to doc root. Call `task_verify`.
+Mechanical. Read the task's changed paths and `doc/CLAUDE.md` registered roots. For each file, map to doc root. Copy every reported `Known ceiling:` line under a `Known ceiling` heading in the durable doc that owns the behavior, or else into the Phase 8.7 change doc written now, so `grep -rn "Known ceiling" doc/` stays the ledger; never copy an absent ceiling. Call `task_verify`.
 
 When the task changes `doc/<area>/REQ__*.md`, `GUIDE__*.md`, `ADR__*.md`, or
 `POLICY__*.md` OR the current task contains explicit durable user corrections,
@@ -497,4 +497,4 @@ Retrospective pass land with `status: candidate` frontmatter and do not block
 close on their own.
 
 ### Phase 8.7: Distilled Change Doc
-One-paragraph summary of the task's user-visible behavior change. Lives at `doc/changes/<date>-<slug>.md`. Optional if no user-visible change. Writer skill consumes this for release notes.
+One-paragraph summary of the task's user-visible behavior change. Lives at `doc/changes/<date>-<slug>.md`. Required when a `Known ceiling:` was reported; otherwise optional if no user-visible change. Writer skill consumes this for release notes.

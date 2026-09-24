@@ -1,7 +1,7 @@
 # Hypothesis-Driven Debugging
 
 When verification fails during Phase 7, use structured hypothesis testing instead of
-random fix attempts. This is the methodology from gstack's investigate skill, adapted
+random fix attempts. This is the methodology from gstack's `/investigate` workflow, adapted
 for the develop phase's verification failure loop.
 
 ## When to use

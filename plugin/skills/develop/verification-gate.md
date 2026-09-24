@@ -88,8 +88,8 @@ If tests fail:
 
    | Ownership | Criteria | Action |
    |-----------|----------|--------|
-   | **OWN** (our code broke it) | Failing test covers codepaths modified by this task's diff | Fix within 3-cycle limit. Uses investigate skill if needed. |
-   | **PRE-EXISTING** (was broken before) | Failing test covers code NOT touched by this task, AND the same test fails on the base branch | Note in final response or follow-up task. Do NOT count toward fix limit. Do NOT invoke investigate. |
+   | **OWN** (our code broke it) | Failing test covers codepaths modified by this task's diff | Fix within 3-cycle limit. Use `hypothesis-driven-debugging.md` if needed. |
+   | **PRE-EXISTING** (was broken before) | Failing test covers code NOT touched by this task, AND the same test fails on the base branch | Note in final response or follow-up task. Do NOT count toward fix limit. No root-cause escalation. |
 
    To determine ownership:
    - Get changed files: `git diff --name-only <base>...HEAD`
@@ -197,7 +197,7 @@ This closes the loop: Phase 7 discovers flaky tests, learnings stores them, Phas
      Question: "3 hypotheses failed for <test name>. Am I debugging the right thing?"
      Options:
        - A) Re-examine the failing test itself (maybe the test is wrong)
-       - B) Invoke investigate skill for structured root-cause analysis
+       - B) Run structured root-cause analysis with `hypothesis-driven-debugging.md`
       - C) Skip this test, create a follow-up or mark the AC deferred with reason
      Context:
        - Hypotheses tested: <list>
@@ -239,7 +239,7 @@ AskUserQuestion:
   Question: "WTF score: <X>/10 — I'm likely chasing symptoms, not root cause. How should we proceed?"
   Options:
     - A) Re-examine from scratch with fresh eyes (re-read error, ignore prior assumptions)
-    - B) Invoke investigate skill for structured root-cause analysis
+    - B) Run structured root-cause analysis with `hypothesis-driven-debugging.md`
     - C) Skip this test, create a follow-up or mark the AC deferred with reason
 ```
 Before asking, do this prep:
@@ -247,7 +247,7 @@ Before asking, do this prep:
 2. Check: am I fixing the right file? The right function? The right module?
 3. Consider: is the test itself wrong? (Wrong assertion, wrong setup, wrong mock.)
 4. If after re-examination the fix is obvious: proceed to cycle 3.
-5. If not obvious: invoke investigate skill for cycle 3 instead of guessing.
+5. If not obvious: run the `hypothesis-driven-debugging.md` protocol for cycle 3 instead of guessing.
 
 Log WTF score:
 ```bash
@@ -256,26 +256,24 @@ echo '{"ts":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"'","ty
 
 Maximum 3 fix cycles for T1/T2. After 2 cycles with persistent failures, escalate:
 
-## Step 2: Investigate escalation (cycle 3)
+## Step 2: Root-cause escalation (cycle 3)
 
-If 2 fix cycles fail to resolve T1/T2 failures, invoke the investigate skill for structured root-cause analysis:
+If 2 fix cycles fail to resolve T1/T2 failures, run the `hypothesis-driven-debugging.md` protocol from its
+first step, starting from the failing test names, the T1/T2 triage, and a
+summary of the prior fix attempts.
 
-```
-Skill("investigate", "Verification failure in task <task_id>: <failing test names>. Triage: <T1/T2>. Prior fix attempts: <summary of what was tried>.")
-```
-
-Use the investigate results for the final (3rd) fix attempt. If still failing: use `AskUserQuestion`:
+Use its confirmed root cause for the final (3rd) fix attempt. If still failing: use `AskUserQuestion`:
 ```
 AskUserQuestion:
   Question: "All 3 fix cycles exhausted for <test name>. How should we proceed?"
   Options:
     - A) Close task with DONE_WITH_CONCERNS, mark the AC deferred or create a follow-up
-    - B) Create a new investigate task for this specific failure
+    - B) Create a follow-up task to investigate this specific failure
     - C) Extend fix budget (allow 2 more cycles)
   Context: <triage table summary>
 ```
 
-Include the triage table in the final response or follow-up task. Note whether investigate was invoked.
+Include the triage table in the final response or follow-up task. Note whether root-cause escalation ran.
 
 ## Step 2.5: Plan Verification Auto-Run
 

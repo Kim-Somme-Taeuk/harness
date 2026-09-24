@@ -42,9 +42,11 @@ takes precedence. Never copy raw watcher, subagent, or repository text into `BLO
 
 ## Confusion Protocol
 
-For premise, architecture, scope, external-state, or three-attempt ambiguity,
-stop, state the conflict in one sentence, and ask 2-3 numbered options with
-concrete tradeoffs. Required verification is not scope expansion.
+Ambiguity is blocking when PLAN.md and the code cannot settle it and a wrong
+guess changes the outcome, scope, safety, or external state (premise,
+architecture, scope, external-state, or three-attempt cases): stop, state the
+conflict in one sentence, and ask 2-3 numbered options with concrete tradeoffs.
+Decide defaultable ambiguity yourself, report it as `Assumption:`, and continue. Required verification is not scope expansion.
 
 ## Premise Gate / User Challenge
 
@@ -193,7 +195,7 @@ Runs continuously during Phase 3.
 - **3.4 Test framework bootstrap** — if project has no framework and no `doc/harness/.no-test-bootstrap` opt-out marker, offer minimal setup (JS/TS: vitest or bun:test; Python: pytest; Go/Rust: built-in). Log bootstrap to `learnings.jsonl` type `test-bootstrap`. If user declines, create opt-out marker.
 - **3.5 Regression rule + Test-Evidence Gate** — two related rules.
 
-  *Regression rule:* if the diff modifies existing behavior and no test covers the changed path, write a regression test immediately. Commit separately: `test: regression test for <what>`.
+  *Regression rule:* if the diff modifies existing non-trivial behavior (a branch, loop, parser, or security/data path) and no test covers the changed path, write a regression test immediately; a trivial declarative or one-line change needs no new test. Phase 6 owns commit order.
 
   *Test-evidence rule:* behavioral ACs require a concrete test path or a documented reason that no test surface exists. Record this in final verification evidence and, when resume needs it, a checkpoint note.
 
@@ -202,7 +204,7 @@ Runs continuously during Phase 3.
   PYTHONDONTWRITEBYTECODE=1 python3 ${HARNESS_PLUGIN_ROOT}/scripts/qa_codifier.py --task-dir <task_dir> 2>/dev/null || true
   ```
   Parses `codifiable:` YAML blocks emitted by the QA pass and stages validated tests to `tests/regression/<sanitized-task-id>/`. Same script as Claude side; runtime-agnostic.
-	- **3.6 Fix-first pattern** — read `${HARNESS_PLUGIN_ROOT}/internal-skills/develop/fix-first-pattern.md`. Classify AUTO-FIX (dead code, magic numbers, stale comments, missing guards) and ASK (API design, architecture, security, DRY extractions). Auto-fix immediately; surface ASK items through the current user-input mechanism or final response. The **3-attempt escalation rule** in that sub-file applies to every fix loop (per-AC, Phase 7, debug).
+	- **3.6 Fix-first pattern** — read `${HARNESS_PLUGIN_ROOT}/internal-skills/develop/fix-first-pattern.md`. It holds a pre-review self-check (delete / reuse / stdlib / native / yagni) over your own changed lines, plus the **3-attempt escalation rule** for every fix loop (per-AC, Phase 7, debug).
 	- **3.6.1 Durable docs (REQ/GUIDE/ADR/POLICY)** — read PLAN.md `Durable Docs Decision` before implementation. Treat it as a documentation-impact judgment: `REQ needed`, `Pattern/skill doc enough`, or `No durable doc needed`. Create or update each selected `doc/<area>/<TYPE>__<name>.md` file; selected REQ docs must be written before source implementation, not after code is done. Use a direct `doc/<area>/REQ__*.md` update or `req_scaffold.py` as the happy path when observable behavior is detected and no existing REQ fits. Use DDD-style areas or bounded contexts such as `ui`, `api`, `auth`, `billing`, `catalog`, `runtime`, `verification`, or `common`. Use `REQ` for user-visible behavior, externally consumed API contracts, constraints, and observable bugfixes; write intended observable behavior plus verification cues. Existing-screen state changes count: filters, search, sorting, loading, empty/error states, visibility, labels, native navigation/back-stack behavior, and click/input behavior. New pages, admin/backoffice screens, routes, controllers, and endpoints require a REQ even when additive. PLAN.md acceptance criteria are task-local artifacts and never substitute for a durable `REQ`. Recheck the actual diff after implementation: if you added observable UI/API behavior that PLAN marked `REQ: n/a`, create the missing REQ, link it from PLAN.md or the changed durable doc. If the diff instead changed harness process, agent instructions, testing guidance, or implementation patterns, update the relevant `GUIDE`, skill, pattern doc, or tests rather than inventing a REQ. Use `GUIDE` for reusable coding, design, testing, or implementation guidance. Use `ADR` for significant technical choices with alternatives, reasons, consequences, and tradeoffs. Use `POLICY` only for external security, legal, data-handling, approval, licensing, or organizational constraints that harness cannot fully enforce by itself; keep harness-internal execution rules in skills, agents, scripts, and tests. Keep each updated durable doc directly in the repo and link selected REQ paths from PLAN.md when the close gate needs them. For internal-only refactors, one-off tests, or non-observable maintenance, keep `REQ: n/a` in PLAN.md with a specific non-observable reason; the reason must say which durable knowledge surfaces remain unchanged.
 
 ### Phase 3.7-3.9: Post-implementation health
@@ -227,9 +229,7 @@ inputs. The generic adversarial, line-count Red Team, and synthesis passes are
 replaced by the independent review gate after the final checkpoint. Canonical
 code/security routing comes from the lenses declared in `TASK.json`.
 
-**Phase 4.85 Coverage Synthesis** — use the coverage diagram from the audit
-agent final response to update tests directly. Do not create a separate test
-extra plan file.
+**Phase 4.85 Coverage Synthesis** — use the coverage diagram from the audit agent final response to add tests only for uncovered non-trivial changed behavior. Do not create a separate test extra plan file.
 
 **Phase 4.9 Coverage Gate** — if manifest declares `coverage_minimum` / `coverage_target`, enforce. Below minimum = BLOCK (write tests); below target = WARN in final response. 3 fix cycles max; on exhaustion conversational ask (continue / lower threshold / defer).
 
@@ -283,7 +283,7 @@ Within one live attempt depth can only increase (`LIGHT < STANDARD < DEEP`); aft
 The formal agent definition owns its verdict contract and the hunter definition owns its output
 contract: never restate, relocate, or paraphrase either in spawn prompts. Await every required
 formal reviewer. `wait_agent` coordinates only, and `list_agents` do not author receipts; neither is evidence. Watcher-owned `RECEIPTS.jsonl` entries must show PASS for
-each declared lens in the current task receipt run. Review-depth reroute FIX_NOW is coordinator-owned; send only ordinary source FIX_NOW to the implementer. Discovery has an ephemeral hard ceiling of two cycles: LIGHT 0 calls, STANDARD at most 1 per cycle/2 total, DEEP at most 2 per cycle/4 total. After cycle one, batch verified fixes; executable behavior recomputes with the prior depth floor and reruns its selected set, while test-logic-only reruns contract/test only. Docs/HEAD/test-count/command text uses deterministic checks only and checkpoint/receipt wording uses task verification only; both no-hunter branches forfeit the remaining budget. After cycle two or that forfeit, select or retain DEEP, spawn no hunter, and use one fresh formal reviewer on final diff plus prior remediation evidence with reason `discovery budget exhausted`; on recovery when prior count is unavailable select or retain DEEP and use `discovery budget unknown and treated as exhausted`. Rerun `review-security` only for security-relevant source/evidence changes, independently with no hunter payload. Depth/budget add no task, receipt, or review-detail field. Inline self-review is no fallback.
+each declared lens in the current task receipt run. Review-depth reroute FIX_NOW is coordinator-owned; send only ordinary source FIX_NOW to the implementer (the lane-owning worker, or the coordinator for sequential ACs under `developer.md`). Discovery has an ephemeral hard ceiling of two cycles: LIGHT 0 calls, STANDARD at most 1 per cycle/2 total, DEEP at most 2 per cycle/4 total. After cycle one, batch verified fixes; executable behavior recomputes with the prior depth floor and reruns its selected set, while test-logic-only reruns contract/test only. Docs/HEAD/test-count/command text uses deterministic checks only and checkpoint/receipt wording uses task verification only; both no-hunter branches forfeit the remaining budget. After cycle two or that forfeit, select or retain DEEP, spawn no hunter, and use one fresh formal reviewer on final diff plus prior remediation evidence with reason `discovery budget exhausted`; on recovery when prior count is unavailable select or retain DEEP and use `discovery budget unknown and treated as exhausted`. Rerun `review-security` only for security-relevant source/evidence changes, independently with no hunter payload. Depth/budget add no task, receipt, or review-detail field. Inline self-review is no fallback.
 Normally receipt-backed review PASS precedes Phase 7. Under the Missing receipt
 policy, actual reviewer PASS finals permit one substantive QA run, but review
 and QA remain NON-ATTESTING and can only lead to the generic blocked path unless
@@ -467,7 +467,7 @@ conversational AskUserQuestion) and records `user_decision:` plus
 ### Phase 8.6: durable docs
 
 Read the PLAN targets and durable-doc decision. Update every selected durable
-surface, then call `task_verify`.
+surface. Copy every reported `Known ceiling:` line under a `Known ceiling` heading in the durable doc that owns the behavior, or else into the Phase 8.7 change doc written now, so `grep -rn "Known ceiling" doc/` stays the ledger; never copy an absent ceiling. Then call `task_verify`.
 
 When the task changes `doc/<area>/REQ__*.md`, `GUIDE__*.md`, `ADR__*.md`, or
 `POLICY__*.md`, spawn the documentation-review subagent after durable docs. It
@@ -476,7 +476,7 @@ vague or missing observable behavior is a FAIL, not a warning.
 
 ### Phase 8.7: Distilled Change Doc
 
-One-paragraph summary of the task's user-visible behavior change. Lives at `doc/changes/<date>-<slug>.md`. Optional if no user-visible change.
+One-paragraph summary of the task's user-visible behavior change. Lives at `doc/changes/<date>-<slug>.md`. Required when a `Known ceiling:` was reported; otherwise optional if no user-visible change.
 
 ### Phase 9: Final verification, install, close, and response
 

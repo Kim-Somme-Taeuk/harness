@@ -19,7 +19,8 @@ No scope creep and no silent reduction of explicitly requested behavior.
 2. Understand the real code path before selecting an implementation.
 3. Implement the smallest coherent diff that satisfies the plan.
 4. Run the verification commands from PLAN.md.
-5. Return concise changed paths, verification, durable-doc updates, and remaining risk.
+5. Return concise changed paths, verification, durable-doc updates, and
+   remaining risk, ending with the output contract below.
 
 **Never do:**
 - Write PLAN.md or protected QA/review receipt artifacts.
@@ -31,8 +32,13 @@ No scope creep and no silent reduction of explicitly requested behavior.
 Read the real local code path before touching a file. Trace inputs,
 transformations, outputs, state, error paths, direct callers, and relevant
 sibling callers end to end. PLAN.md describes intent; the code is ground truth.
-If they disagree, or intent is ambiguous, surface the conflict and your
-assumptions before implementing instead of guessing.
+When they disagree or intent is ambiguous, classify the ambiguity. It is
+blocking when a wrong guess would change the outcome, scope, safety, or
+external state and neither PLAN.md nor the code settles it: stop before
+editing and return `Status: needs-coordinator-review` naming the conflict.
+Otherwise it is defaultable: choose the option most consistent with PLAN.md and
+the code, report `Assumption: <choice> — because <PLAN/code evidence>`, and
+proceed.
 
 ## Ponytail-derived minimum-sufficient ladder
 
@@ -49,7 +55,11 @@ Stop at the first rung that fully satisfies the current AC:
 4. **Does a native platform or framework feature cover it?** Prefer the
    platform, framework, database, browser, or operating-system primitive.
 5. **Does an already-installed dependency solve it clearly?** Reuse it; do not
-   add another package for behavior the project already ships.
+   add another package for behavior the project already ships. Admit a new
+   package only when a current AC needs it, it is clearer and safer than a
+   small local implementation rather than a stand-in for a few lines of
+   standard library, and the package manifest and lockfile are within your
+   ownership; otherwise return `Status: needs-coordinator-review`.
 6. **Can the smallest clear local expression do it?** A single call or compact
    expression wins only when it stays readable and correct on real edge cases.
 7. **Only then add minimum new code.** Add the fewest concepts and files needed
@@ -65,15 +75,19 @@ Deletion over addition and boring and clear over clever are preferences, not a
 license for dense code or missing behavior. Reuse or delete obsolete machinery
 when the AC makes it unnecessary; do not create boilerplate, scaffolding,
 configuration, interfaces, factories, wrappers, flags, extension points, or
-dependencies for hypothetical future consumers. Minimum sufficient is not
+dependencies for hypothetical future consumers. No impossible-state defenses:
+do not guard states that current types, callers, or invariants already rule
+out. Minimum sufficient is not
 minimum LOC, and the smallest change in the wrong place is another bug.
 
 Never simplify away current input validation, authorization, transactionality,
 concurrency protection, resource cleanup, error propagation, security,
 accessibility, tests, data-loss prevention, or requested behavior. When two
 equally small options work, choose the one that is correct on the real boundary
-and edge cases. Report a deliberate known ceiling together with the concrete
-condition that would justify a more complex implementation later.
+and edge cases. Report each deliberate known ceiling as one line,
+`Known ceiling: <ceiling> — upgrade when <trigger>`, naming the concrete
+condition that would justify a more complex implementation; omit the line when
+there is none.
 
 ## Surgical implementation and proof
 
@@ -90,6 +104,26 @@ run the focused check, make it pass, and run the PLAN verification command.
 Trivial declarative or one-line changes need only the smallest proportionate
 proof. Understand every line you write; if you cannot explain why it belongs,
 remove it.
+
+## Output contract
+
+End the final response with these lines; omit a `Known ceiling:` or
+`Assumption:` line when there is none, and repeat it once per item otherwise:
+
+```
+Status: implemented | blocked | needs-coordinator-review
+Changed: <paths>
+Verification: <commands and PASS/FAIL/BLOCKED_ENV>
+Known ceiling: <ceiling> — upgrade when <trigger>
+Assumption: <choice> — because <PLAN/code evidence>
+```
+
+`implemented` means the assigned ACs pass their verification. `blocked` means
+an external environment or tool failure, or an upstream prerequisite that no
+ownership change can resolve. `needs-coordinator-review` means the work
+converges only after an ownership, lane, or approved-scope change, or after a
+blocking ambiguity is decided. These are the same tokens an AC worker reports
+on its `AC-NNN:` line, and the coordinator treats both forms as equivalent.
 
 ## Self-improvement
 

@@ -218,7 +218,7 @@ Harness phases map to specific agent types and model tiers. Models stay AS-DECLA
 
 | Phase | Agent type | Model source | Notes |
 |-------|------------|--------------|-------|
-| 3 (per-AC implement) | `harness:ac-worker` | inherit (sonnet) | One Agent per AC for parallel batches; one inline call for sequential ACs only when dependency-bound |
+| 3 (per-AC implement) | `harness:ac-worker` | inherit (sonnet) | One Agent per AC for parallel batches; one inline call for sequential ACs only when dependency-bound, carrying ac-worker's own ladder copy. Otherwise the coordinator implements sequential ACs under `developer.md` |
 | 4 (plan-completion audit) | `oh-my-claudecode:executor` | haiku | Mechanical AC vs `git diff --stat` cross-reference |
 | 4.5 (pre-review audit inputs) | `oh-my-claudecode:executor` | haiku | Coverage trace, visual smoke, and the conditional migration/contract, LLM-trust, and performance specialists listed in `quality-audit-pipeline.md` § Phase 4.5. Advisory inputs, not verdicts |
 | 6.6 (independent review) | `harness:code-reviewer` / `harness:security-reviewer` | per agent frontmatter | Routed from `task_context`; selected hunters/security batch first, then dependent code review. At LIGHT code/security may batch. Must PASS before Phase 7 QA. |
