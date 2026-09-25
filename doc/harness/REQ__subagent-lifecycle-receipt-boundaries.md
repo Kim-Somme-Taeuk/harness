@@ -49,7 +49,7 @@ gate.
 ### Killing an agent leaves an orphan `started` row
 
 Stopping a running subagent leaves its `started` row with no completion. The
-stop gate reads those rows as live background work and reports the agent as
+stop gate (removed 2026-09-23; historical) read those rows as live background work and reported the agent as
 still active — in one observed case for ~1450 seconds after it had been killed —
 until `HARNESS_BACKGROUND_STALE_SECS` (default 1800) ages it out.
 

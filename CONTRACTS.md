@@ -286,6 +286,13 @@ picks by what the stream shows and copies verbatim. Neither pair applies before
 a lens has actually run and returned results: an unrun lens is not a blocker.
 See `doc/harness/REQ__gate-does-not-demand-impossible-evidence.md`.
 
+**Parking clause:** `task_blocked` and the `BLOCKED.md` it writes are the
+durable record of an unfinished task. Parking is not completion: it grants no
+PASS, and does not satisfy or bypass C-04. The task does not close: it stays
+in `blocked` status, which `task_close` refuses, until plain `task_start`
+resumes it with its run and receipts preserved. See
+`doc/harness/REQ__task-blocked-is-the-park-record.md`.
+
 **Why:** 회고 #1 silent-scope-kill — the now-removed Stop hook's "AskUserQuestion 으로 cancel 묻기" 안내가 모호한 종결 지시를 task cancel 로 변환시키던 메커니즘 제거. Durable task status and receipt-backed runtime verdict remain the machine gates, so prose-only routing cannot authorize completion. 모델 회귀로 인한 조기 종결 시도도 runtime_verdict gate 가 무력화.
 Receipt-backed verification closes the self-authored verdict loophole: the
 close signal is anchored to a hook-observed subagent start for the current task,

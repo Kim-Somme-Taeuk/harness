@@ -11,6 +11,11 @@
   to the hook-owned `started` receipt for the same runtime and run, so
   harness-only installs record completions again. See
   `doc/changes/2026-09-25-claude-stop-binds-to-hook-owned-start.md`.
+- **task_blocked kept as the park record** — the planned deletion of
+  `task_blocked` / `BLOCKED.md` is withdrawn now that the Claude Stop hook is
+  gone. C-17 gains a Parking clause (park is not completion, no PASS, C-04
+  still gates close, resume with `task_start`); existing projects get it on
+  re-setup. See `doc/changes/2026-09-25-keep-task-blocked-docs-alignment.md`.
 - **One plan reviewer, no develop completion audit** — full planning runs a
   single Phase 1 Plan Review (CEO premise/scope + Eng architecture/tests, 900s)
   with a UI-states/journey/accessibility checklist when `ui_scope` is true; the

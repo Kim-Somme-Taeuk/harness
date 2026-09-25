@@ -137,7 +137,7 @@ design surface.
 `Status: captured` in HANDOFF triggered "missing Commit-backed Learnings"
 even though the section existed. The actual rule was "captured items must
 name a commit-eligible repo artifact path". Cost: one rewrite cycle.
-`stop_gate._next_action_for_missing` already maps these — the close-gate
+`stop_gate._next_action_for_missing` (deleted 2026-09-23 with the Stop hook) already mapped these — the close-gate
 should reuse the same phrasing instead of "missing".
 
 ### task_blocked input validation rejects valid payloads

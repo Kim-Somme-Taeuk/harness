@@ -53,10 +53,10 @@ All timestamps are 2026-04-11, UTC. Elapsed = wall time from first to last seria
 > **Historical (2026-09-23):** the Claude `Stop` hook no longer registers `stop_gate.py`;
 > this section describes behavior while it was registered.
 
-`stop_gate.py` runs on the **main session** stop hook. It reads each task's exact `TASK.json`
-and blocks the main-session stop when open tasks exist. It has no mechanism to inject into or
-affect subagent sessions — subagents run with their own stop hooks via `subagent_stop_gate.py`
-(a separate script), and background agents are not subject to the coordinator's stop hook at
+`stop_gate.py` ran on the **main session** stop hook. It read each task's exact `TASK.json`
+and blocked the main-session stop when open tasks existed. It had no mechanism to inject into or
+affect subagent sessions — subagents ran with their own stop hooks via `subagent_stop_gate.py`
+(a separate script, since removed), and background agents were not subject to the coordinator's stop hook at
 all. The repeated "HARNESS STOP GATE: open tasks remain" messages in the coordinator session
 during the stall window were the coordinator's own stop hook firing, not a causal factor in
 the background agent stalls.

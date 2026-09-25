@@ -275,6 +275,12 @@ no receipt of any kind, one for a run whose receipts lack a required
 completion. Copy the applicable pair from there; never keep a second copy in
 prose, and never interpolate diagnostics.
 
+**Parking clause:** `task_blocked` and the `BLOCKED.md` it writes are the
+durable record of an unfinished task. Parking is not completion: it grants no
+PASS, and does not satisfy or bypass C-04. The task does not close: it stays
+in `blocked` status, which `task_close` refuses, until plain `task_start`
+resumes it with its run and receipts preserved.
+
 **Why:** An ambiguous "stop here" was previously convertible into a task
 cancel, silently discarding scope. Durable task status and a receipt-backed
 runtime verdict remain the machine gates, so prose alone cannot authorize

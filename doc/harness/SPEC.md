@@ -171,8 +171,9 @@ session marker and run, and a stable matching current-run Claude transcript
 whose recorded start attachment supplies the agent type before emitting the
 single-use inferred-start/completed pair in one task
 transaction. Missing, foreign, stale, replayed, aliased, untrusted, or unbound
-stops create no authority. The hook and Stop gate derive lifecycle state from
-the current task's unified receipts and never maintain a background registry
+stops create no authority. The hook (and, until its removal on 2026-09-23, the
+Claude Stop gate) derives lifecycle state from
+the current task's unified receipts and never maintains a background registry
 or registry lock. The official adapter does not expose a generic receipt-append
 tool, but a hostile shell can invoke shipped lifecycle scripts directly; that
 accepted exposure is outside Harness's integrity boundary.

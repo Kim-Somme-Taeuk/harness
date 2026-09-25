@@ -183,7 +183,7 @@ legacy `.active` 가 떠나는 태스크를 가리키기만 하면 세션 조건
 읽히지 않는다는 것은 맞지만, `run_id` 는 읽힌다.)
 
 `write_active_marker` 는 이 세션의 마커 파일만 만드는 것이 아니라 단일 값인
-legacy `.active` 파일도 다시 쓰고, stop gate 가 그것을 읽는다. 그래서 조건이
+legacy `.active` 파일도 다시 쓰고, (2026-09-23 삭제 전까지) stop gate 가 그것을 읽었다. 그래서 조건이
 하나라도 빠지면 *읽기*가 write focus 를 훔친다:
 
 - 상태 확인이 없으면 park 된 태스크를 읽기만 해도 focus 가 그리로 간다.
