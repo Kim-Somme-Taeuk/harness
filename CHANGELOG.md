@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **No dead execution-mode setting** — setup no longer writes
+  `execution_mode_default` to the manifest; nothing read it. Execution mode,
+  planning procedure, and review depth stay per-task decisions; there is no
+  install-time loop-strength setting.
 - **Suite survives another interpreter's bytecode** — `tests/conftest.py`
   prunes `plugin/**/__pycache__` before collection and writes no bytecode, so a
   cache left by another CPython build sharing the `cpython-312` tag no longer

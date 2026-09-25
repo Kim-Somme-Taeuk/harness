@@ -17,7 +17,7 @@ task when the project character has drifted (re-anchor).
 
 Direct and brief. Ask Q1 only when the user has not already supplied a project
 purpose. Ask Q5 only when verification commands or QA mode cannot be detected.
-Never ask Q2-Q4; apply their fixed defaults silently.
+Never ask Q2 or Q4; apply their fixed defaults silently. Q3 is retired.
 
 ## Questions
 
@@ -39,20 +39,18 @@ AskUserQuestion:
 **Maps to:** `doc/common/CLAUDE.md` frontmatter `summary:` field.
 Also seeds `doc/common/REQ__project__primary-goals.md` first paragraph.
 
-### Q2–Q4 — Fixed operating defaults (never ask)
+### Q2 and Q4 — Fixed operating defaults (never ask)
 
-Record these values as if selected during every setup:
+Record these values as if selected during every setup. (Q3 "status quo" was
+retired 2026-09-26: it only fed a manifest field that no code read.
+Execution mode, planning procedure, and review depth are chosen per task.)
 
 - Q2 audience: `D` — public library/SaaS
-- Q3 status quo: `B` — standard plan, review, merge
 - Q4 wedge: `C` — full task start → plan → develop → QA → close loop with automatic internal review and verification
 
 **Maps to:**
 - Q2 (Audience) → `doc/harness/manifest.yaml` `audience:` (신규 필드).
   Design-review 스킬의 default persona 판단에 사용.
-- Q3 (Status quo) → `doc/harness/manifest.yaml` `execution_mode_default:`.
-  기본값은 `standard`; 명시적 one-shot no-plan 작업만 `micro`를 사용한다.
-  compact/full planning은 persisted execution mode가 아니라 plan 절차 선택이다.
 - Q4 (Wedge) →
   - `manifest.yaml` `maintenance_default:`
   - 훅 스파서시티(hooks.json 항목 수) 설정에 힌트
@@ -80,7 +78,7 @@ AskUserQuestion:
 
 ### Step 1 — Write answers atomically
 
-Before any permanent file write, dump all five answers to
+Before any permanent file write, dump the four answers (Q1, Q2, Q4, Q5) to
 `doc/harness/.interview-answers.json` (tmp). This is the single
 authoritative record. If the setup crashes mid-apply, this file lets a later
 setup or active harness task replay the config without re-asking the user.
@@ -94,7 +92,6 @@ setup or active harness task replay the config without re-asking the user.
   "answers": {
     "q1_purpose":    { "value": "<str|null>", "skipped": false },
     "q2_audience":   { "value": "D", "value_detail": "public library/SaaS", "skipped": false, "source": "setup_default" },
-    "q3_status_quo": { "value": "B", "value_detail": "standard plan-review-merge", "skipped": false, "source": "setup_default" },
     "q4_wedge":      { "value": "C", "skipped": false, "source": "setup_default" },
     "q5_verify":     { "value": "<A|B|C|D|E|null>", "verify_commands": [], "skipped": false }
   }
@@ -120,9 +117,9 @@ In this order (each uses Edit/Write with the appropriate gate):
 
 1. `doc/common/CLAUDE.md` — insert `summary:` (Q1) if missing
 2. `doc/common/REQ__project__primary-goals.md` — seed with Q1 + Q2
-3. `doc/harness/manifest.yaml` — set `audience`, `execution_mode_default`,
+3. `doc/harness/manifest.yaml` — set `audience`,
    `maintenance_default`, `verify_commands`, `qa.browser_qa_supported` per
-   Q2-Q5
+   Q2, Q4 and Q5
 ### Step 3 — Durable project memory
 
 Do not append a full interview transcript. Persist only the durable outcomes:
@@ -138,7 +135,7 @@ echo '{"ts":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","type":"operational","source":"
 
 ## Re-interview flow (continuous maintenance)
 
-When project character drifts, re-open only Q1 and Q5. Reapply Q2-Q4
+When project character drifts, re-open only Q1 and Q5. Reapply Q2 and Q4
 from the fixed setup defaults without presenting them as questions.
 
 ## Safety invariants
@@ -148,4 +145,4 @@ from the fixed setup defaults without presenting them as questions.
 - Every manifest write goes through Edit on specific fields, never a
   bulk Write that could clobber other keys.
 - If the user skips Q1 or Q5, record `null` for that question. Never replace
-  the fixed Q2-Q4 defaults with `null`.
+  the fixed Q2 and Q4 defaults with `null`.
