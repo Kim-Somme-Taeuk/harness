@@ -1,7 +1,7 @@
 ---
 tags: [harness, verification, guards, install, contracts, testing]
 summary: 가드는 그것이 실행되는 환경에서 실행되어 검증되기 전까지 가드가 아니다. 그리고 커버리지 주장 자체도 기계로 확인된다 — 설치 트리 삭제 감지, 설치 후 런타임 스모크, 문서가 지목한 테스트 id 검증.
-updated: 2026-09-10
+updated: 2026-09-26
 freshness: current
 invalidated_by_paths:
   - tests/conftest.py
@@ -51,14 +51,27 @@ test of that branch.
 
 ### 2. A test run cannot silently remove a file from an installed runtime
 
-`tests/conftest.py::install_trees_lose_no_files` inventories the three trees a
-harness runtime executes from — `~/.claude/harness-dev`, `~/.codex/harness`, and
-the versioned Codex plugin cache entry
+`tests/conftest.py::install_trees_lose_no_files` inventories the four trees a
+harness runtime executes from — `~/.claude/harness-dev`, the Claude plugin
+cache `~/.claude/plugins/cache/harness/harness` (the tree Claude Code actually
+runs hooks from; one version directory per payload since 2026-09-26),
+`~/.codex/harness`, and the versioned Codex plugin cache entry
 `~/.codex/plugins/cache/harness/harness`, which is the tree Codex actually
 loads and whose bytecode `install.py` prunes — at session start and again at
 session end (path + size), and fails the run naming every path that
-disappeared. Sibling marketplaces under `~/.codex/plugins/cache` belong to other
-tools and are out of scope; watching them would cost more than it protects.
+disappeared. Sibling marketplaces under `~/.claude/plugins/cache` and
+`~/.codex/plugins/cache` belong to other tools and are out of scope; watching
+them would cost more than it protects.
+
+The session-start inventory skips top-level version directories that already
+hold a `.orphaned_at` file: the Claude CLI marks superseded plugin-cache
+versions that way and deletes them later, which is not the run's doing. The
+session-end inventory walks everything, because an install during the run
+orphans the live version with its files still present; skipping it there would
+report the whole live version as removed. Known limits: a set
+`CLAUDE_CONFIG_DIR` moves the Claude cache away from the watched literal root,
+and a directory orphaned mid-run and garbage-collected before the run ends
+would be reported (orphans have been observed to survive more than 7 hours).
 It is the detection layer behind two prevention layers —
 `install._reject_real_install_root_under_test` and the `HARNESS_DEST` default
 fixture — and must catch a removal even when both are bypassed, because a test

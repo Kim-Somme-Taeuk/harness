@@ -218,3 +218,119 @@ def test_the_documented_snapshot_matches_the_fixture(tmp_path):
 
     assert str(scripts / "_lib.py") in run(f"rm {scripts / '_lib.py'}")
 
+
+
+# --- The Claude plugin cache (2026-09-26) ----------------------------------
+#
+# Claude Code runs hooks from `~/.claude/plugins/cache/harness/harness/<version>`.
+# Each payload change installs a new version directory; the CLI writes
+# `.orphaned_at` into the superseded one and deletes it later. Only the *before*
+# inventory skips already-orphaned versions; the after inventory walks all.
+
+CLAUDE_CACHE = Path(".claude/plugins/cache/harness/harness")
+
+
+def _cache_version(cache: Path, name: str, *, orphaned: bool = False) -> Path:
+    version = cache / name
+    (version / "scripts").mkdir(parents=True)
+    (version / "scripts" / "_lib.py").write_text("x = 1\n", encoding="utf-8")
+    if orphaned:
+        (version / ".orphaned_at").write_text("1790350343983", encoding="utf-8")
+    return version
+
+
+def _fixture_removals(root: Path, mutate) -> list[str]:
+    before = {str(root): conftest._install_tree_inventory(str(root), exclude_orphaned=True)}
+    mutate()
+    return conftest._install_tree_removals(before)
+
+
+def _snippet_removals(tmp_path: Path, home: Path, mutation: str) -> str:
+    script = _step_0_5_snippet().replace("<verification commands>", mutation)
+    script = script.replace("/tmp/install-", f"{tmp_path}/install-")
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"BASH_ENV", "ENV"}}
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={**env, "HOME": str(home)}, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
+def test_the_claude_plugin_cache_is_watched():
+    import pwd
+
+    home = pwd.getpwuid(os.getuid()).pw_dir
+    roots = conftest._default_install_tree_roots()
+    assert os.path.join(home, str(CLAUDE_CACHE)) in roots
+    assert os.path.join(home, ".claude", "plugins", "cache") not in roots
+
+
+def test_a_version_orphaned_before_the_run_may_disappear(tmp_path):
+    home = tmp_path / "home"
+    cache = home / CLAUDE_CACHE
+    stale = _cache_version(cache, "2.3.0-haaaaaaaa", orphaned=True)
+    live = _cache_version(cache, "2.3.0-hbbbbbbbb")
+
+    import shutil
+    assert _fixture_removals(cache, lambda: shutil.rmtree(stale)) == []
+    stale = _cache_version(cache, "2.3.0-haaaaaaaa", orphaned=True)
+    assert _snippet_removals(tmp_path, home, f"rm -rf {stale}") == ""
+
+    # A real removal from the live version is still reported by both.
+    lib = live / "scripts" / "_lib.py"
+    removed = _fixture_removals(cache, lambda: lib.unlink())
+    assert any(str(lib) in line for line in removed), removed
+    lib.write_text("x = 1\n", encoding="utf-8")
+    assert str(lib) in _snippet_removals(tmp_path, home, f"rm {lib}")
+
+
+def test_a_version_orphaned_during_the_run_is_not_a_removal(tmp_path):
+    """An install mid-run orphans the live version with its files intact."""
+    home = tmp_path / "home"
+    cache = home / CLAUDE_CACHE
+    live = _cache_version(cache, "2.3.0-hcccccccc")
+    marker = live / ".orphaned_at"
+
+    assert _fixture_removals(cache, lambda: marker.write_text("1", encoding="utf-8")) == []
+    marker.unlink()
+    assert _snippet_removals(tmp_path, home, f"printf 1 > {marker}") == ""
+
+
+def test_dot_dirs_and_root_level_files_get_the_same_verdict(tmp_path):
+    home = tmp_path / "home"
+    cache = home / CLAUDE_CACHE
+    _cache_version(cache, "2.3.0-hdddddddd")
+    dot = cache / ".staging" / "keep.txt"
+    dot.parent.mkdir(parents=True)
+    dot.write_text("k", encoding="utf-8")
+    top = cache / "index.json"
+    top.write_text("{}", encoding="utf-8")
+
+    for path in (dot, top):
+        removed = _fixture_removals(cache, path.unlink)
+        assert any(str(path) in line for line in removed), (path, removed)
+        path.write_text("x", encoding="utf-8")
+        assert str(path) in _snippet_removals(tmp_path, home, f"rm {path}"), path
+
+
+def test_the_real_fixture_ignores_a_version_orphaned_before_the_run(tmp_path):
+    """The session fixture's own before pass must apply the orphan rule.
+
+    Helper-level tests cannot see a regression at the fixture's call site;
+    this runs the real fixture over a stand-in root holding a version the CLI
+    had already orphaned, and deletes it during the run as the CLI's cleanup
+    would.
+    """
+    stale = tmp_path / "tree" / "2.3.0-hold0000"
+    (stale / "scripts").mkdir(parents=True)
+    (stale / "scripts" / "_lib.py").write_text("x = 1\n", encoding="utf-8")
+    (stale / ".orphaned_at").write_text("1790350343983", encoding="utf-8")
+    result = _nested_run(
+        tmp_path,
+        "import shutil\n"
+        "shutil.rmtree(SCRIPTS.parent.parent / '2.3.0-hold0000')\n",
+        xdist=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

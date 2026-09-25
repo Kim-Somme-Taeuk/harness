@@ -47,7 +47,18 @@ def _default_install_tree_roots() -> list[str]:
     does: a test that repoints `HOME` at `tmp_path` is the isolated case, and
     `Path.home()` would then report that tmp home as the real one.
 
-    Three roots, not two. `~/.codex/plugins/cache/harness/harness` is the tree
+    Four roots. `~/.claude/plugins/cache/harness/harness` is the tree Claude
+    Code actually runs hooks from (`installed_plugins.json` installPath, one
+    version directory per payload since the version stamp of b2bb5e0); the
+    mirror `~/.claude/harness-dev` is only the marketplace source. Old version
+    directories carry a CLI-written `.orphaned_at` file and are deleted by the
+    CLI later, so the *before* inventory skips them (see
+    `_install_tree_inventory`). A set `CLAUDE_CONFIG_DIR` moves the real cache
+    elsewhere and this literal root then watches the wrong tree — a named
+    limitation, kept because the documented snippet must name the same literal
+    roots (tests/test_install_tree_removal_guard.py).
+
+    `~/.codex/plugins/cache/harness/harness` is the tree
     Codex actually loads — `install.py` registers its hooks with absolute
     commands into that directory and prunes bytecode inside it — so the
     `rmtree(cache.parent)` class of mutation that started this guard would
@@ -55,6 +66,9 @@ def _default_install_tree_roots() -> list[str]:
     marketplace/plugin subtree is watched; sibling marketplaces under
     `~/.codex/plugins/cache` are other tools' trees, and walking them costs more
     than it protects. Measured 2026-09-09: 521 files, ~0.1s per snapshot.
+    Re-measured 2026-09-26 with four roots on a WSL host: before 346 files,
+    after 781 (the Claude cache's five orphaned versions are walked only
+    after), about 5s for both passes together.
     """
     try:
         import pwd
@@ -64,6 +78,7 @@ def _default_install_tree_roots() -> list[str]:
         return []
     return [
         os.path.join(home, ".claude", "harness-dev"),
+        os.path.join(home, ".claude", "plugins", "cache", "harness", "harness"),
         os.path.join(home, ".codex", "harness"),
         os.path.join(home, ".codex", "plugins", "cache", "harness", "harness"),
     ]
@@ -129,7 +144,7 @@ def pytest_configure(config):
     _prune_checkout_bytecode(os.path.join(REPO_ROOT, "plugin"))
 
 
-def _install_tree_inventory(root: str) -> dict[str, int]:
+def _install_tree_inventory(root: str, exclude_orphaned: bool = False) -> dict[str, int]:
     """Map file path -> size for one install tree; empty when it is absent.
 
     `__pycache__` is skipped on purpose. Live session hooks regenerate bytecode
@@ -143,10 +158,22 @@ def _install_tree_inventory(root: str) -> dict[str, int]:
     *set of paths* is compared. Content and mtime deliberately are not: a hook
     rewriting a file it owns is not a removal, and comparing those produced a
     false alarm on every run when it was tried by hand.
+
+    `exclude_orphaned` is for the *before* inventory only: a top-level child
+    directory that already holds a `.orphaned_at` file is one the Claude CLI
+    has scheduled for deletion, so its disappearance is not this run's doing.
+    The after inventory must walk everything — a real install during the run
+    orphans the live version directory with all its files still present, and
+    skipping it there would report every one of them as removed.
     """
     inventory: dict[str, int] = {}
     for parent, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
         dirnames[:] = [name for name in dirnames if name != "__pycache__"]
+        if exclude_orphaned and parent == root:
+            dirnames[:] = [
+                name for name in dirnames
+                if not os.path.isfile(os.path.join(root, name, ".orphaned_at"))
+            ]
         for name in filenames:
             path = os.path.join(parent, name)
             try:
@@ -196,7 +223,10 @@ def install_trees_lose_no_files():
     if is_nested_probe():
         yield
         return
-    before = {root: _install_tree_inventory(root) for root in _INSTALL_TREE_ROOTS}
+    before = {
+        root: _install_tree_inventory(root, exclude_orphaned=True)
+        for root in _INSTALL_TREE_ROOTS
+    }
     yield
     removed = _install_tree_removals(before)
     assert not removed, (

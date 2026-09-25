@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **Install guard watches the Claude plugin cache** — the suite's removal guard
+  and the verification-gate snapshot now include
+  `~/.claude/plugins/cache/harness/harness`, skipping only versions the Claude
+  CLI had already orphaned before the run.
 - **A lens that pauses is named, not crashed** — Claude lens agents run
   verification in the foreground and never end a turn while their own work is
   running. A resumed lens's second start and different final now write nothing

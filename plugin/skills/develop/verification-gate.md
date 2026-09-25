@@ -24,20 +24,30 @@ This ensures test results accurately reflect the code state that will be merged.
 ## Step 0.5: Install-tree removals (repos whose tests can reach a runtime)
 
 The repository is not the whole blast radius. Hooks execute from the installed
-trees — `~/.claude/harness-dev`, `~/.codex/harness`, and the Codex plugin cache
-entry `~/.codex/plugins/cache/harness/harness` that Codex actually loads — and a
+trees — `~/.claude/harness-dev`, the Claude plugin cache
+`~/.claude/plugins/cache/harness/harness` that Claude Code actually runs hooks
+from, `~/.codex/harness`, and the Codex plugin cache entry
+`~/.codex/plugins/cache/harness/harness` that Codex actually loads — and a
 test, script, or mutation experiment that reaches one can delete the runtime
 that records receipts. When that happens every later symptom is an absence, so
-review and QA check all three roots, not only task artifacts.
+review and QA check all four roots, not only task artifacts.
 
 ```bash
-snapshot() { for r in "$HOME/.claude/harness-dev" "$HOME/.codex/harness" \
+snapshot() { for r in "$HOME/.claude/harness-dev" \
+                     "$HOME/.claude/plugins/cache/harness/harness" \
+                     "$HOME/.codex/harness" \
                      "$HOME/.codex/plugins/cache/harness/harness"; do
-  [ -d "$r" ] && find "$r" -type f -not -path '*/__pycache__/*' -printf '%p\n'
+  [ -d "$r" ] || continue
+  find "$r" -mindepth 1 -maxdepth 1 -type f -printf '%p\n'
+  for v in "$r"/*/ "$r"/.[!.]*/; do
+    [ -d "$v" ] || continue
+    [ "$1" = before ] && [ -f "$v/.orphaned_at" ] && continue
+    find "${v%/}" -type f -not -path '*/__pycache__/*' -printf '%p\n'
+  done
 done | LC_ALL=C sort; }
-snapshot > /tmp/install-before.txt
+snapshot before > /tmp/install-before.txt
 <verification commands>
-snapshot > /tmp/install-after.txt
+snapshot after > /tmp/install-after.txt
 LC_ALL=C comm -23 /tmp/install-before.txt /tmp/install-after.txt   # must be empty
 ```
 
@@ -46,7 +56,14 @@ Only **removals** matter, and the snapshot records **paths only, excluding
 legitimately regenerate bytecode during a run and `python3 install.py --force`
 prunes those directories outright, so including them reports losses right after
 the repair this paragraph prescribes; and a rewritten file is not a removal, so
-recording sizes or checksums cries wolf on every normal run. If anything
+recording sizes or checksums cries wolf on every normal run. The `before`
+snapshot also skips version directories that already hold a `.orphaned_at`
+file: the Claude CLI marks superseded plugin-cache versions that way and deletes
+them later, which is not a removal by your commands. The `after` snapshot walks
+everything, because an install during the run (including the repair below)
+orphans the live version with its files still present. A set
+`CLAUDE_CONFIG_DIR` moves the Claude cache away from `$HOME/.claude`; this
+snapshot does not follow it. If anything
 disappeared, repair with `python3 install.py --force` before continuing, and
 bind the responsible test to a tmp install root.
 
