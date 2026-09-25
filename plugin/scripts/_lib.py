@@ -4229,8 +4229,8 @@ def _make_runtime_receipt_writer():
         if entry["verdict"] == "PENDING":
             # Announced after the durable append, so the breadcrumb only ever
             # describes a completion that really was recorded, and announced
-            # here because every runtime path — the Claude stop hook, the Codex
-            # watcher — converges on this writer.
+            # here because every runtime path — the Claude SubagentStop hook,
+            # the Codex watcher — converges on this writer.
             log_unbound_completion(task_dir, lens, entry)
         return entry
 
