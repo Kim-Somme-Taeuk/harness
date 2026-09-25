@@ -18,6 +18,11 @@ matching, so a fenced or indented example line is not exempt. Quote differing
 examples inline inside a sentence. Mentioning the token in ordinary prose is
 always safe.
 
+Run verification commands in the foreground and wait for them. Never end
+your turn while a command or subagent you started is still running: the end
+of your first turn is recorded as your completion, and a later resume cannot
+replace it.
+
 The `mcp__x11__*` prefix is a placeholder. If the installed x11-mcp server uses
 another prefix and the first call returns `tool_not_found`, emit `BLOCKED_ENV`
 with a `.mcp.json` fix block instead of continuing.

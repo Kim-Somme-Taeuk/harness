@@ -1,8 +1,8 @@
 ---
 tags: [harness, receipts, subagent, lifecycle]
 summary: 영수증은 실제 spawn 된 서브에이전트의 생애에만 대응한다. 재개는 새 영수증을 만들지 않고, 중단은 고아 started 레코드를 남긴다.
-updated: 2026-09-03
-freshness: suspect
+updated: 2026-09-26
+freshness: current
 invalidated_by_paths:
   - plugin/scripts/subagent_lifecycle.py
   - plugin/scripts/background_hook.py
@@ -45,6 +45,48 @@ unrelated and the remedies are opposite.
 must spawn a fresh lens, not resume the previous one. Resuming is useful for
 asking an agent to explain or extend its reasoning; it can never advance the
 gate.
+
+### A lens that ends its turn to wait (2026-09-26)
+
+A qa-cli lens ran the full suite as a background command and ended its turn to
+wait for it. That turn end fired `SubagentStop`, and its interim text ("the
+suite is still running") was recorded as the lens's `completed` row with
+verdict `PENDING`. The completion notification then resumed the agent:
+
+- its second `SubagentStart` for the same agent id used to raise
+  `duplicate or conflicting Claude lifecycle start`, logged as a `gate-crash`;
+- its real final (`PASS`) could not replace the recorded completion, and was
+  reported as a retryable publication failure that nothing would retry.
+
+The first turn end is the completion; that does not change (see "Why this is a
+REQ" below). What changed:
+
+- **Prevention.** The Claude lens agents (`code-reviewer`, `security-reviewer`,
+  `qa-cli`, `qa-api`, `qa-browser`, `qa-desktop`) are told to run verification
+  commands in the foreground and never end a turn while their own command or
+  subagent is still running. In the two reviewers the rule sits outside the
+  role core, so the Claude/Codex core parity is unchanged.
+- **Naming.** A second start after a recorded completion writes nothing and
+  logs a `background_hook:binding-miss` breadcrumb with
+  `provenance_reason=resumed-after-completion`. A later, different final writes
+  nothing and logs `provenance_reason=completion-already-recorded`. These are
+  expected refusals, not binding failures, even though the breadcrumb text reads
+  "produced no receipt". Any other conflicting start still raises.
+
+The 2026-09-03 "resume writes no pair" observation above is very likely this
+same mechanism; it now surfaces as these two reasons instead of a crash.
+
+**Remedy:** spawn the lens fresh. `task_verify`'s "Recorded but unusable" next
+action already says so, but its stated cause (a misplaced verdict block) and the
+`receipts:verdict-unbound` breadcrumb's remedy ("re-deliver … with exactly one
+verdict block") misname this case; a follow-up child of
+GOAL__2026-09-26-0-setup-execution-5aef74d0 gives it its own cause.
+
+Verification: `tests/test_subagent_lifecycle.py`
+(`test_a_resumed_lens_is_named_and_cannot_replace_its_completion`,
+`test_a_resume_with_a_different_agent_type_still_raises`,
+`test_background_hook_names_a_resumed_lens_without_a_gate_crash`) and
+`tests/test_feedback_rule_skill_docs.py::test_claude_lens_agents_stay_in_the_foreground`.
 
 ### Killing an agent leaves an orphan `started` row
 

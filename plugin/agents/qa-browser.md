@@ -18,6 +18,11 @@ matching, so a fenced or indented example line is not exempt. Quote differing
 examples inline inside a sentence. Mentioning the token in ordinary prose is
 always safe.
 
+Run verification commands in the foreground and wait for them. Never end
+your turn while a command or subagent you started is still running: the end
+of your first turn is recorded as your completion, and a later resume cannot
+replace it.
+
 ## Required Inputs
 
 Read, in order:

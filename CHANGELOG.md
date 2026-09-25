@@ -6,6 +6,11 @@
 
 ### Changed
 
+- **A lens that pauses is named, not crashed** — Claude lens agents run
+  verification in the foreground and never end a turn while their own work is
+  running. A resumed lens's second start and different final now write nothing
+  and log `resumed-after-completion` / `completion-already-recorded` instead of
+  a gate-crash and a misleading retryable-failure result.
 - **No dead execution-mode setting** — setup no longer writes
   `execution_mode_default` to the manifest; nothing read it. Execution mode,
   planning procedure, and review depth stay per-task decisions; there is no

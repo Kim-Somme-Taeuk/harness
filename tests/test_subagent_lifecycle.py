@@ -896,7 +896,11 @@ def test_stop_only_uses_transcript_type_and_conflicting_replay_does_not_append(
         agent_type="harness:qa-cli",
     )
     changed = _stop_payload(session_id, agent_id, "harness:qa-cli", transcript, second)
-    assert subagent_lifecycle.mark_subagent_stop(repo, changed)["status"] == "receipt_pending"
+    # The first completion stands; a different later final is named, not
+    # reported as a retryable publication failure.
+    diagnostics: dict = {}
+    assert subagent_lifecycle.mark_subagent_stop(repo, changed, diagnostics) == {}
+    assert diagnostics["provenance_reason"] == "completion-already-recorded"
     assert len(_receipts(task_dir)) == 2
 
 
@@ -1725,3 +1729,111 @@ def test_background_hook_completes_an_attachment_less_stop_end_to_end(tmp_path, 
         item for item in _learnings(repo)
         if item.get("source") == "background_hook:binding-miss"
     ]
+
+
+# --- A lens that ends its turn to wait on its own background work ------------
+#
+# 2026-09-26: a qa-cli lens backgrounded the suite and ended its turn. The stop
+# recorded a PENDING completion; the notification resumed the agent, whose
+# second SubagentStart raised "duplicate or conflicting Claude lifecycle start"
+# (a gate-crash row), and whose real PASS final could not replace the
+# completion. The first completion must stand; both later events are named.
+
+def test_a_resumed_lens_is_named_and_cannot_replace_its_completion(tmp_path, monkeypatch):
+    repo, task_dir = _repo(tmp_path)
+    session_id, agent_id, agent_type = "sess-wait", "agent-wait", "harness:qa-cli"
+    _bind(repo, task_dir, session_id)
+    subagent_lifecycle.register_subagent_start(repo, {
+        "session_id": session_id, "agent_id": agent_id, "agent_type": agent_type,
+    })
+    interim = "The full suite is still running in the background."
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, session_id, agent_id, interim,
+        agent_type=agent_type,
+    )
+    stopped = subagent_lifecycle.mark_subagent_stop(
+        repo, _stop_payload(session_id, agent_id, agent_type, transcript, interim),
+    )
+    assert stopped["status"] == "done"
+
+    start_diagnostics: dict = {}
+    assert subagent_lifecycle.register_subagent_start(repo, {
+        "session_id": session_id, "agent_id": agent_id, "agent_type": agent_type,
+    }, diagnostics=start_diagnostics) == {}
+    assert start_diagnostics["provenance_reason"] == "resumed-after-completion"
+
+    final = "VERDICT: PASS\nall checks passed"
+    # A resumed transcript restates the start banner; identical repeats bind.
+    _transcript(
+        tmp_path, monkeypatch, task_dir, session_id, agent_id, final,
+        agent_type=agent_type, canonical_starts=2,
+    )
+    stop_diagnostics: dict = {}
+    assert subagent_lifecycle.mark_subagent_stop(
+        repo, _stop_payload(session_id, agent_id, agent_type, transcript, final),
+        stop_diagnostics,
+    ) == {}
+    assert stop_diagnostics["provenance_reason"] == "completion-already-recorded"
+    assert [(row["event"], row["verdict"]) for row in _receipts(task_dir)] == [
+        ("started", ""), ("completed", "PENDING"),
+    ]
+
+
+def test_a_resume_with_a_different_agent_type_still_raises(tmp_path, monkeypatch):
+    repo, task_dir = _repo(tmp_path)
+    session_id, agent_id = "sess-wait-type", "agent-wait-type"
+    _bind(repo, task_dir, session_id)
+    subagent_lifecycle.register_subagent_start(repo, {
+        "session_id": session_id, "agent_id": agent_id, "agent_type": "harness:qa-cli",
+    })
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, session_id, agent_id, "VERDICT: PASS",
+        agent_type="harness:qa-cli",
+    )
+    subagent_lifecycle.mark_subagent_stop(
+        repo, _stop_payload(session_id, agent_id, "harness:qa-cli", transcript, "VERDICT: PASS"),
+    )
+    try:
+        subagent_lifecycle.register_subagent_start(repo, {
+            "session_id": session_id, "agent_id": agent_id,
+            "agent_type": "harness:code-reviewer",
+        })
+    except RuntimeError as exc:
+        assert "duplicate or conflicting Claude lifecycle start" in str(exc)
+    else:
+        raise AssertionError("a conflicting resume type must still raise")
+
+
+def test_background_hook_names_a_resumed_lens_without_a_gate_crash(tmp_path, monkeypatch):
+    repo, task_dir = _repo(tmp_path)
+    session_id, agent_id, agent_type = "sess-wait-e2e", "agent-wait-e2e", "harness:qa-cli"
+    _bind(repo, task_dir, session_id)
+    start = {"hook_event_name": "SubagentStart", "session_id": session_id,
+             "agent_id": agent_id, "agent_type": agent_type}
+    assert _run_background_hook(repo, "start", start).returncode == 0
+    interim = "Still waiting on the suite."
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, session_id, agent_id, interim, agent_type=agent_type,
+    )
+    assert _run_background_hook(repo, "stop", _stop_payload(
+        session_id, agent_id, agent_type, transcript, interim,
+    )).returncode == 0
+    assert _run_background_hook(repo, "start", start).returncode == 0
+    final = "VERDICT: PASS\nok"
+    _transcript(
+        tmp_path, monkeypatch, task_dir, session_id, agent_id, final,
+        agent_type=agent_type, canonical_starts=2,
+    )
+    assert _run_background_hook(repo, "stop", _stop_payload(
+        session_id, agent_id, agent_type, transcript, final,
+    )).returncode == 0
+
+    learnings = _learnings(repo)
+    assert not [row for row in learnings if row.get("type") == "gate-crash"], learnings
+    misses = " ".join(
+        row.get("error", "") for row in learnings
+        if row.get("source") == "background_hook:binding-miss"
+    )
+    assert "provenance_reason=resumed-after-completion" in misses
+    assert "provenance_reason=completion-already-recorded" in misses
+    assert [row["event"] for row in _receipts(task_dir)] == ["started", "completed"]

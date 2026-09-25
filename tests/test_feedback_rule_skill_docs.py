@@ -121,6 +121,31 @@ def test_lens_definitions_warn_about_the_residual_voiding_rule():
             assert phrase in body, f"{rel}: missing {phrase!r}"
 
 
+def test_claude_lens_agents_stay_in_the_foreground():
+    """A lens that ends its turn to wait records that turn as its completion.
+
+    2026-09-26: a qa-cli lens backgrounded the suite and ended its turn; its
+    PENDING interim was recorded as the completion and the real PASS could not
+    replace it (REQ__subagent-lifecycle-receipt-boundaries). In the reviewers the
+    rule sits outside role-core so the Claude/Codex core parity is untouched.
+    """
+    for rel in (
+        "plugin/agents/code-reviewer.md",
+        "plugin/agents/security-reviewer.md",
+        "plugin/agents/qa-cli.md",
+        "plugin/agents/qa-api.md",
+        "plugin/agents/qa-browser.md",
+        "plugin/agents/qa-desktop.md",
+    ):
+        text = (REPO / rel).read_text(encoding="utf-8")
+        body = " ".join(text.split())
+        assert "Run verification commands in the foreground" in body, rel
+        assert "Never end your turn while a command or subagent you started is still running" in body, rel
+        if "harness:role-core:end" in text:
+            core = text.split("harness:role-core:end", 1)[0]
+            assert "in the foreground" not in core, rel
+
+
 def test_qa_agents_surface_self_healing_candidates():
     for rel in (
         "plugin/agents/qa-cli.md",

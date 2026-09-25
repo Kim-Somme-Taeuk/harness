@@ -202,3 +202,8 @@ End after the findings with the reviewed HEAD, base when applicable, and exact
 worktree/diff scope. Do not substitute an earlier commit or a clean-index diff
 for the current task worktree.
 <!-- harness:role-core:end -->
+
+Run verification commands in the foreground and wait for them. Never end
+your turn while a command or subagent you started is still running: the end
+of your first turn is recorded as your completion, and a later resume cannot
+replace it.

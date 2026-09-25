@@ -546,6 +546,7 @@ def register_subagent_start(
         "agent_type": agent_type,
     }
     duplicate = False
+    resumed = False
     with receipt_stream_transaction(task_dir):
         runtime_existing = [
             item for item in receipt_snapshot(task_dir).entries
@@ -561,6 +562,18 @@ def register_subagent_start(
             ):
                 receipt = runtime_existing[0]
                 duplicate = True
+            elif (
+                len(runtime_existing) == 2
+                and sorted(item.get("event") for item in runtime_existing) == ["completed", "started"]
+                and all(_identity_matches(item, identity) for item in runtime_existing)
+            ):
+                # A finished agent started again: a SendMessage resume, or a
+                # lens that ended its turn to wait on its own background work
+                # and was woken by the notification. The first turn end is its
+                # completion (REQ__subagent-lifecycle-receipt-boundaries), so a
+                # resume writes nothing. Named, not raised: raising logged a
+                # gate-crash for an expected refusal.
+                resumed = True
             else:
                 raise RuntimeError("duplicate or conflicting Claude lifecycle start")
         else:
@@ -572,6 +585,10 @@ def register_subagent_start(
                     "summary": "subagent start hook observed",
                 },
             )
+    if resumed:
+        if diagnostics is not None:
+            diagnostics["provenance_reason"] = "resumed-after-completion"
+        return {}
     return {
         "status": "duplicate_start" if duplicate else "active", "id": aid, "agent_id": aid,
         "agent_type": receipt.get("agent_type") or "", "runtime_id": runtime_id,
@@ -713,7 +730,13 @@ def mark_subagent_stop(
                     prior.get("verdict") != expected_verdict
                     or prior.get("summary") != expected_summary
                 ):
-                    raise RuntimeError("conflicting Claude lifecycle replay")
+                    # A different final after a recorded completion is a
+                    # resumed agent reporting again. The first completion
+                    # stands and nothing is written; say so, rather than
+                    # reporting a retryable publication failure.
+                    if diagnostics is not None:
+                        diagnostics["provenance_reason"] = "completion-already-recorded"
+                    return {}
                 result["status"] = "duplicate_stop"
             elif len(starts) == 1 and not completed and len(existing) == 1:
                 with receipt_stream_savepoint(task_dir):
