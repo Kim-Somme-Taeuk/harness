@@ -38,7 +38,7 @@ done | LC_ALL=C sort; }
 snapshot > /tmp/install-before.txt
 <verification commands>
 snapshot > /tmp/install-after.txt
-comm -23 /tmp/install-before.txt /tmp/install-after.txt   # must be empty
+LC_ALL=C comm -23 /tmp/install-before.txt /tmp/install-after.txt   # must be empty
 ```
 
 Only **removals** matter, and the snapshot records **paths only, excluding

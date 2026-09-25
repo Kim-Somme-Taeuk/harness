@@ -194,9 +194,16 @@ def test_the_documented_snapshot_matches_the_fixture(tmp_path):
     def run(mutation: str) -> str:
         script = _step_0_5_snippet().replace("<verification commands>", mutation)
         script = script.replace("/tmp/install-", f"{tmp_path}/install-")
+        # A host BASH_ENV/ENV is sourced by non-interactive bash and can fail
+        # under the rewritten HOME. LC_ALL is deliberately left to the host:
+        # the documented snippet itself must be locale-safe.
+        env = {
+            key: value for key, value in os.environ.items()
+            if key not in {"BASH_ENV", "ENV"}
+        }
         result = subprocess.run(
             ["bash", "-c", script], capture_output=True, text=True,
-            env={**os.environ, "HOME": str(home)}, timeout=60,
+            env={**env, "HOME": str(home)}, timeout=60,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         return result.stdout

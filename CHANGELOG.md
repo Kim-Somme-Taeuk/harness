@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **Install-tree snapshot is locale-safe** — the develop verification-gate
+  Step 0.5 snapshot now runs `comm` under `LC_ALL=C` like its `sort`, so the
+  removal check no longer fails on UTF-8 hosts; its executed-doc test no longer
+  inherits the host `BASH_ENV`/`ENV`.
 - **Installs reach the Claude plugin cache** — the installed mirror's
   `plugin.json` version carries a payload hash (`<base>+h<sha8>`) and every
   Claude install path ends with `claude plugin update harness@harness`, so hook
