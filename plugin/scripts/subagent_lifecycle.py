@@ -212,8 +212,14 @@ def _reject(diagnostics: dict[str, Any] | None, reason: str) -> tuple[str, str]:
 def _trusted_stop_provenance(
     payload: dict[str, Any], sid: str, aid: str, run_id: str,
     diagnostics: dict[str, Any] | None = None,
+    hook_start_agent_type: str = "",
 ) -> tuple[str, str]:
-    """Return transcript path/type only when runtime start and final text prove the stop."""
+    """Return transcript path/type only when the stop's start is proven.
+
+    The start is proven by a SubagentStart attachment in the transcript or, when
+    the transcript carries none, by ``hook_start_agent_type``: the type recorded
+    in this runtime's single hook-owned ``started`` receipt for the current run.
+    """
     raw_path = payload.get("agent_transcript_path")
     final_message = payload.get("last_assistant_message")
     if not isinstance(raw_path, str) or not isinstance(final_message, str) or not final_message:
@@ -387,6 +393,20 @@ def _trusted_stop_provenance(
                 # not a duplicate of a single start.
                 return _reject(diagnostics, "duplicate-canonical-start")
             transcript_agent_type = bound[0]
+        elif hook_start_agent_type:
+            # Both attachment shapes come from other plugins' SubagentStart
+            # output (oh-my-claudecode); the harness start hook prints none.
+            # On an install without such a plugin the transcript carries no
+            # start attachment at all, while the harness SubagentStart hook
+            # still fires and records a `started` receipt. Every stop was
+            # declined here, so no completion was ever written and PASS was
+            # unreachable on every task (2026-09-25, 8 of 8 stops). The
+            # harness's own start receipt is the start evidence the attachment
+            # used to restate. It applies
+            # only when the transcript has no start attachment at all: a
+            # present attachment is never overridden, and a stop-only runtime
+            # (no started receipt) still needs the attachment.
+            transcript_agent_type = hook_start_agent_type
         else:
             return _reject(diagnostics, "no-canonical-start-attachment")
         # The transcript proves a real subagent of this type started in this run.
@@ -560,6 +580,23 @@ def register_subagent_start(
     }
 
 
+def _hook_start_agent_type(entries: list[dict[str, Any]], run_id: str, runtime_id: str) -> str:
+    """Agent type of the single hook-owned start for this runtime and run, else ""."""
+    starts = [
+        item for item in entries
+        # Snapshot entries are read-only MappingProxyType views, not dicts.
+        if hasattr(item, "get")
+        and item.get("source") == SOURCE
+        and item.get("task_run_id") == run_id
+        and item.get("runtime_id") == runtime_id
+        and item.get("event") == "started"
+    ]
+    if len(starts) != 1:
+        return ""
+    agent_type = starts[0].get("agent_type")
+    return agent_type if isinstance(agent_type, str) else ""
+
+
 def mark_subagent_stop(
     repo_root: str, payload: dict[str, Any],
     diagnostics: dict[str, Any] | None = None,
@@ -591,11 +628,36 @@ def mark_subagent_stop(
             )
         except Exception:
             diagnostics["expected_receipt"] = bool(task_dir)
+    hook_start_type = ""
+    start_type_mismatch = False
+    if task_dir:
+        try:
+            hook_start_type = _hook_start_agent_type(
+                receipt_snapshot(task_dir).entries, run_id, _runtime_id(sid, aid),
+            )
+        except Exception:
+            hook_start_type = ""
+        # A stop payload that names a different supported lens than the start
+        # receipt does not get to borrow that receipt's type. Compared by lens,
+        # not raw string, so a cosmetic type-format change is not an outage.
+        payload_lens = _infer_receipt_lens(_agent_type(payload))
+        start_lens = _infer_receipt_lens(hook_start_type)
+        if (
+            payload_lens in SUPPORTED_LENSES and start_lens in SUPPORTED_LENSES
+            and payload_lens != start_lens
+        ):
+            hook_start_type = ""
+            start_type_mismatch = True
     trusted_transcript, transcript_agent_type = (
-        _trusted_stop_provenance(payload, sid, aid, run_id, diagnostics)
+        _trusted_stop_provenance(payload, sid, aid, run_id, diagnostics, hook_start_type)
         if task_dir else ("", "")
     )
     if not trusted_transcript or not transcript_agent_type:
+        if (
+            start_type_mismatch and diagnostics is not None
+            and diagnostics.get("provenance_reason") == "no-canonical-start-attachment"
+        ):
+            diagnostics["provenance_reason"] = "hook-start-agent-type-mismatch"
         return {}
     # Same split as the start path. A stop-only runtime records the pair here,
     # so without this the lens-less crash simply moves to the stop event.

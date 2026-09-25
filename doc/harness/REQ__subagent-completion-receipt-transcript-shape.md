@@ -4,14 +4,14 @@ invalidated_by_paths:
   - plugin/scripts/subagent_lifecycle.py
   - plugin/scripts/background_hook.py
   - plugin/hooks/hooks.json
-freshness_updated: 2026-09-23T00:42:07Z
+freshness_updated: 2026-09-25T14:50:00Z
 ---
 
 # REQ — subagent completion receipts survive runtime transcript shape
 
 tags: [harness, receipts, verification]
 summary: A subagent that completes normally must always produce a `completed` receipt; provenance tolerates duplicate hook attachments but never forgeries.
-updated: 2026-08-25
+updated: 2026-09-25
 
 ## Expected normal behavior
 
@@ -32,15 +32,20 @@ response, the harness is defective — not the agent.
 `_trusted_stop_provenance` in `plugin/scripts/subagent_lifecycle.py` derives the
 completion's authority from the subagent transcript. It must:
 
-- Treat the **canonical** attachment (`hookName == "SubagentStart"`, content a
-  one-element list matching `Agent <type> started (<agent_id>)`) as the sole
-  source of the agent type. Exactly one may appear; two is a hard failure.
-- **Tolerate** additional `hookEvent: SubagentStart` attachments whose
-  `hookName` is matcher-qualified (`SubagentStart:<matcher>`). Claude 2.1.x
-  emits one of these per matched hook, with empty content, and writes it
-  *before* the canonical attachment. Such entries carry no identity payload:
-  skip them, and never derive agent type, timestamp authority, or completion
-  identity from them.
+- Take the agent type from exactly one source, in this order:
+  1. The **canonical** attachment (`hookName == "SubagentStart"`, content a
+     one-element list matching `Agent <type> started (<agent_id>)`). Identical
+     repeats are one start; two different agent types are a hard failure.
+  2. Only when no canonical attachment exists, the **matcher-qualified**
+     attachment (`hookName == "SubagentStart:<type>"`). The suffix is the
+     type, and that line must carry this `agentId` and post-date the run
+     start. Different suffixes are a hard failure.
+  3. Only when the transcript has neither, the single hook-owned `started`
+     receipt for this runtime and run (§ "No start attachment at all").
+- While a canonical attachment is present, **tolerate** matcher-qualified
+  attachments beside it. Claude 2.1.x emits one per matched hook, with empty
+  content, *before* the canonical attachment. Skip them then, and take no
+  agent type, timestamp authority, or completion identity from them.
 - **Reject** any other `hookName` under that `hookEvent`, and reject any
   transcript item whose `agentId` or `sessionId` names someone other than the
   stopping agent and session. That guard is loop-wide and applies to qualified
@@ -57,6 +62,49 @@ completion's authority from the subagent transcript. It must:
 Together these establish the property that matters: **a real subagent of the
 recorded type actually started in this task run.** That is what makes a
 completion receipt something the orchestrator cannot simply assert.
+
+## No start attachment at all
+
+Both attachment shapes above come from other plugins' `SubagentStart` output
+(oh-my-claudecode). The harness start hook prints none. On an install with only
+the harness plugin, a subagent transcript has **zero** `SubagentStart`
+attachments. Observed 2026-09-25 (Claude Code 2.1.282): all 8 stops in one
+session were declined at `no-canonical-start-attachment`, even though the
+harness `SubagentStart` hook had written a `started` receipt for each. No
+completion was ever written, so `task_verify` could not reach PASS on any task.
+
+When the transcript has no start attachment of either shape, provenance binds
+the stop to the agent type recorded in the **single hook-owned `started`
+receipt** (`source: claude_hook`) for this exact `runtime_id`
+(`claude:<session>:<agent>`) and the current `task_run_id`. Everything else
+still holds:
+
+- official session and agent identity, the session→task binding, the
+  transcript path shape, ownership, permissions, `nlink` and a stable read;
+- every transcript line must belong to this agent and session;
+- a present start attachment always wins, and one that conflicts with the
+  start receipt fails closed (`receipt_pending`); a malformed `SubagentStart:`
+  name still rejects with `unrecognized-start-hook-name`;
+- zero or several matching start receipts, a start receipt from an earlier
+  run, or one from another source give no fallback, and the stop is rejected
+  with `no-canonical-start-attachment` as before;
+- if the stop payload names a different supported lens than the start receipt,
+  the stop is rejected with `hook-start-agent-type-mismatch`; a payload with
+  no agent type is accepted;
+- stop-only runtimes, which have no start receipt, still need a transcript
+  attachment (C-14).
+
+This does not widen the trust boundary. `RECEIPTS.jsonl` is guarded against
+Write/Edit but not against Bash. A shell writer can already append a
+`completed` row directly, which is outside the integrity boundary. A forged
+`started` row would only unlock a completion whose verdict still comes from the
+runtime stop payload.
+
+Verification: `tests/test_subagent_lifecycle.py`. The attachment-less tests
+cover the fallback, the stop-only refusal, a prior-run start, a lens mismatch,
+a payload without a type, replay, attachment precedence, the malformed name,
+and a `background_hook.py` end-to-end run. The `_hook_start_agent_type` test
+includes the `MappingProxyType` snapshot entries.
 
 ## What provenance deliberately does not check
 

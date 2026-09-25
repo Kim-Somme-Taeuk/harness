@@ -2,7 +2,7 @@
 
 summary: every hook-observed subagent stop for the active task records exactly one completion receipt
 status: accepted
-updated: 2026-08-27
+updated: 2026-09-25
 freshness: current
 confidence: high
 kind: process
@@ -65,16 +65,24 @@ records a `hook_cancelled` attachment for it, and `_bind` accepts that as a
 binding line because attachment `type` is never inspected. So the only
 self-owned start attachment the harness has today is the one it writes when it
 fails. Semantically that is still sound — the record proves the runtime
-dispatched `SubagentStart` for this agentId — but it is load-bearing for the
-follow-up below and should not be mistaken for coverage.
+dispatched `SubagentStart` for this agentId — but it should not be mistaken for
+coverage. (The banner follow-up this once pointed to was dropped; see the
+2026-09-25 note below.)
 
 On an install without oh-my-claudecode a subagent transcript contains zero
-`SubagentStart` attachments, `_bind` rejects at `no-canonical-start-attachment`,
-and PASS is unreachable permanently rather than intermittently. This is a live
-gap for every downstream user of the plugin, and it is not closed by this task.
-Closing it means emitting a harness-owned identity banner from
-`background_hook.py --event start` — see the requirement below, which this
-document does not yet satisfy.
+`SubagentStart` attachments. `_bind` then rejected at
+`no-canonical-start-attachment`, and PASS was unreachable permanently rather
+than intermittently. That was a live gap for every downstream user of the
+plugin, and the task that wrote this section did not close it. It was closed on 2026-09-25 without a banner; see the
+note below and the requirement further down.
+
+> **2026-09-25: closed another way.** The gap was observed live: with only the
+> harness plugin installed, 8 of 8 stops were declined at
+> `no-canonical-start-attachment`. Instead of emitting a banner, a stop whose
+> transcript carries no start attachment now binds to the harness's own
+> hook-owned `started` receipt for the same runtime and run. See
+> `doc/harness/REQ__subagent-completion-receipt-transcript-shape.md`
+> § "No start attachment at all".
 
 ### Why the accepted shape is trustworthy
 
@@ -113,10 +121,13 @@ this document asserted the opposite until a reviewer counted.
 - Receipt validity never depends on a field owned by another plugin. If a
   signal the harness relies on is produced by software the harness does not
   ship, the harness must degrade to something it does own.
-  **Not yet satisfied.** Both accepted start shapes are written by
-  oh-my-claudecode; the harness owns neither. Until
-  `background_hook.py --event start` emits its own identity banner, this
-  requirement is aspirational and the gap above is real.
+  **Satisfied since 2026-09-25.** Both accepted attachment shapes are written
+  by oh-my-claudecode, and the harness owns neither. When a transcript carries
+  no start attachment, the stop now binds to the harness's own hook-owned
+  `started` receipt for the same runtime and run (see
+  `doc/harness/REQ__subagent-completion-receipt-transcript-shape.md`
+  § "No start attachment at all"). Only stop-only runtimes, which have no
+  start receipt, still depend on a transcript attachment.
 - A repeated signal is not a forgery signal. One start pair is written per
   registered `SubagentStart` hook, so identical repeats are expected; only
   *conflicting* claims (two agent types for one `agentId`) are a conflict.

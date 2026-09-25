@@ -2,7 +2,7 @@
 
 summary: how to tell why receipts are not being recorded, and why hook_tree_health.py's answer is not sufficient
 status: accepted
-updated: 2026-09-01
+updated: 2026-09-25
 freshness: current
 confidence: high
 kind: process
@@ -23,7 +23,7 @@ appears":
 | Lens agent spawned with a `name:` | The agent goes **idle**, not stopped; `SubagentStop` never fires. Look for an `idle_notification` instead of a completion. |
 | Loaded hook tree lacks the receipt subsystem | `${CLAUDE_PLUGIN_ROOT}/scripts/background_hook.py` does not exist. |
 | `SubagentStart` never fired | No `started` row, no `binding-miss` breadcrumb, and `RECEIPTS.jsonl` is absent rather than partial. |
-| Completion rejected during validation | A `started` row exists but no `completed` row; `subagent_lifecycle` rejects with a named reason such as `no-canonical-start-attachment`. |
+| Completion rejected during validation | A `started` row exists but no `completed` row; `subagent_lifecycle` rejects with a named reason such as `no-canonical-start-attachment` (no start attachment and no usable hook-owned start receipt) or `hook-start-agent-type-mismatch` (the stop payload names a different lens than the start receipt). |
 
 **Absent file vs partial file is the highest-value first check.** A missing
 `RECEIPTS.jsonl` means nothing was ever written; a file with `started` rows and
@@ -84,20 +84,25 @@ Two reliable discriminators that do not depend on plugin metadata:
    then use `drift_warn.py` or installed/source hashes for the referenced
    wrapper. Harness no longer installs a Bash PreToolUse mutation guard.
 
-## Completion validation depends on an attachment harness does not emit
+## Completion validation and start-attachment dependence
 
-`plugin/scripts/subagent_lifecycle.py` requires a subagent-transcript attachment
-whose `hookEvent` and `hookName` are both exactly `SubagentStart`, and whose
-content matches `Agent <type> started (<agentId>)`. Absent it, the completion is
-rejected as `no-canonical-start-attachment` — before the agent's verdict text is
-ever read, so a perfectly-formed reviewer response still yields nothing.
+When this section was first written, `plugin/scripts/subagent_lifecycle.py`
+required a subagent-transcript attachment whose `hookEvent` and `hookName` were
+both exactly `SubagentStart`, with content matching
+`Agent <type> started (<agentId>)`. Without it the completion was rejected as
+`no-canonical-start-attachment` before the agent's verdict text was ever read,
+so a perfectly-formed reviewer response still yielded nothing. Both relaxations
+below have since landed; the current order of sources is in
+`doc/harness/REQ__subagent-completion-receipt-transcript-shape.md`.
 
-The matcher-qualified duplicate (`SubagentStart:<matcher>`) is already tolerated
-and skipped. The canonical form is not produced by harness itself, which makes
-receipt validity dependent on another plugin's hook remaining registered and
-healthy. That coupling is a known defect, not a design intent: it should accept
-any attachment carrying the identity payload rather than one exact string. Fixing
-it is a separate maintenance task.
+Both attachment shapes come from another plugin's start hook, and the harness
+writes neither. When there is no canonical banner, a matcher-qualified
+attachment (`SubagentStart:<type>`) that carries this `agentId` binds on its
+own. When there is no attachment at all, the stop binds to the harness's own
+hook-owned `started` receipt for the same runtime and run. Since 2026-09-25,
+receipt validity therefore no longer depends on another plugin whenever the
+harness start hook ran. The one remaining dependence is stop-only runtimes,
+which have no start receipt and still need a transcript attachment.
 
 ## Required behavior
 

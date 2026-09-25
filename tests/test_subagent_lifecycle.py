@@ -1542,3 +1542,186 @@ def test_a_ux_lens_spawn_through_the_hook_logs_neither_crash_nor_miss(tmp_path):
     assert result.returncode == 0, result.stderr
     assert not (Path(task_dir) / "RECEIPTS.jsonl").exists()
     assert _learnings(repo) == []
+
+
+# --- Transcripts with no SubagentStart attachment at all ----------------------
+#
+# Start attachments come from other plugins' SubagentStart output. Without such
+# a plugin installed, the harness SubagentStart hook still fires and writes a
+# hook-owned `started` receipt, but the subagent transcript never restates it. Every stop was
+# declined at `no-canonical-start-attachment`, so no completion was ever
+# written and PASS was unreachable on every task (2026-09-25, 8 of 8 stops).
+# The stop now binds to that hook-owned start when the transcript has none.
+
+_REVIEW_PASS = "VERDICT: PASS\nFINDING_COUNTS: FIX_NOW=0 INVESTIGATE=0 OPTIONAL=0\nclean"
+
+
+def _attachment_less_stop(tmp_path, monkeypatch, *, start_type, payload_type,
+                          register=True, final_message=_REVIEW_PASS):
+    repo, task_dir = _repo(tmp_path)
+    _bind(repo, task_dir, "sess-282")
+    if register:
+        subagent_lifecycle.register_subagent_start(repo, {
+            "session_id": "sess-282", "agent_id": "agent-282", "agent_type": start_type,
+        })
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, "sess-282", "agent-282", final_message,
+        agent_type=start_type, canonical_starts=0,
+    )
+    payload = _stop_payload("sess-282", "agent-282", payload_type, transcript, final_message)
+    return repo, task_dir, payload
+
+
+def test_attachment_less_stop_binds_to_the_hook_owned_start(tmp_path, monkeypatch):
+    repo, task_dir, payload = _attachment_less_stop(
+        tmp_path, monkeypatch,
+        start_type="harness:code-reviewer", payload_type="harness:code-reviewer",
+    )
+    stopped = subagent_lifecycle.mark_subagent_stop(repo, payload)
+    assert stopped["status"] == "done"
+    assert stopped["agent_type"] == "harness:code-reviewer"
+    assert [(item["event"], item["lens"], item["verdict"]) for item in _receipts(task_dir)] == [
+        ("started", "review-code", ""), ("completed", "review-code", "PASS"),
+    ]
+
+
+def test_attachment_less_stop_without_a_start_receipt_is_still_declined(tmp_path, monkeypatch):
+    """Stop-only runtimes keep needing the transcript attachment (C-14)."""
+    repo, task_dir, payload = _attachment_less_stop(
+        tmp_path, monkeypatch, start_type="harness:qa-cli",
+        payload_type="harness:qa-cli", register=False,
+    )
+    diagnostics: dict = {}
+    assert subagent_lifecycle.mark_subagent_stop(repo, payload, diagnostics) == {}
+    assert diagnostics["provenance_reason"] == "no-canonical-start-attachment"
+    assert not (Path(task_dir) / "RECEIPTS.jsonl").exists()
+
+
+def test_attachment_less_stop_ignores_a_start_from_a_prior_run(tmp_path, monkeypatch):
+    repo, task_dir, payload = _attachment_less_stop(
+        tmp_path, monkeypatch, start_type="harness:qa-cli", payload_type="harness:qa-cli",
+    )
+    prior_ms = _lib.uuid7_timestamp_ms(_lib.read_task_control(task_dir)["run_id"])
+    with _lib.receipt_stream_transaction(task_dir):
+        _rotate(task_dir, prior_ms + 2_000)
+        _bind(repo, task_dir, "sess-282")
+    diagnostics: dict = {}
+    assert subagent_lifecycle.mark_subagent_stop(repo, payload, diagnostics) == {}
+    assert diagnostics["provenance_reason"] == "no-canonical-start-attachment"
+    assert [item["event"] for item in _receipts(task_dir)] == ["started"]
+
+
+def test_attachment_less_stop_whose_payload_names_another_lens_is_declined(
+    tmp_path, monkeypatch,
+):
+    repo, task_dir, payload = _attachment_less_stop(
+        tmp_path, monkeypatch,
+        start_type="harness:code-reviewer", payload_type="harness:qa-cli",
+    )
+    diagnostics: dict = {}
+    assert subagent_lifecycle.mark_subagent_stop(repo, payload, diagnostics) == {}
+    assert diagnostics["provenance_reason"] == "hook-start-agent-type-mismatch"
+    assert [item["event"] for item in _receipts(task_dir)] == ["started"]
+
+
+def test_attachment_less_stop_payload_without_a_type_is_accepted(tmp_path, monkeypatch):
+    repo, task_dir, payload = _attachment_less_stop(
+        tmp_path, monkeypatch,
+        start_type="harness:code-reviewer", payload_type="harness:code-reviewer",
+    )
+    payload.pop("agent_type")
+    assert subagent_lifecycle.mark_subagent_stop(repo, payload)["status"] == "done"
+    assert [item["event"] for item in _receipts(task_dir)] == ["started", "completed"]
+
+
+def test_attachment_less_stop_replay_is_idempotent(tmp_path, monkeypatch):
+    repo, task_dir, payload = _attachment_less_stop(
+        tmp_path, monkeypatch,
+        start_type="harness:code-reviewer", payload_type="harness:code-reviewer",
+    )
+    assert subagent_lifecycle.mark_subagent_stop(repo, payload)["status"] == "done"
+    assert subagent_lifecycle.mark_subagent_stop(repo, payload)["status"] == "duplicate_stop"
+    assert [item["event"] for item in _receipts(task_dir)] == ["started", "completed"]
+
+
+def test_a_present_start_attachment_is_never_overridden_by_the_start_receipt(
+    tmp_path, monkeypatch,
+):
+    """The fallback applies only when the transcript has no start at all."""
+    repo, task_dir = _repo(tmp_path)
+    _bind(repo, task_dir, "sess-282")
+    subagent_lifecycle.register_subagent_start(repo, {
+        "session_id": "sess-282", "agent_id": "agent-282",
+        "agent_type": "harness:code-reviewer",
+    })
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, "sess-282", "agent-282", "VERDICT: PASS",
+        agent_type="harness:qa-cli",
+    )
+    stopped = subagent_lifecycle.mark_subagent_stop(repo, _stop_payload(
+        "sess-282", "agent-282", "harness:code-reviewer", transcript, "VERDICT: PASS",
+    ))
+    assert stopped.get("status") != "done"
+    assert [item["event"] for item in _receipts(task_dir)] == ["started"]
+
+
+def test_malformed_start_hook_name_still_wins_over_the_start_receipt(tmp_path, monkeypatch):
+    repo, task_dir = _repo(tmp_path)
+    _bind(repo, task_dir, "sess-282")
+    subagent_lifecycle.register_subagent_start(repo, {
+        "session_id": "sess-282", "agent_id": "agent-282", "agent_type": "harness:qa-cli",
+    })
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, "sess-282", "agent-282", "VERDICT: PASS",
+        agent_type="harness:qa-cli", qualified_hook_name="SubagentStartish",
+        canonical_starts=0,
+    )
+    diagnostics: dict = {}
+    assert subagent_lifecycle.mark_subagent_stop(repo, _stop_payload(
+        "sess-282", "agent-282", "harness:qa-cli", transcript, "VERDICT: PASS",
+    ), diagnostics) == {}
+    assert diagnostics["provenance_reason"] == "unrecognized-start-hook-name"
+
+
+def test_hook_start_agent_type_needs_exactly_one_hook_owned_start():
+    run_id, runtime_id = "run-1", "claude:s:a"
+    start = {
+        "source": "claude_hook", "task_run_id": run_id, "runtime_id": runtime_id,
+        "event": "started", "agent_type": "harness:qa-cli",
+    }
+    helper = subagent_lifecycle._hook_start_agent_type
+    assert helper([start], run_id, runtime_id) == "harness:qa-cli"
+    # receipt_snapshot() yields read-only MappingProxyType views, not dicts.
+    from types import MappingProxyType
+    assert helper([MappingProxyType(start)], run_id, runtime_id) == "harness:qa-cli"
+    assert helper([start, dict(start)], run_id, runtime_id) == ""
+    assert helper([{**start, "source": "codex_watcher"}], run_id, runtime_id) == ""
+    assert helper([{**start, "task_run_id": "run-0"}], run_id, runtime_id) == ""
+    assert helper([{**start, "event": "completed"}], run_id, runtime_id) == ""
+    assert helper([], run_id, runtime_id) == ""
+
+
+def test_background_hook_completes_an_attachment_less_stop_end_to_end(tmp_path, monkeypatch):
+    """Through the real hook entry point, both events, with no plugin start attachment."""
+    repo, task_dir = _repo(tmp_path)
+    _bind(repo, task_dir, "sess-282")
+    started = _run_background_hook(repo, "start", {
+        "hook_event_name": "SubagentStart", "session_id": "sess-282",
+        "agent_id": "agent-282", "agent_type": "harness:qa-cli",
+    })
+    assert started.returncode == 0, started.stderr
+    transcript = _transcript(
+        tmp_path, monkeypatch, task_dir, "sess-282", "agent-282", "VERDICT: PASS",
+        agent_type="harness:qa-cli", canonical_starts=0,
+    )
+    stopped = _run_background_hook(repo, "stop", _stop_payload(
+        "sess-282", "agent-282", "harness:qa-cli", transcript, "VERDICT: PASS",
+    ))
+    assert stopped.returncode == 0, stopped.stderr
+    assert [(item["event"], item["verdict"]) for item in _receipts(task_dir)] == [
+        ("started", ""), ("completed", "PASS"),
+    ]
+    assert not [
+        item for item in _learnings(repo)
+        if item.get("source") == "background_hook:binding-miss"
+    ]

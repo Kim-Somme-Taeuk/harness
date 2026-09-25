@@ -6,6 +6,11 @@
 
 ### Changed
 
+- **Completion receipts without a third-party start banner** — a Claude
+  `SubagentStop` whose transcript carries no `SubagentStart` attachment now binds
+  to the hook-owned `started` receipt for the same runtime and run, so
+  harness-only installs record completions again. See
+  `doc/changes/2026-09-25-claude-stop-binds-to-hook-owned-start.md`.
 - **One plan reviewer, no develop completion audit** — full planning runs a
   single Phase 1 Plan Review (CEO premise/scope + Eng architecture/tests, 900s)
   with a UI-states/journey/accessibility checklist when `ui_scope` is true; the

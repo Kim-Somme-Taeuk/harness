@@ -198,7 +198,12 @@ the matcher-qualified hook-execution record (`hookName:
 attaching to whichever line binds. The banner originates in a third-party
 plugin's optional output and is intermittently absent; anchoring provenance to
 it made PASS unreachable. See
-`doc/common/REQ__process__subagent-receipt-binding.md`.
+`doc/common/REQ__process__subagent-receipt-binding.md`. When a start receipt
+exists, a transcript with no start attachment of either shape binds to the agent
+type in the single hook-owned `started` receipt for the same runtime and run.
+This covers installs where no other plugin writes a start attachment. A present
+attachment is never overridden, and stop-only runtimes are unchanged (see
+`doc/harness/REQ__subagent-completion-receipt-transcript-shape.md`).
 
 The boundary deliberately does **not** require the transcript's final assistant
 text to match `last_assistant_message`. The runtime appends that text around the
