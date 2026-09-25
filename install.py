@@ -28,6 +28,9 @@ Per-runtime steps:
     3. Copy root marketplace manifest into $HARNESS_DEST/.claude-plugin/
     4. claude plugin marketplace add/update installed mirror root
     5. claude plugin install harness@harness on first install
+    5b. claude plugin update harness@harness — the mirror's plugin.json version
+        carries a payload content hash (`<base>+h<sha8>`), so any payload change
+        is a new version and refreshes the plugin cache Claude actually runs
     6. claude mcp add harness ... -- python3 <installed plugin>/mcp/harness_server.py
     7. Print verification command
 """
@@ -963,6 +966,53 @@ def _build_claude_payload(target: Path) -> None:
             ".git", "__pycache__", "*.pyc", ".pytest_cache", ".omc",
         ),
     )
+    _stamp_claude_plugin_version(target / "plugin")
+
+
+def _stamp_claude_plugin_version(plugin_root: Path) -> str:
+    """Suffix the copied manifest version with a hash of the payload.
+
+    Claude Code runs hooks from its plugin cache
+    (`<config>/plugins/cache/harness/harness/<version>`), not from this mirror,
+    and `claude plugin update` only refreshes that cache when the version
+    string changes. With a fixed `2.3.0`, a same-version install synced the
+    mirror while the runtime kept executing the old copy (2026-09-25: a receipt
+    fix reached the hooks only after a manual uninstall/install). Hashing the
+    payload makes every content change a new version, so the supported
+    `claude plugin update` path installs it into a fresh cache directory while
+    running sessions keep theirs. Only the copy is stamped; the source
+    manifest keeps its plain version.
+    """
+    manifest_path = plugin_root / ".claude-plugin" / "plugin.json"
+    digest = hashlib.sha256()
+    for path in sorted(p for p in plugin_root.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(plugin_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    base = str(manifest.get("version") or "0.0.0").split("+", 1)[0]
+    manifest["version"] = f"{base}+h{digest.hexdigest()[:8]}"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest["version"]
+
+
+def _refresh_claude_plugin(dry_run: bool) -> tuple[bool, bool, str]:
+    """Run `claude plugin update harness@harness`; return (ok, refreshed, step)."""
+    cmd = ["claude", "plugin", "update", "harness@harness"]
+    if dry_run:
+        return True, False, f"would run: {' '.join(cmd)}"
+    try:
+        rc, out, err = _run(cmd, dry_run)
+    except subprocess.TimeoutExpired:
+        return False, False, f"{' '.join(cmd)} timed out"
+    message = (out + err).strip()
+    if rc != 0:
+        return False, False, f"{' '.join(cmd)} failed: {message}"
+    if "updated from" in message.lower():
+        last = message.splitlines()[-1].strip()
+        return True, True, f"claude plugin cache refreshed: {last}"
+    return True, False, "claude plugin cache current"
 
 
 def _codex_hooks_config(plugin_root: Path) -> dict:
@@ -1641,8 +1691,26 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
                 "claude", False,
                 f"Claude payload comparison failed: {payload_reason}", steps,
             )
-        if payload_state == PAYLOAD_SYNCHRONIZED:
+        marketplace_current = True
+        if payload_state == PAYLOAD_SYNCHRONIZED and not dry_run:
+            # A synchronized mirror says nothing about the plugin cache Claude
+            # runs from: an earlier install may have synced the mirror without
+            # ever refreshing it. If the marketplace itself is gone, fall
+            # through to the full install, which re-registers it.
+            rc, out, err = _run(["claude", "plugin", "marketplace", "update", "harness"], dry_run)
+            marketplace_current = rc == 0
+            if not marketplace_current:
+                payload_reason = (
+                    "mirror synchronized but claude plugin marketplace update "
+                    f"failed: {err.strip() or out.strip()}"
+                )
+        if payload_state == PAYLOAD_SYNCHRONIZED and marketplace_current:
             steps.append("payload comparison: SYNCHRONIZED")
+            # `update` is a no-op when the cache is already current.
+            refresh_ok, refreshed, refresh_step = _refresh_claude_plugin(dry_run)
+            steps.append(refresh_step)
+            if not refresh_ok:
+                return InstallResult("claude", False, refresh_step, steps)
             # The smoke runs here too. `install_verified.py` delivers with
             # `--if-stale`, so this early return is the harness's own common
             # path; skipping the probe here would mean the one check that
@@ -1658,8 +1726,13 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
                 )
             return InstallResult(
                 "claude", True,
-                "Claude payload SYNCHRONIZED — install skipped "
-                "(config/registry health not checked)",
+                (
+                    "Claude payload SYNCHRONIZED — plugin cache refreshed "
+                    "(config/registry health not checked)"
+                    if refreshed else
+                    "Claude payload SYNCHRONIZED — install skipped "
+                    "(config/registry health not checked)"
+                ),
                 steps,
             )
         steps.append(f"payload comparison: STALE ({payload_reason})")
@@ -1734,6 +1807,14 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
                                      f"claude plugin install failed: {err.strip() or out.strip()}",
                                      steps)
             steps.append(f"claude plugin install {plugin_arg} ok")
+
+    # Step 3b: refresh the plugin cache Claude runs hooks from. Covers the
+    # update path, and the stale-source re-add whose `install` answered
+    # "already" without touching the cache. A fresh install is a no-op here.
+    refresh_ok, _refreshed, refresh_step = _refresh_claude_plugin(dry_run)
+    steps.append(refresh_step)
+    if not refresh_ok:
+        return InstallResult("claude", False, refresh_step, steps)
 
     # Step 4: MCP server registration
     installed_mcp_server = installed_plugin_root / "mcp" / "harness_server.py"

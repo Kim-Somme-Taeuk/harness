@@ -6,6 +6,11 @@
 
 ### Changed
 
+- **Installs reach the Claude plugin cache** — the installed mirror's
+  `plugin.json` version carries a payload hash (`<base>+h<sha8>`) and every
+  Claude install path ends with `claude plugin update harness@harness`, so hook
+  changes reach the cache Claude runs from without a manual reinstall. See
+  `doc/changes/2026-09-26-install-refreshes-claude-plugin-cache.md`.
 - **Completion receipts without a third-party start banner** — a Claude
   `SubagentStop` whose transcript carries no `SubagentStart` attachment now binds
   to the hook-owned `started` receipt for the same runtime and run, so

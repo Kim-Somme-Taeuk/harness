@@ -1457,7 +1457,10 @@ def test_sync_claude_payload_preserves_claude_marketplace_contract(tmp_path):
     assert marketplace["plugins"][0]["name"] == "harness"
     assert marketplace["plugins"][0]["source"] == "./plugin"
     assert manifest["name"] == "harness"
-    assert manifest["version"] == "2.3.0"
+    # The mirror's version carries a payload hash so `claude plugin update`
+    # refreshes the plugin cache; the base stays the source manifest's version.
+    source = json.loads((REPO_ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text())
+    assert re.fullmatch(re.escape(source["version"]) + r"\+h[0-9a-f]{8}", manifest["version"])
     assert manifest["features"]["codex_enabled"] is False
     assert manifest["features"]["codex_marketplace_separate"] is True
     assert not (install_root / "plugin-codex").exists()
@@ -1619,6 +1622,8 @@ def test_claude_install_updates_marketplace_when_registered_to_install_root(tmp_
     assert "plugin marketplace update harness" in lines
     assert "plugin marketplace remove harness" not in lines
     assert not any(line.startswith("plugin install harness@harness") for line in lines)
+    # The cache Claude runs hooks from is refreshed after the marketplace.
+    assert lines.index("plugin update harness@harness") > lines.index("plugin marketplace update harness")
 
 
 def test_claude_install_adds_marketplace_when_not_registered(tmp_path):
