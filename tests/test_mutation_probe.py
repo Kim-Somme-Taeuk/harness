@@ -393,7 +393,7 @@ CACHED_TESTS = """\
 """
 
 
-def test_a_size_preserving_mutation_is_not_hidden_by_stale_bytecode(tmp_path):
+def test_a_size_preserving_mutation_is_not_hidden_by_stale_bytecode(tmp_path, monkeypatch):
     """`Eq -> NotEq` keeps the file's size, so a `__pycache__` hides it.
 
     CPython validates a `.pyc` on the source's mtime-*seconds* and size. The
@@ -413,6 +413,9 @@ def test_a_size_preserving_mutation_is_not_hidden_by_stale_bytecode(tmp_path):
     The end-to-end guard case above cannot cover this: every mutation in it is
     a `drop operand ...`, which shortens the file.
     """
+    # conftest exports PYTHONDONTWRITEBYTECODE suite-wide; the runner must be
+    # the one that sets it, or this test cannot see the runner stop doing so.
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
     repo = _repo(tmp_path, {
         "conftest.py": "",  # puts the repo root on sys.path for the fixture tests
         "mod.py": CACHED_MODULE,

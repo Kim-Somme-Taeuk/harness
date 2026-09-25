@@ -1,8 +1,8 @@
 ---
 tags: [harness, receipts, hooks, bytecode-cache, observability]
 summary: 스테일 bytecode 캐시는 영수증 서브시스템을 무력화할 수 없다. 훅은 설치 트리에 바이트코드를 쓰지 않고, 가드는 캐시 불일치를 변조와 구분해 이름 붙이며, 훅은 스스로 캐시를 제거해 복구하고, MCP 는 추론이 아니라 관측으로 능력 상실을 보고한다.
-updated: 2026-09-16
-freshness: suspect
+updated: 2026-09-26
+freshness: current
 invalidated_by_paths:
   - plugin/scripts/background_hook.py
   - plugin/scripts/_lib.py
@@ -10,6 +10,8 @@ invalidated_by_paths:
   - plugin/mcp/harness_server.py
   - install.py
   - tests/test_bytecode_cache_cannot_disable_receipts.py
+  - tests/conftest.py
+  - tests/test_source_checkout_bytecode.py
 freshness_updated: 2026-09-18T08:10:49Z
 ---
 
@@ -48,6 +50,24 @@ subsequent hook reports success while writing nothing**. `doc/harness/learnings.
 carried 23 `receipt-subsystem-unavailable` entries between 2026-09-07 and
 2026-09-16 before the cause was identified.
 
+## A cache written by another CPython build
+
+One concrete writer of that shape is a second interpreter. Two CPython builds
+that share a cache tag write `cpython-312.pyc` files with the same magic number
+and header, so each accepts the other's cache, but they compile unequal code
+objects:
+
+- 2026-09-09: two 3.12.13 builds (recorded in `plugin/scripts/install_smoke.py`
+  `_runtime_python` and `tests/test_install_smoke.py`).
+- 2026-09-26: `/usr/bin/python3` 3.12.3 and the mise/`.venv` 3.12.14 on one host.
+  For `subagent_lifecycle.py` and `_lib.py` the magic (`cb0d0d0a`) and the
+  16-byte header matched, while the unmarshalled code objects were unequal.
+
+In the source checkout this surfaced as `StaleBytecodeCacheError` at pytest
+collection. An agent had run plugin scripts with the other build, which left
+`plugin/scripts/__pycache__` behind. The next `.venv` pytest run failed with 16
+collection errors until the directory was deleted by hand.
+
 ## Why install-time pruning was not enough
 
 `install.py:_prune_bytecode_caches` already existed, already named this exact
@@ -77,6 +97,7 @@ can always lose that race. The class has to be removed rather than swept.
    | Codex MCP server, JSON | `install.py:_codex_mcp_config` |
    | Claude MCP server, dev install | `install.py` `env_args` for `claude mcp add` |
    | Claude MCP server, marketplace plugin | `plugin/.mcp.json` — shipped in the payload, not registered by `install.py`, so installer-scoped checks are blind to it |
+   | Source-checkout pytest runs | `tests/conftest.py` sets `sys.dont_write_bytecode` and exports `PYTHONDONTWRITEBYTECODE=1` at import, so the suite and its subprocesses write no checkout bytecode. Its `pytest_configure` also prunes `plugin/**/__pycache__` on the xdist controller before collection, skipping nested probes, so a cache another build left cannot be read. Pinned by `tests/test_source_checkout_bytecode.py`, including a red control with the prune disabled. Ad-hoc script runs in the checkout outside pytest remain unprotected. |
    | `scripts/*.py` invocations documented for an agent to run | `plugin/**`, `plugin-codex/**`, `doc/harness/patterns/**`, `README.md`, `README.codex.md` — enumerated and enforced by `test_documented_script_invocations_also_disable_bytecode`, which is the authority for both the root set and the count |
 
    The importer sets overlap, so no single launcher explains the observed

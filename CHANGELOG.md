@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **Suite survives another interpreter's bytecode** — `tests/conftest.py`
+  prunes `plugin/**/__pycache__` before collection and writes no bytecode, so a
+  cache left by another CPython build sharing the `cpython-312` tag no longer
+  fails collection with `StaleBytecodeCacheError`.
 - **Install-tree snapshot is locale-safe** — the develop verification-gate
   Step 0.5 snapshot now runs `comm` under `LC_ALL=C` like its `sort`, so the
   removal check no longer fails on UTF-8 hosts; its executed-doc test no longer

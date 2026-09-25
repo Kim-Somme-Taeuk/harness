@@ -103,9 +103,13 @@ def _plant_stale_pyc(source: Path) -> Path:
 
 def test_a_clean_installed_tree_passes_and_is_not_written_to():
     clean_tree = _clean_tree()
+    # conftest exports PYTHONDONTWRITEBYTECODE suite-wide; the smoke must be
+    # what keeps the tree clean, so it must not inherit that from the suite.
+    env = {key: value for key, value in os.environ.items()
+           if key != "PYTHONDONTWRITEBYTECODE"}
     result = subprocess.run(
         [sys.executable, str(SMOKE), "--plugin-root", str(clean_tree)],
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=300, env=env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ok import:" in result.stdout
@@ -336,7 +340,7 @@ def test_an_absent_or_partial_tree_reports_a_failure_not_a_crash(tmp_path):
     assert any("has no" in line and "harness_server.py" in line for line in lines), lines
 
 
-def test_the_probe_environment_is_pinned_to_the_runtime_interpreter():
+def test_the_probe_environment_is_pinned_to_the_runtime_interpreter(monkeypatch):
     """`sys.executable` is not interchangeable with the runtime's `python3`.
 
     Bytecode written by one CPython 3.12.13 build is rejected by another when
@@ -344,6 +348,9 @@ def test_the_probe_environment_is_pinned_to_the_runtime_interpreter():
     probe run under the venv interpreter would both mis-report and, if it wrote
     bytecode, break the tree it inspected. Measured 2026-09-09.
     """
+    # conftest exports PYTHONDONTWRITEBYTECODE suite-wide; without this the
+    # assertion below would pass even if `_probe_env` stopped setting it.
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
     install_smoke = _load("harness_install_smoke", SMOKE)
     env = install_smoke._probe_env("/nonexistent/plugin", "sid")
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"

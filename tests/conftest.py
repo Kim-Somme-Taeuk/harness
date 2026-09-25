@@ -26,6 +26,18 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS_DIR = os.path.join(REPO_ROOT, "plugin", "scripts")
 
+# Two CPython builds that share a cache tag (here /usr/bin/python3 3.12.3 and
+# the mise/.venv 3.12.14; on 2026-09-09 two 3.12.13 builds) accept each
+# other's `.pyc` as header-valid but compile unequal code, and `_lib`'s
+# receipt-adapter guard refuses the mismatch with `StaleBytecodeCacheError`.
+# The suite therefore writes no bytecode into the checkout, for itself or the
+# subprocesses it spawns, so a later run under another build cannot read one.
+# Set at import so xdist workers inherit the environment. The prune in
+# `pytest_configure` is the half that protects this run from caches other
+# processes left behind.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 
 def _default_install_tree_roots() -> list[str]:
     """The installed runtime trees a suite run must never remove files from.
@@ -86,6 +98,35 @@ _INSTALL_TREE_ROOTS = _default_install_tree_roots()
 # reading their source.
 def is_nested_probe() -> bool:
     return os.environ.get("HARNESS_NESTED_PROBE") == "1"
+
+
+def _prune_checkout_bytecode(root: str) -> None:
+    """Remove real `__pycache__` directories under `root`; never raise.
+
+    Bounded like `background_hook`'s self-prune: symlinked directories are not
+    followed and a symlinked `__pycache__` is left alone. A concurrent writer
+    can make `rmtree` fail; the next session retries.
+    """
+    for parent, dirnames, _files in os.walk(root, followlinks=False):
+        if "__pycache__" not in dirnames:
+            continue
+        dirnames.remove("__pycache__")
+        cache = os.path.join(parent, "__pycache__")
+        if os.path.islink(cache) or not os.path.isdir(cache):
+            continue
+        shutil.rmtree(cache, ignore_errors=True)
+
+
+def pytest_configure(config):
+    """Discard checkout bytecode another CPython build may have written.
+
+    Runs on the xdist controller only, before any worker collects, and never
+    in a nested probe session, which runs inside the real repo while the outer
+    session is importing from it.
+    """
+    if hasattr(config, "workerinput") or is_nested_probe():
+        return
+    _prune_checkout_bytecode(os.path.join(REPO_ROOT, "plugin"))
 
 
 def _install_tree_inventory(root: str) -> dict[str, int]:
