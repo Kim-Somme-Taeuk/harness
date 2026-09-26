@@ -1,5 +1,13 @@
 # `apply_patch` vs `Edit` semantic matrix
 
+> **Historical (2026-05-14):** everything below that describes a sync engine —
+> the transformation rules, the AC-005 implementation notes, the golden corpus
+> under `tests/runtime-sync/` and the test plan — was never built or was
+> removed with the v1.5 pivot to hand-maintained per-runtime skill trees
+> (`doc/harness/spike-report.md` §3.6). The pattern matrix itself remains a
+> reference for how Claude `Edit`/`Write` map onto Codex `apply_patch` when a
+> Codex `SKILL.md` is written by hand.
+
 AC-002 deliverable. Documents the patterns where Codex's `apply_patch` tool diverges from Claude Code's `Edit` / `MultiEdit` tools, with the test status for each pattern under v1 sync engine.
 
 **Why this matters:** when transforming Claude SKILL.md/agent prompts that call `Edit`/`MultiEdit` into Codex-runnable form, the rewrite must preserve semantics. `apply_patch` is diff-envelope-oriented (one call can rename + add + delete files); `Edit` is operation-oriented (one call edits one file). The naïve text substitution `Edit→apply_patch` produces broken Codex prompts for ~half the patterns below.

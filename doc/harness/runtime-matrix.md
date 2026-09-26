@@ -32,9 +32,9 @@ Legend:
 | **Plugin manifest** | `.claude-plugin/plugin.json` | `.codex-plugin/plugin.json` | Same shape (Figma plugin confirms keys `name`/`version`/`description`/`skills`/`apps`/`interface`). One-rename diff. |
 | **Skill loading** | ✅ `plugin/skills/<name>/SKILL.md` | ✅ `<plugin>/skills/<name>/SKILL.md` | Same convention; per-skill content portability varies (next section). |
 | **Slash command invocation** | `/<plugin>:<skill>` | `$<plugin>:<skill>` or `/skills` | Cosmetic difference; README documents both forms. |
-| **`Read`/`Edit`/`Write`/`Bash` tool names in skill prose** | native | 🟡 rewrite | Codex: `read_file`/`apply_patch`/`apply_patch`/`shell`. Sync engine rewrites code-block identifiers (AC-005). Prose text mentioning the tools also gets transformed. |
+| **`Read`/`Edit`/`Write`/`Bash` tool names in skill prose** | native | 🟡 rewrite | Codex: `read_file`/`apply_patch`/`apply_patch`/`shell`. Codex `SKILL.md` files are hand-maintained and name Codex tools directly; the sync engine that rewrote identifiers was removed on 2026-05-14 (`doc/harness/spike-report.md` §3.6). |
 | **`apply_patch` vs `Edit` semantics** | `Edit` operation-oriented | `apply_patch` envelope-oriented | 13-pattern matrix in `doc/harness/apply-patch-matrix.md`. Patterns 1-4 direct; 7-12 caveats; 13 no-port. |
-| **`mcp__server__tool` prefix** | native | bare | Codex strips the prefix; tools exposed by short name (e.g. `task_start`). Sync engine rewrites all `mcp__harness__X` → `X` in skill bodies. |
+| **`mcp__server__tool` prefix** | native | bare | Codex strips the prefix; tools exposed by short name (e.g. `task_start`). Codex skill bodies use the bare names directly (hand-maintained; no sync engine since 2026-05-14). |
 | **Structured user questions** | ✅ native | 🟡 capability-dependent | Codex uses structured input when exposed by the active mode and conversational input otherwise. |
 | **Independent-agent fan-out** | ✅ `Agent(subagent_type=...)` | ✅ `spawn_agent` | Syntax differs, but current plan/develop workflows capability-route fresh independent contexts on both runtimes. |
 | **`Skill(...)` chaining** | ✅ native | ❌ runtime-bound | Codex invokes public skills directly and the run skill owns its internal workflow instead of calling a `Skill(...)` primitive. |

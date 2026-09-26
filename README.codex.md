@@ -93,7 +93,7 @@ hot-reload replaced plugin files.
 - **`codex plugin marketplace add` fails** — `~/.codex/config.toml` already has `[mcp_servers.harness]`; setup refuses to overwrite. Resolve manually.
 - **Hooks don't fire** — plugin-local `~/.codex/harness/plugins/harness/hooks.json` or the plugin cache is stale. Re-run `python3 install.py --codex-only --force`.
 - **Skill returns "tool not found"** — MCP server didn't register. Run `codex mcp test harness`. Check `command =` path in your `[mcp_servers.harness]` block.
-- **Skill output references `mcp__harness__task_start`** — old prompt text; sync engine should have rewritten it. Run `Skill(harness:setup) --regenerate-codex-skills` to re-emit.
+- **Skill output references `mcp__harness__task_start`** — skill prose still uses the Claude-prefixed name; Codex skills are hand-maintained, so change it to the bare name (`task_start`) where it is written. See the troubleshooting entry below.
 - Full troubleshooting: [`doc/harness/codex-troubleshooting.md`](doc/harness/codex-troubleshooting.md).
 
 ## Opting out

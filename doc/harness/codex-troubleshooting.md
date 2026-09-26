@@ -101,16 +101,16 @@ codex exec '$harness:setup --emit-codex-config' < /dev/null
 
 **What you see:** Skill body literal tool name `mcp__harness__task_start` is rejected by Codex with "tool not found", and the surfaced message says the prefix form is wrong on this runtime.
 
-**Cause:** Your generated `plugin-codex/skills/<name>/SKILL.md` is stale — the sync engine (AC-005) renames prefixed MCP tool calls to bare names for Codex output. Re-emit fixes it.
+**Cause:** Codex skill prose still names a tool the Claude way. Nothing
+rewrites it: the Codex skill files are hand-maintained, and the sync engine that
+once renamed prefixed MCP calls was removed on 2026-05-14.
 
-**Fix:**
-```bash
-codex exec '$harness:setup --regenerate-codex-skills' < /dev/null
-# OR manually for one skill:
-codex exec '$harness:setup --regenerate-codex-skills --only run' < /dev/null
-```
-
-If the same issue persists after regeneration, sync engine drift — file a bug with the affected skill name.
+**Fix:** find where the prefixed name comes from and use the bare name there
+(`task_start`, not `mcp__harness__task_start`). A Codex `SKILL.md` is edited in
+`plugin-codex/`. A Markdown sub-file that `install.py` `_build_codex_payload`
+copies from `plugin/skills/` is fixed in `plugin/skills/` in a runtime-neutral
+way, then re-run
+`python3 install.py --codex-only --if-stale`.
 
 ---
 
@@ -182,18 +182,24 @@ not the current task's recovery action.
 
 ---
 
-### "Sync drift — plugin-codex/skills/X.md was hand-edited"
+### Claude and Codex skill trees disagree
 
-**What you see:** CI fails with "content hash mismatch. Run: `python3 plugin/runtime-sync/transform_skill.py --regenerate X`".
+**What you see:** a skill behaves differently under Claude Code and Codex, or
+a fix landed in `plugin/skills/<name>/` but not in `plugin-codex/`.
 
-**Cause:** Someone (you, a teammate, an IDE auto-format) edited a generated file directly. The sync engine has a content-hash header on every emitted file; CI re-emits and compares hashes.
+**Cause:** the `SKILL.md` files (and `plugin-codex/skills/run/agents/openai.yaml`)
+are maintained per runtime. The YAML sync
+engine (`plugin/runtime-sync/transform_skill.py` and its generated-file
+banners; the planned CI parity check was never built) was removed on
+2026-05-14 (`doc/harness/spike-report.md` §3.6), so nothing regenerates one
+tree from the other.
 
-**Fix:** Generated files have a `# GENERATED — do not edit; source: shared/skills/<name>/SKILL.md` header banner. Edit the canonical source, then regenerate:
-```bash
-python3 plugin/runtime-sync/transform_skill.py --regenerate <skill-name>
-# Or all at once:
-python3 plugin/runtime-sync/transform_skill.py --regenerate-all
-```
+**Fix:** edit a skill's `SKILL.md` in both `plugin/skills/` and `plugin-codex/`
+in the same change. The Markdown sub-files listed in `install.py`
+`_build_codex_payload` (its `shared_skill_files` table plus the setup
+sub-files) and `templates/` are copied from `plugin/skills/`, and the copy
+overwrites anything with the same name under `plugin-codex/` — edit those only
+in `plugin/skills/`.
 
 ---
 
@@ -252,7 +258,6 @@ claude plugin marketplace update harness
 ## When to file a bug
 
 - Codex hook payload keys differ from [`doc/harness/codex-payload-deltas.md`](codex-payload-deltas.md) tables.
-- A generated file's content hash mismatches re-emit without a documented edit.
 - `harness:setup` refuses to install on a clean Codex env that meets the version pin.
 
 Repo: `https://github.com/Luxusio/harness/issues`. Attach `doc/harness/learnings.jsonl` (last 20 lines) + `codex --version`.
