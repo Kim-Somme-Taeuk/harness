@@ -76,10 +76,17 @@ def test_dry_run_prints_plan_without_mutation(tmp_path):
     cfg.write_text("# untouched\n")
     pre_size = cfg.stat().st_size
     r = _run(["--dry-run", "--config-path", str(cfg)])
+    output = r.stdout + r.stderr
     if r.returncode != 0:
-        assert "not found in PATH" in (r.stdout + r.stderr), f"dry-run exit {r.returncode}: {r.stderr}"
-    # Output mentions both runtimes (whichever exist) and "dry-run"
-    assert "dry-run" in r.stdout.lower()
+        assert "not found in PATH" in output, f"dry-run exit {r.returncode}: {r.stderr}"
+    # Output mentions "dry-run" for whichever runtime was detected. On a host
+    # with neither CLI on PATH nothing runs, so only the no-mutation checks
+    # below apply.
+    both_missing = (
+        "codex CLI not found in PATH" in output and "claude CLI not found in PATH" in output
+    )
+    if not both_missing:
+        assert "dry-run" in r.stdout.lower()
     # Config file untouched
     assert cfg.stat().st_size == pre_size
     assert cfg.read_text() == "# untouched\n"
@@ -88,7 +95,9 @@ def test_dry_run_prints_plan_without_mutation(tmp_path):
 def test_codex_only_skips_claude(tmp_path):
     cfg = tmp_path / "fake-codex-config.toml"
     r = _run(["--dry-run", "--codex-only", "--config-path", str(cfg)])
-    assert r.returncode == 0, r.stderr
+    if r.returncode != 0:
+        # Same tolerance as test_claude_only_skips_codex: only a missing CLI.
+        assert "codex CLI not found in PATH" in (r.stdout + r.stderr), r.stderr
     assert "[claude]" not in r.stdout
     # codex section present (or "codex CLI not found" if codex unavailable in env)
     assert "[codex]" in r.stdout or "codex CLI not found" in r.stdout

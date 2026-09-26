@@ -16,6 +16,7 @@ of the guard. See doc/harness/REQ__recorded-claims-must-stay-falsifiable.md.
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -67,6 +68,12 @@ class VerifyReportProbeTests(unittest.TestCase):
         # truncation does, and would go red on a `test_command` that simply
         # ends at `pytest`, which is correct input.
         self.assertNotIn("tests/", probe, "the probe must not run the suite")
+
+        # Running the probe needs the declared launcher on PATH (`uv` here). A
+        # host without it cannot run the suite command either; say so instead
+        # of failing, after the truncation checks above have already run.
+        if shutil.which(probe[0]) is None:
+            self.skipTest(f"{probe[0]!r} is not on PATH; the declared runner cannot be probed here")
 
         proc = subprocess.run(
             probe, cwd=str(ROOT), capture_output=True, text=True, check=False,

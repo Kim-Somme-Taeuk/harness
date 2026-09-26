@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **Tests degrade cleanly without uv or codex** — the install dry-run, the
+  codex-only run, and the verify-report runner probe no longer fail on a host
+  whose PATH lacks `uv` or `codex`; the probe skips with the missing launcher
+  named, after its truncation checks run.
 - **Unbound-verdict diagnostics name the interim stop** — the
   `receipts:verdict-unbound` breadcrumb and `task_verify`'s "Recorded but
   unusable" text now list a lens that ended its turn mid-work as a possible
