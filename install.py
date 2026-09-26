@@ -4,12 +4,11 @@
 Auto-detects which CLIs are present and installs harness on every runtime it finds.
 
 Usage:
-    python3 install.py                  # install on every detected runtime in parallel
+    python3 install.py                  # refresh every detected runtime whose payload is stale
     python3 install.py --codex-only     # only Codex (skip Claude even if present)
     python3 install.py --claude-only    # only Claude
     python3 install.py --dry-run        # print what each runtime would do; no mutation
-    python3 install.py --if-stale       # refresh only stale canonical runtime payloads
-    python3 install.py --force          # overwrite existing harness MCP config without prompting
+    python3 install.py --force          # reinstall even when the payload is synchronized
     python3 install.py --config-path P  # override Codex ~/.codex/config.toml path (testing)
 
 Stdlib-only. Compatible with the Python ships in mise / system / venv.
@@ -277,7 +276,7 @@ def _open_inventory_root(root: Path) -> int:
                 # asked for. Naming the payload root sent a reader to inspect a
                 # directory whose modes were fine while a writable *ancestor*
                 # was the refusal — and since `--force` does not clear
-                # ancestors, the repair the tool prints left `--if-stale`
+                # ancestors, the repair the tool prints left the default run
                 # failing identically on the next run. An unrecoverable loop
                 # deserves at least an accurate name.
                 component = Path(*absolute.parts[: index + 2])
@@ -504,7 +503,7 @@ def _compare_payload_trees(expected: Path, actual: Path) -> tuple[str, str]:
     # source checkout, so it inherits the source's modes. On a checkout
     # bind-mounted from a Windows host every file reads `0o777`, and
     # `_tree_inventory` then refuses a tree this installer created itself, from
-    # bytes it is about to install anyway: `--if-stale` dies with `expected
+    # bytes it is about to install anyway: the default run dies with `expected
     # payload unavailable`, which takes out `install_verified.py` — the
     # harness's own delivery path — while `--force` still works.
     #
@@ -830,7 +829,7 @@ def _prune_bytecode_caches(root: Path) -> list[str]:
     `_lib` rejects a module whose code object does not match a fresh compile of
     the file, so `background_hook` dies before `main()` and no receipt is ever
     written. Payload comparison lists `__pycache__` in `_VOLATILE_DIR_NAMES`, so
-    such a tree still reports SYNCHRONIZED and `--if-stale` — the harness's own
+    such a tree still reports SYNCHRONIZED and the default run — the harness's own
     delivery path — skips the install that would have replaced it. The bad cache
     then survives every subsequent run. Pruning here is what breaks that loop.
 
@@ -1596,7 +1595,7 @@ def _claude_payload_state(install_root: Path | None = None) -> tuple[str, str]:
 
 
 def install_codex(*, dry_run: bool, force: bool,
-                  config_path: str | None, if_stale: bool = False) -> InstallResult:
+                  config_path: str | None) -> InstallResult:
     steps: list[str] = []
     if not shutil.which("codex"):
         return InstallResult("codex", False, "codex CLI not found in PATH", steps)
@@ -1629,7 +1628,7 @@ def install_codex(*, dry_run: bool, force: bool,
         #
         # Normalized from the installer-created *ancestors* down, not from the
         # payload roots: `_open_inventory_root` refuses a writable ancestor
-        # too, and normalizing only the payload left `--if-stale` failing
+        # too, and normalizing only the payload left the default run failing
         # permanently on a state that the `--force` the tool prints does not
         # clear. Both roots here are created by this installer —
         # `sync_codex_payload` mkdirs `CODEX_INSTALL_ROOT`, and
@@ -1652,7 +1651,7 @@ def install_codex(*, dry_run: bool, force: bool,
             / "plugins" / "cache" / CODEX_PLUGIN_MARKETPLACE,
         ):
             steps.extend(_normalize_payload_modes(owned_root))
-    if if_stale:
+    if not force:
         payload_state, payload_reason = _codex_payload_state(config_path)
         if payload_state == PAYLOAD_ERROR:
             return InstallResult(
@@ -1662,7 +1661,7 @@ def install_codex(*, dry_run: bool, force: bool,
             )
         if payload_state == PAYLOAD_SYNCHRONIZED:
             steps.append("payload comparison: SYNCHRONIZED")
-            # Same reason as install_claude: `--if-stale` is the harness's own
+            # Same reason as install_claude: the default run is the harness's own
             # delivery path, so the probe belongs on the skip branch as well.
             # The cache entry is the tree Codex loads; when it is absent there
             # is nothing to probe and that is reported rather than assumed.
@@ -1749,8 +1748,7 @@ def install_codex(*, dry_run: bool, force: bool,
     # Remove any stale source before the TOML merge. The merge writes the
     # canonical installed-copy marketplace block, and the add below refreshes
     # Codex's own bookkeeping without deleting that block first.
-    if force or if_stale:
-        _run(["codex", "plugin", "marketplace", "remove", "harness"], dry_run)
+    _run(["codex", "plugin", "marketplace", "remove", "harness"], dry_run)
 
     # Step 5: TOML merge via library API
     config_plugin_root = source_plugin_root if not dry_run else CODEX_INSTALL_ROOT / "plugins" / CODEX_PLUGIN_NAME
@@ -1764,7 +1762,7 @@ def install_codex(*, dry_run: bool, force: bool,
     result = emit_and_install_codex_config(
         str(config_plugin_root),
         config_path=config_path,
-        force=force or if_stale,
+        force=True,
     )
     if not result["ok"]:
         return InstallResult("codex", False, result["message"], steps,
@@ -1797,7 +1795,7 @@ def install_codex(*, dry_run: bool, force: bool,
                          backup_path=result["backup_path"])
 
 
-def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> InstallResult:
+def install_claude(*, dry_run: bool, force: bool) -> InstallResult:
     steps: list[str] = []
     if not shutil.which("claude"):
         return InstallResult("claude", False, "claude CLI not found in PATH", steps)
@@ -1819,7 +1817,7 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
         # Same placement reason as the prune: a tree left world-writable by an
         # earlier install is refused by the import guards, yet compares equal.
         steps.extend(_normalize_payload_modes(claude_install_root))
-    if if_stale:
+    if not force:
         payload_state, payload_reason = _claude_payload_state()
         if payload_state == PAYLOAD_ERROR:
             return InstallResult(
@@ -1847,8 +1845,8 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
             steps.append(refresh_step)
             if not refresh_ok:
                 return InstallResult("claude", False, refresh_step, steps)
-            # The smoke runs here too. `install_verified.py` delivers with
-            # `--if-stale`, so this early return is the harness's own common
+            # The smoke runs here too. `install_verified.py` delivers with the
+            # default run, so this early return is the harness's own common
             # path; skipping the probe here would mean the one check that
             # inspects what actually runs almost never runs.
             smoke_ok, smoke_steps = _smoke_installed_runtime(installed_plugin_root)
@@ -1971,8 +1969,7 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
         # than whichever one seemed responsible. See `_python_hook_cmd`.
         "-e", "PYTHONDONTWRITEBYTECODE=1",
     ]
-    if force or if_stale:
-        _run(["claude", "mcp", "remove", "harness"], dry_run)
+    _run(["claude", "mcp", "remove", "harness"], dry_run)
     cmd = ["claude", "mcp", "add", "harness"] + env_args + ["--", "python3", str(installed_mcp_server)]
     rc, out, err = _run(cmd, dry_run)
     combined = (out + err).lower()
@@ -1992,13 +1989,12 @@ def main() -> int:
     p.add_argument("--codex-only", action="store_true", help="Install only on Codex CLI")
     p.add_argument("--claude-only", action="store_true", help="Install only on Claude Code")
     p.add_argument("--dry-run", action="store_true", help="Print plan, do not mutate")
-    p.add_argument("--force", action="store_true",
-                   help="Overwrite existing harness MCP config without prompting")
     p.add_argument(
-        "--if-stale", action="store_true",
+        "--force", action="store_true",
         help=(
-            "Refresh only runtimes whose canonical installed payload differs from source; "
-            "does not diagnose config/registry-only drift"
+            "Reinstall even when the installed payload matches source. Without it, "
+            "only stale runtimes are refreshed; the payload comparison does not "
+            "see config/registry-only drift, which is what this flag is for"
         ),
     )
     p.add_argument("--config-path", default=None,
@@ -2008,22 +2004,18 @@ def main() -> int:
     if args.codex_only and args.claude_only:
         print("ERROR: --codex-only and --claude-only are mutually exclusive", file=sys.stderr)
         return 2
-    if args.force and args.if_stale:
-        print("ERROR: --force and --if-stale are mutually exclusive", file=sys.stderr)
-        return 2
 
     explicit_runtime = args.codex_only or args.claude_only
     tasks: list[tuple[str, callable]] = []
     skipped: list[str] = []
     if not args.claude_only and (explicit_runtime or shutil.which("codex")):
         tasks.append(("codex", lambda: install_codex(
-            dry_run=args.dry_run, force=args.force, config_path=args.config_path,
-            if_stale=args.if_stale)))
+            dry_run=args.dry_run, force=args.force, config_path=args.config_path)))
     elif not args.claude_only:
         skipped.append("codex (codex CLI not found in PATH)")
     if not args.codex_only and (explicit_runtime or shutil.which("claude")):
         tasks.append(("claude", lambda: install_claude(
-            dry_run=args.dry_run, force=args.force, if_stale=args.if_stale)))
+            dry_run=args.dry_run, force=args.force)))
     elif not args.codex_only:
         skipped.append("claude (claude CLI not found in PATH)")
 
@@ -2075,34 +2067,35 @@ def main() -> int:
                 # printing it here looped: fix the named directory instead.
                 print(
                     f"    repair: {r.repair}, then re-run: "
-                    f"python3 install.py --{r.runtime}-only --if-stale"
+                    f"python3 install.py --{r.runtime}-only"
                 )
-            elif args.if_stale:
+            else:
                 print(
                     "    repair after correcting the reported cause: "
                     f"python3 install.py --{r.runtime}-only --force"
                 )
         print()
 
+    drift_note = (
+        "Payload comparison covers installer-owned trees only; "
+        "config/registry health not checked."
+    )
     if any_failed:
-        if args.if_stale:
-            print(
-                "Payload comparison covers installer-owned trees only; "
-                "config/registry health not checked."
-            )
+        if not args.force:
+            print(drift_note)
         print("Install completed with errors. Re-run failed runtimes after addressing the issue above.",
               file=sys.stderr)
         return 1
     if args.dry_run:
         print("Dry-run complete. Re-run without --dry-run to apply.")
-    elif args.if_stale and all("install skipped" in result.summary for result in results):
-        print("Payloads already current. No install performed.")
-    elif args.if_stale:
-        print("Conditional install complete. Refreshed stale runtime payloads only.")
-    else:
+    elif args.force:
         print("Install complete on all detected runtimes.")
-    if args.if_stale:
-        print("Payload comparison covers installer-owned trees only; config/registry health not checked.")
+    elif all("install skipped" in result.summary for result in results):
+        print("Payloads already current. No install performed.")
+    else:
+        print("Conditional install complete. Refreshed stale runtime payloads only.")
+    if not args.force:
+        print(drift_note)
     return 0
 
 

@@ -473,15 +473,15 @@ qa_notes:
       - "Driving install.py for Codex with a scratch HOME needs mise reachable from that HOME: /home/ccc/.local/bin/codex is a shim that execs `~/.local/bin/mise exec node@22 -- codex`. Symlink mise into <scratch>/.local/bin/mise plus <scratch>/.local/share/mise and <scratch>/.config/mise, otherwise the install fails with `codex --version failed: exec: <scratch>/.local/bin/mise: not found`. codex then prints a harmless WARNING about refusing PATH aliases under /tmp and still reports its version."
       - "CODEX_INSTALL_ROOT is a module-level `Path.home() / '.codex' / 'harness'` computed at import, so only HOME redirects it; HARNESS_DEST redirects the Claude root only. --config-path moves config.toml alone."
       - "Reproducing the Windows-bind-mount bug locally: `git ls-files -z | xargs -0 tar -cf - | tar -xf - -C <src>` then `chmod -R 777 <src>`, and install from <src>. At 90a7afe that yields STATUS: ERROR with `background_hook: SystemExit: 0` and `_lib.py, line 1513 ... PermissionError: task-control writer requires its canonical module import`, plus 105 world-writable installed paths. At 49434e0 the same run reports `cleared group/other-write bits on 105 payload path(s)` and 0 residual."
-      - "install.py --if-stale on a world-writable SOURCE checkout still errors (`payload comparison failed: expected payload unavailable: unsafe directory at .claude-plugin` for Claude, `unsafe payload path component` for Codex). Documented known limitation in doc/harness/REQ__installed-tree-modes-are-installer-owned.md; --force is the working path."
-      - "_normalize_payload_modes covers the payload roots only (Claude install root, ~/.codex/harness/plugins/harness, ~/.codex/plugins/cache/<mkt>/<name>/<ver>). If an ANCESTOR dir such as ~/.codex/harness or ~/.codex/plugins/cache is group/other-writable, _open_inventory_root refuses and --if-stale errors permanently with `unsafe payload path component: <payload root>` — and the suggested `--codex-only --force` repair does NOT clear it (verified 2026-09-17). Normal installs create those ancestors with umask 755, so this needs a manual chmod to reach."
+      - "The conditional install.py run on a world-writable SOURCE checkout still errors (`payload comparison failed: expected payload unavailable: unsafe directory at .claude-plugin` for Claude, `unsafe payload path component` for Codex). Documented known limitation in doc/harness/REQ__installed-tree-modes-are-installer-owned.md; --force is the working path."
+      - "_normalize_payload_modes covers the payload roots only (Claude install root, ~/.codex/harness/plugins/harness, ~/.codex/plugins/cache/<mkt>/<name>/<ver>). If an ANCESTOR dir such as ~/.codex/harness or ~/.codex/plugins/cache is group/other-writable, _open_inventory_root refuses and the conditional install errors permanently with `unsafe payload path component: <payload root>` — and the suggested `--codex-only --force` repair does NOT clear it (verified 2026-09-17). Normal installs create those ancestors with umask 755, so this needs a manual chmod to reach."
       - "pytest is not importable via `python3 -m pytest` here; use /project/harness-5265216677d3/.venv/bin/python -m pytest (full suite ~15s, xdist)."
   install_comparison_names_the_writable_component_qa:
     discovered: 2026-09-17
     invalidated_by_paths:
       - install.py
     notes:
-      - "SUPERSEDES the two install_writable_payload_qa notes about --if-stale on a world-writable source and about _normalize_payload_modes covering payload roots only. After TASK__install-comparison-names-the-writable-component, _compare_payload_trees normalizes the expected staging copy, and install_codex normalizes from CODEX_INSTALL_ROOT and <codex_home>/plugins/cache/harness downward."
+      - "SUPERSEDES the two install_writable_payload_qa notes about the conditional install on a world-writable source and about _normalize_payload_modes covering payload roots only. After TASK__install-comparison-names-the-writable-component, _compare_payload_trees normalizes the expected staging copy, and install_codex normalizes from CODEX_INSTALL_ROOT and <codex_home>/plugins/cache/harness downward."
       - "Fast codex stub for install.py QA: the real codex shim execs mise and hangs on a scratch HOME (node@22 download). Instead put `#!/bin/sh` + `if [ \"$1\" = --version ]; then echo 'codex-cli 99.0.0'; exit 0; fi; exit 0` at <scratch>/bin/codex and prepend it to PATH. install.py only needs exit 0 from `codex plugin marketplace remove/add` and `codex features enable plugin_hooks`."
       - "Mode-refusal messages now read `unsafe payload path component: <component> (mode 0777, uid <uid>) while inspecting <payload root>` at both sites (_open_inventory_root raise, _tree_inventory absent-target walk). Grep for 'while inspecting' to tell the new format from the pre-fix one."
       - "SUPERSEDED 2026-09-18 — FALSE as written; do not act on it. It claimed `uv is NOT on PATH inside subagent shells on this host even though manifest test_command says uv run pytest`. Re-probed 2026-09-18 from inside a subagent shell: `command -v uv` -> /home/ccc/.local/share/mise/shims/uv, and `uv run pytest --version` -> pytest 9.0.3 (rc 0). The manifest test_command is correct in every shell the harness spawns. What actually fails is `python3 -m pytest` (No module named pytest), which is what the docs_only_provenance_qa note already said; this entry generalized that one failure to the wrong tool. Both `uv run pytest tests/ -q` and ./.venv/bin/python -m pytest work; prefer the manifest command."
@@ -563,3 +563,14 @@ environment_notes:
       edits to the scratch install.py are picked up. Do not pass `-p no:xdist`: the repo pytest config uses xdist
       flags and pytest exits 4 (usage error), which looks like a failure but is not a red result.
     discovered: 2026-09-26
+  - topic: "End-to-end install.py run in a throwaway HOME"
+    detail: >
+      A real non-dry `python3 install.py` can be exercised safely with HOME=<scratch>/home,
+      HARNESS_DEST=<scratch>/home/.claude/harness-dev, PATH=<scratch>/bin:/usr/bin:/bin (fake `codex` and
+      `claude` shell scripts that log argv to $CLI_LOG, exit 0, and print a version for --version; the codex
+      version must be >= the pin, e.g. 9.9.9) and --config-path <scratch>/home/.codex/config.toml.
+      CODEX_INSTALL_ROOT is Path.home()-derived at import, so HOME redirects it. First run: STALE -> APPLIED
+      with config.toml.bak.<ts>; second run: both SKIPPED + "Payloads already current"; a symlink planted in
+      harness-dev/plugin gives a comparison ERROR; chmod 777 on <home>/.claude gives the ancestor repair line.
+      Full run takes ~20s per invocation (runtime smoke).
+    discovered: 2026-09-27

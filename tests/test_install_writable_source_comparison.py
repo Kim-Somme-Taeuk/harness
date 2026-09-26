@@ -3,13 +3,13 @@
 `TASK__install-strips-host-write-bits` stopped the installer from *producing* a
 guard-rejected tree. Two states it left open, both found after that task closed:
 
-1. `--if-stale` still died on a world-writable *source*, because
+1. The conditional install still died on a world-writable *source*, because
    `_compare_payload_trees` builds the expected side with
    `copytree(..., copy2)` into a temp dir and then refuses its own scratch copy
    for carrying the source's `0o777`. That takes out `install_verified.py`, the
    harness's own delivery path, while `--force` keeps working.
 2. A world-writable installer-created *ancestor* of a payload root made
-   `--if-stale` fail permanently, with a message naming the payload root rather
+   the conditional install fail permanently, with a message naming the payload root rather
    than the ancestor — and the `--force` the tool prints does not clear
    ancestors, so the next run failed identically.
 
@@ -172,7 +172,7 @@ def test_a_rejected_component_is_named_when_the_target_does_not_exist_yet(tmp_pa
 
 
 def test_install_clears_a_writable_installer_created_ancestor(tmp_path, monkeypatch):
-    """AC3: `--if-stale` must not stay stuck on a state `--force` cannot clear.
+    """AC3: the default run must not stay stuck on a state `--force` cannot clear.
 
     Drives the real Codex entry point so the fix is pinned at the call site.
     """
@@ -211,14 +211,14 @@ def test_install_clears_a_writable_installer_created_ancestor(tmp_path, monkeypa
         mock.patch.object(install, "sync_codex_payload") as sync,
     ):
         result = install.install_codex(
-            dry_run=False, force=False, config_path=str(config_path), if_stale=True,
+            dry_run=False, force=False, config_path=str(config_path),
         )
 
     assert result.ok, result.summary + "\n" + "\n".join(result.steps)
     sync.assert_not_called()
     for path in writable:
         assert not stat.S_IMODE(os.lstat(path).st_mode) & 0o022, (
-            f"{path} stayed writable, so --if-stale stays stuck"
+            f"{path} stayed writable, so the default run stays stuck"
         )
     # And the tree is now inspectable, which is the point of clearing them.
     state, _inv, reason = install._tree_inventory(mirror)
@@ -260,7 +260,7 @@ def test_the_installer_does_not_chmod_what_it_does_not_exclusively_own(
         mock.patch.object(install, "sync_codex_payload"),
     ):
         install.install_codex(
-            dry_run=False, force=False, config_path=str(config_path), if_stale=True,
+            dry_run=False, force=False, config_path=str(config_path),
         )
 
     assert stat.S_IMODE(os.lstat(cache).st_mode) & 0o022, (

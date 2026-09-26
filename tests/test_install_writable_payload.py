@@ -149,7 +149,7 @@ def test_claude_install_normalizes_modes_even_when_synchronized(tmp_path, monkey
     """AC1 at the call site, on the path the harness itself delivers through.
 
     Pinning `_normalize_payload_modes` alone would leave the load-bearing claim
-    — that it runs on the `--if-stale` SYNCHRONIZED skip path too — asserted
+    — that it runs on the default run's SYNCHRONIZED skip path too — asserted
     only by reading. Deleting the call from `install_claude` must fail a test,
     not just change a comment. Mirrors
     `tests/regression/task__unified_install/test_install_py.py::
@@ -167,7 +167,7 @@ def test_claude_install_normalizes_modes_even_when_synchronized(tmp_path, monkey
         mock.patch.object(install.shutil, "which", return_value="/bin/claude"),
         mock.patch.object(install, "_run", return_value=(0, "claude 2.1.0\n", "")),
     ):
-        result = install.install_claude(dry_run=False, force=False, if_stale=True)
+        result = install.install_claude(dry_run=False, force=False)
 
     assert result.ok, result.summary + "\n" + "\n".join(result.steps)
     assert any("cleared group/other-write bits" in step for step in result.steps)
@@ -216,7 +216,7 @@ def test_codex_install_normalizes_both_payload_roots_when_synchronized(tmp_path)
         mock.patch.object(install, "sync_codex_payload") as sync,
     ):
         result = install.install_codex(
-            dry_run=False, force=False, config_path=str(config_path), if_stale=True,
+            dry_run=False, force=False, config_path=str(config_path),
         )
 
     assert result.ok, result.summary + "\n" + "\n".join(result.steps)

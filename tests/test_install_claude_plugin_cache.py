@@ -74,7 +74,7 @@ def test_mirror_version_is_a_deterministic_payload_hash(tmp_path):
     assert restamped.count("+") == 1
 
 
-def test_synchronized_if_stale_refreshes_a_stale_plugin_cache(tmp_path, monkeypatch):
+def test_synchronized_default_run_refreshes_a_stale_plugin_cache(tmp_path, monkeypatch):
     install = _load_install_module()
     install_root = tmp_path / "harness-dev"
     monkeypatch.setenv("HARNESS_DEST", str(install_root))
@@ -84,7 +84,7 @@ def test_synchronized_if_stale_refreshes_a_stale_plugin_cache(tmp_path, monkeypa
         mock.patch.object(install.shutil, "which", return_value="/bin/claude"),
         mock.patch.object(install, "_run", side_effect=_fake_run(install_root, calls=calls)),
     ):
-        result = install.install_claude(dry_run=False, force=False, if_stale=True)
+        result = install.install_claude(dry_run=False, force=False)
     assert result.ok, result.summary + "\n" + "\n".join(result.steps)
     assert "payload comparison: SYNCHRONIZED" in result.steps
     assert calls.index(MARKETPLACE_UPDATE) < calls.index(UPDATE)
@@ -94,7 +94,7 @@ def test_synchronized_if_stale_refreshes_a_stale_plugin_cache(tmp_path, monkeypa
     assert "install skipped" not in result.summary
 
 
-def test_synchronized_if_stale_with_a_current_cache_stays_skipped(tmp_path, monkeypatch):
+def test_synchronized_default_run_with_a_current_cache_stays_skipped(tmp_path, monkeypatch):
     install = _load_install_module()
     install_root = tmp_path / "harness-dev"
     monkeypatch.setenv("HARNESS_DEST", str(install_root))
@@ -103,7 +103,7 @@ def test_synchronized_if_stale_with_a_current_cache_stays_skipped(tmp_path, monk
         mock.patch.object(install.shutil, "which", return_value="/bin/claude"),
         mock.patch.object(install, "_run", side_effect=_fake_run(install_root, update=(0, CURRENT, ""))),
     ):
-        result = install.install_claude(dry_run=False, force=False, if_stale=True)
+        result = install.install_claude(dry_run=False, force=False)
     assert result.ok, result.summary
     assert "claude plugin cache current" in result.steps
     assert "install skipped" in result.summary
@@ -124,7 +124,7 @@ def test_synchronized_mirror_without_a_marketplace_falls_back_to_a_full_install(
             listed=False,
         )),
     ):
-        result = install.install_claude(dry_run=False, force=False, if_stale=True)
+        result = install.install_claude(dry_run=False, force=False)
     assert result.ok, result.summary + "\n" + "\n".join(result.steps)
     assert any(
         step.startswith("payload comparison: STALE (mirror synchronized but claude plugin marketplace update failed")

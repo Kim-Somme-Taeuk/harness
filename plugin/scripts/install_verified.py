@@ -388,7 +388,7 @@ def install_verified(task_dir: Path) -> int:
                         file=sys.stderr,
                     )
                     return 5
-                command = [sys.executable, str(snapshot_root / "install.py"), "--if-stale"]
+                command = [sys.executable, str(snapshot_root / "install.py")]
                 result = subprocess.run(command, cwd=snapshot_root)
             if result.returncode != 0:
                 print(f"ERROR: installer exited {result.returncode}", file=sys.stderr)

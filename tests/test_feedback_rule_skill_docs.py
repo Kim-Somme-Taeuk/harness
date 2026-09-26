@@ -218,7 +218,8 @@ def test_self_improvement_documents_readable_tier2_format():
 def test_harness_source_completion_requires_commit_and_conditional_delivery():
     root = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
     assert "commit the completed diff" in root
-    assert "python3 install.py --if-stale" in root
+    assert "`python3 install.py`, whose default run skips" in root
+    assert "--if-stale" not in root
     assert "before `task_close`" in root
     assert "must not introduce a second install phase" in root
 
@@ -253,7 +254,8 @@ def test_develop_installs_harness_after_fresh_qa_before_close():
             else "plugin/scripts/install_verified.py"
         )
         assert expected_installer in section
-        assert "python3 install.py --if-stale" in section
+        assert "`python3 install.py` (the default conditional run)" in section
+        assert "--if-stale" not in section
         assert "terminal ordered" in section
         assert "failed refreshes block completion" in " ".join(section.lower().split())
 

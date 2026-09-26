@@ -102,7 +102,7 @@ def test_stateless_installer_rechecks_every_call_with_conditional_mode(tmp_path)
         assert mod.install_verified(task) == 0
         assert run.call_count == 2
         assert all(
-            call.args[0][-1] == "--if-stale"
+            call.args[0][-1].endswith("install.py")
             for call in run.call_args_list
         )
     assert not (task / "INSTALL_RECEIPT.json").exists()
@@ -122,7 +122,9 @@ def test_stateless_installer_rechecks_every_call_with_conditional_mode(tmp_path)
     ):
         assert mod.install_verified(task) == 0
         assert run.call_count == 1
-        assert run.call_args.args[0][-1] == "--if-stale"
+        # The default run is the conditional refresh; `--force` would reinstall
+        # synchronized runtimes on every close.
+        assert run.call_args.args[0][-1].endswith("install.py")
 
 
 def test_task_authority_mutation_waits_for_install_transaction(tmp_path):

@@ -384,9 +384,9 @@ and runtime summaries. The trusted helper may inspect the concrete install
 payload and Git state because installation is an explicit operation; those
 checks are not lifecycle gates. It verifies canonical harness identity and
 ordered review+QA receipts before it invokes the snapshot's
-`python3 install.py --if-stale`. The installer builds each canonical runtime
-projection, leaves synchronized runtimes untouched, and refreshes only stale
-runtimes. Comparison errors or failed refreshes block completion; never claim
+`python3 install.py` (the default conditional run). The installer builds
+each canonical runtime projection, leaves synchronized runtimes untouched, and
+refreshes only stale runtimes. Comparison errors or failed refreshes block completion; never claim
 the source is deployed. Payload synchronization does not diagnose external
 config/registry-only drift; `python3 install.py --force` remains the explicit
 repair path. Do not rerun installation for docs-only edits after this step. The

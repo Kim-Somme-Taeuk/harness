@@ -405,9 +405,10 @@ edit and verification, before `task_close`, so stale installed hooks cannot
 prevent the task from reaching the close gate. Capture the installer exit code
 and runtime summaries. The trusted helper verifies canonical harness identity,
 current-run review+QA receipts, and a byte-stable install-payload snapshot
-before it invokes the snapshot's `python3 install.py --if-stale`. The installer
-builds each canonical runtime projection, leaves synchronized runtimes untouched,
-and refreshes only stale runtimes. Comparison errors or failed refreshes block
+before it invokes the snapshot's
+`python3 install.py` (the default conditional run). The installer builds each
+canonical runtime projection, leaves synchronized runtimes untouched, and
+refreshes only stale runtimes. Comparison errors or failed refreshes block
 completion; never claim the source is deployed. Payload synchronization does not
 diagnose external config/registry-only drift; `python3 install.py --force` remains
 the explicit repair path. Do not rerun installation for docs-only edits after

@@ -74,7 +74,7 @@ collection errors until the directory was deleted by hand.
 failure in its docstring, and was already wired at three call sites — each
 deliberately **before** the staleness decision, because payload comparison lists
 `__pycache__` in `_VOLATILE_DIR_NAMES` and a poisoned tree still answers
-SYNCHRONIZED to `--if-stale`.
+SYNCHRONIZED to the default (conditional) run.
 
 That remains correct and stays. It is insufficient because it is install-time
 only: pruning happens, hooks re-import, caches are rewritten, and any later

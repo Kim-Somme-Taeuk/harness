@@ -108,7 +108,7 @@ and drives the installed `background_hook.py` against a throwaway repository
 until a `started` receipt row appears. A failure fails the install with the
 tree named.
 
-It also runs on the `--if-stale` PAYLOAD_SYNCHRONIZED early return, which is the
+It also runs on the default run's PAYLOAD_SYNCHRONIZED early return, which is the
 path `install_verified.py` takes on every close and therefore the common one:
 with the probe only on the post-sync branch, the only check that inspects what
 actually runs would almost never run. Measured cost ~0.5s per runtime. On the

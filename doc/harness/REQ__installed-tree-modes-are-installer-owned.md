@@ -71,7 +71,7 @@ smoke, `chmod -R 777` on the same copy fails it identically to the field report,
   installer-owned tree; idempotent, skips symlinks, and a no-op on a clean tree
   so it cannot flip a SYNCHRONIZED payload pair to STALE. Called on the Claude
   install root and the Codex payload/cache roots, on both the post-sync path and
-  the `--if-stale` skip path.
+  the default run's SYNCHRONIZED skip path.
   A tree that *was* writable is a different case and normalizing it may well
   report STALE next: `0o777 & ~0o022` is `0o755`, which need not equal the
   source's `0o644`, and `_tree_inventory` records file mode. That is the right
@@ -84,7 +84,7 @@ smoke, `chmod -R 777` on the same copy fails it identically to the field report,
 - `tests/test_install_writable_payload.py` — normalization clears the bits,
   preserves read/execute bits, skips symlinks, no-ops on a clean tree; end to
   end, a `0o777` payload copy makes the smoke name the writable-mode cause and
-  normalization makes the same copy pass; and both runtimes' `--if-stale` entry
+  normalization makes the same copy pass; and both runtimes' default-run entry
   points are driven so that deleting a call site fails a test rather than only
   contradicting a comment.
 
@@ -92,7 +92,7 @@ smoke, `chmod -R 777` on the same copy fails it identically to the field report,
 
 Originally recorded here as a known limitation: `_tree_inventory` refuses any
 file outside `{0600, 0644, 0755}` and any group/other-writable directory or path
-component, so on a world-writable checkout `install.py --if-stale` died with
+component, so on a world-writable checkout the conditional install died with
 `expected payload unavailable`, taking out `install_verified.py` — the harness's
 own delivery path — while `--force` kept working.
 
@@ -116,10 +116,10 @@ the real flow, so they converge.
 `_open_inventory_root` refuses a writable *ancestor* of a payload root as well.
 Normalizing only the payload roots left a state that nothing could clear: the
 qa-cli lens found that a writable `~/.codex/harness`, `~/.codex/harness/plugins`,
-or the marketplace directory made `--if-stale` fail permanently, the message
+or the marketplace directory made the conditional install fail permanently, the message
 named the payload root rather than the ancestor, and the `--force` the output
-printed exited 0 without clearing ancestors — so the next `--if-stale` failed
-identically.
+printed exited 0 without clearing ancestors — so the next conditional install
+failed identically.
 
 Normalization therefore starts at the ancestors the harness **exclusively
 owns**: `CODEX_INSTALL_ROOT`, and the cache's marketplace directory —
@@ -147,11 +147,11 @@ mode and uid, not the path that was asked for, on both rejection sites: the
 ## A named diagnosis carries its remedy (2026-09-26)
 
 A diagnosis alone still looped. On a host whose `~/.claude` and `~/.codex` were
-root:root 0777, every `--if-stale` run — and so every `install_verified.py`
+root:root 0777, every conditional run — and so every `install_verified.py`
 delivery — was refused, and the output then printed `--force` as the repair,
 which never touches a directory above the payload. The refusal now ends with
 `; fix: <command>`, `InstallResult.repair` carries it, and `main()` prints
-`repair: <command>, then re-run: python3 install.py --<runtime>-only --if-stale`
+`repair: <command>, then re-run: python3 install.py --<runtime>-only`
 in place of the `--force` line. The nearest-existing-ancestor refusal for a
 missing target names its component, mode, uid and remedy the same way.
 

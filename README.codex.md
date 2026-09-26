@@ -90,7 +90,7 @@ hot-reload replaced plugin files.
 ## Where to look when things break
 
 - **Codex CLI auth (401 Unauthorized)** — run `codex login` again; `OPENAI_API_KEY` env var is also honored.
-- **`codex plugin marketplace add` fails** — `~/.codex/config.toml` already has `[mcp_servers.harness]`; setup refuses to overwrite. Resolve manually.
+- **Existing `[mcp_servers.harness]` block in `~/.codex/config.toml`** — not an error. `python3 install.py` replaces the harness sections when it refreshes a stale runtime, keeping the old file as `config.toml.bak.<timestamp>`; run `python3 install.py --codex-only --force` to rewrite them while the payload is already synchronized.
 - **Hooks don't fire** — plugin-local `~/.codex/harness/plugins/harness/hooks.json` or the plugin cache is stale. Re-run `python3 install.py --codex-only --force`.
 - **Skill returns "tool not found"** — MCP server didn't register. Run `codex mcp test harness`. Check `command =` path in your `[mcp_servers.harness]` block.
 - **Skill output references `mcp__harness__task_start`** — skill prose still uses the Claude-prefixed name; Codex skills are hand-maintained, so change it to the bare name (`task_start`) where it is written. See the troubleshooting entry below.

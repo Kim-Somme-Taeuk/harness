@@ -1,7 +1,7 @@
 """An unsafe ancestor of the payload path names the command that fixes it.
 
 2026-09-26: on a host where `~/.claude` and `~/.codex` are root:root 0777,
-`install.py --if-stale` (and so `install_verified.py`) refused every run with
+The conditional `install.py` run (and so `install_verified.py`) refused every run with
 "unsafe payload path component", then printed `--force` as the repair. `--force`
 never changes a directory above the payload, so the printed repair looped. The
 trust rule is unchanged; the refusal now carries a remedy that satisfies it.
@@ -169,7 +169,7 @@ def test_install_claude_carries_the_repair(tmp_path, monkeypatch):
             mock.patch.object(install.shutil, "which", return_value="/bin/claude"),
             mock.patch.object(install, "_run", return_value=(0, "claude 2.1.0\n", "")),
         ):
-            result = install.install_claude(dry_run=False, force=False, if_stale=True)
+            result = install.install_claude(dry_run=False, force=False)
     finally:
         os.chmod(shared, 0o755)
     assert not result.ok
@@ -192,18 +192,18 @@ def test_main_prints_the_remedy_instead_of_force(tmp_path, monkeypatch, capsys):
         "Claude payload comparison failed: unsafe payload path component: /x",
         repair="chmod go-w /x",
     )
-    monkeypatch.setattr(sys, "argv", ["install.py", "--claude-only", "--if-stale"])
+    monkeypatch.setattr(sys, "argv", ["install.py", "--claude-only"])
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(install, "install_claude", lambda **_kw: failing)
     install.main()
     out = capsys.readouterr().out
-    assert "repair: chmod go-w /x, then re-run: python3 install.py --claude-only --if-stale" in out
+    assert "repair: chmod go-w /x, then re-run: python3 install.py --claude-only" in out
     assert "--force" not in out
 
 
 def test_main_keeps_the_force_repair_for_other_failures(monkeypatch, capsys):
     failing = install.InstallResult("claude", False, "Claude payload comparison failed: boom")
-    monkeypatch.setattr(sys, "argv", ["install.py", "--claude-only", "--if-stale"])
+    monkeypatch.setattr(sys, "argv", ["install.py", "--claude-only"])
     monkeypatch.setattr(install.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(install, "install_claude", lambda **_kw: failing)
     install.main()
@@ -219,7 +219,7 @@ def test_install_codex_carries_the_repair(monkeypatch):
         mock.patch.object(install, "_prune_bytecode_caches", return_value=[]),
         mock.patch.object(install, "_normalize_payload_modes", return_value=[]),
     ):
-        result = install.install_codex(dry_run=False, force=False, config_path=None, if_stale=True)
+        result = install.install_codex(dry_run=False, force=False, config_path=None)
     assert not result.ok
     assert result.repair == "chmod go-w /x"
 

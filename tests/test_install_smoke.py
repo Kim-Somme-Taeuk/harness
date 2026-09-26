@@ -222,9 +222,9 @@ def test_each_installer_drives_the_smoke_on_the_tree_it_just_installed(tmp_path,
 
 
 def test_the_synchronized_skip_path_still_drives_the_smoke(tmp_path, monkeypatch):
-    """`--if-stale` is the harness's own delivery path.
+    """The default (conditional) run is the harness's own delivery path.
 
-    `install_verified.py` calls `install.py --if-stale`, which returns early on
+    `install_verified.py` calls `install.py` with no flags, which returns early on
     PAYLOAD_SYNCHRONIZED — the common case, since the payload is usually already
     current. With the probe only on the post-sync branch, the one check that
     inspects what actually runs almost never ran. Measured cost on the skip
@@ -248,7 +248,7 @@ def test_the_synchronized_skip_path_still_drives_the_smoke(tmp_path, monkeypatch
             install, "_smoke_installed_runtime", return_value=failure,
         ) as claude_smoke,
     ):
-        result = install.install_claude(dry_run=False, force=False, if_stale=True)
+        result = install.install_claude(dry_run=False, force=False)
     no_sync.assert_not_called()
     claude_smoke.assert_called_once_with(claude_root / "plugin")
     assert not result.ok
@@ -277,7 +277,7 @@ def test_the_synchronized_skip_path_still_drives_the_smoke(tmp_path, monkeypatch
         ) as codex_smoke,
     ):
         result = install.install_codex(
-            dry_run=False, force=False, if_stale=True,
+            dry_run=False, force=False,
             config_path=str(tmp_path / "config.toml"),
         )
     no_codex_sync.assert_not_called()
@@ -305,7 +305,7 @@ def test_a_missing_codex_cache_entry_is_reported_not_assumed(tmp_path):
         ),
     ):
         result = install.install_codex(
-            dry_run=False, force=False, if_stale=True,
+            dry_run=False, force=False,
             config_path=str(tmp_path / "config.toml"),
         )
     assert result.ok

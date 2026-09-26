@@ -165,15 +165,17 @@ def test_help_lists_all_flags():
     assert r.returncode == 0
     for flag in [
         "--codex-only", "--claude-only", "--dry-run", "--force",
-        "--if-stale", "--config-path",
+        "--config-path",
     ]:
         assert flag in r.stdout, f"missing flag in --help: {flag}"
 
 
-def test_force_and_if_stale_are_mutually_exclusive():
-    r = _run(["--force", "--if-stale"])
+def test_if_stale_flag_is_gone():
+    """The conditional refresh is the default run; the flag was deleted outright."""
+    assert "--if-stale" not in _run(["--help"]).stdout
+    r = _run(["--if-stale"])
     assert r.returncode == 2
-    assert "mutually exclusive" in r.stderr
+    assert "unrecognized arguments: --if-stale" in r.stderr
 
 
 def test_tree_comparison_ignores_only_runtime_cache_artifacts(tmp_path):
@@ -426,11 +428,35 @@ def test_conditional_runtime_skips_payload_mutation_when_current(tmp_path):
     ):
         result = module.install_codex(
             dry_run=False, force=False, config_path=str(tmp_path / "config.toml"),
-            if_stale=True,
         )
     assert result.ok
     assert "install skipped" in result.summary
     sync.assert_not_called()
+
+
+def test_force_skips_the_payload_comparison_on_both_runtimes(tmp_path, monkeypatch):
+    """`--force` is the repair for config/registry drift the comparison cannot see.
+
+    If it consulted the comparison, a synchronized host would skip and leave
+    that drift in place, so the comparison must not run at all under force.
+    """
+    module = _load_install_module()
+    monkeypatch.setenv("HARNESS_DEST", str(tmp_path / "harness-dev"))
+    never = AssertionError("payload comparison ran under --force")
+    with (
+        mock.patch.object(module, "CODEX_INSTALL_ROOT", tmp_path / "codex-harness"),
+        mock.patch.object(module.shutil, "which", return_value="/bin/runtime"),
+        mock.patch.object(module, "_run", return_value=(0, "codex 0.130.0\n", "")),
+        mock.patch.object(module, "_codex_payload_state", side_effect=never),
+        mock.patch.object(module, "_claude_payload_state", side_effect=never),
+    ):
+        codex = module.install_codex(
+            dry_run=True, force=True, config_path=str(tmp_path / "config.toml"),
+        )
+        claude = module.install_claude(dry_run=True, force=True)
+    assert codex.summary == "dry-run — would install Codex (steps above)"
+    assert claude.ok and "would install Claude" in claude.summary
+    assert not any("payload comparison" in step for step in codex.steps + claude.steps)
 
 
 def test_conditional_runtime_refreshes_stale_payload_and_fails_closed_on_error(tmp_path):
@@ -466,7 +492,7 @@ def test_conditional_runtime_refreshes_stale_payload_and_fails_closed_on_error(t
         ),
     ):
         result = module.install_codex(
-            dry_run=False, force=False, config_path=str(config_path), if_stale=True,
+            dry_run=False, force=False, config_path=str(config_path),
         )
     assert result.ok
     assert "STALE" in "\n".join(result.steps)
@@ -484,7 +510,7 @@ def test_conditional_runtime_refreshes_stale_payload_and_fails_closed_on_error(t
         mock.patch.object(module, "sync_codex_payload") as sync_on_error,
     ):
         failed = module.install_codex(
-            dry_run=False, force=False, config_path=str(config_path), if_stale=True,
+            dry_run=False, force=False, config_path=str(config_path),
         )
     assert not failed.ok
     assert "comparison failed" in failed.summary
@@ -510,7 +536,7 @@ def test_claude_conditional_runtime_handles_current_stale_and_error(tmp_path, mo
     ), mock.patch.object(
         module, "_smoke_installed_runtime", return_value=(True, ["runtime smoke: ok"]),
     ), mock.patch.object(module, "sync_claude_payload") as sync:
-        current = module.install_claude(dry_run=False, force=False, if_stale=True)
+        current = module.install_claude(dry_run=False, force=False)
     assert current.ok
     assert "SYNCHRONIZED" in current.summary
     sync.assert_not_called()
@@ -523,7 +549,7 @@ def test_claude_conditional_runtime_handles_current_stale_and_error(tmp_path, mo
             return_value=(module.PAYLOAD_STALE, "content differs"),
         ),
     ):
-        stale = module.install_claude(dry_run=True, force=False, if_stale=True)
+        stale = module.install_claude(dry_run=True, force=False)
     assert stale.ok
     assert "STALE" in "\n".join(stale.steps)
     assert "dry-run" in stale.summary
@@ -537,7 +563,7 @@ def test_claude_conditional_runtime_handles_current_stale_and_error(tmp_path, mo
         ),
         mock.patch.object(module, "sync_claude_payload") as sync_on_error,
     ):
-        failed = module.install_claude(dry_run=False, force=False, if_stale=True)
+        failed = module.install_claude(dry_run=False, force=False)
     assert not failed.ok
     assert "comparison failed" in failed.summary
     sync_on_error.assert_not_called()
@@ -550,7 +576,7 @@ def test_installer_clears_stale_bytecode_cache_even_when_synchronized(
 
     `_VOLATILE_DIR_NAMES` excludes `__pycache__` from payload comparison, so a
     tree whose bytecode cache breaks `subagent_lifecycle`'s import-time receipt
-    adapter binding still reports SYNCHRONIZED and `--if-stale` skips the sync
+    adapter binding still reports SYNCHRONIZED and the default run skips the sync
     that would have replaced it. That is how one stale `.pyc` kept receipts dead
     for a month. Pruning must therefore happen on the skip path too.
 
@@ -585,7 +611,7 @@ def test_installer_clears_stale_bytecode_cache_even_when_synchronized(
         mock.patch.object(module, "_run", return_value=(0, "claude 2.1.0\n", "")),
         mock.patch.object(module, "sync_claude_payload") as sync,
     ):
-        result = module.install_claude(dry_run=False, force=False, if_stale=True)
+        result = module.install_claude(dry_run=False, force=False)
 
     assert result.ok
     assert "SYNCHRONIZED" in result.summary
@@ -638,7 +664,7 @@ def test_codex_installer_clears_stale_bytecode_cache_even_when_synchronized(tmp_
         mock.patch.object(module, "sync_codex_payload") as sync,
     ):
         result = module.install_codex(
-            dry_run=False, force=False, config_path=str(config_path), if_stale=True,
+            dry_run=False, force=False, config_path=str(config_path),
         )
 
     assert result.ok
@@ -752,7 +778,7 @@ def test_conditional_main_reports_per_runtime_applied_skipped_and_repair(
     monkeypatch, capsys,
 ):
     module = _load_install_module()
-    monkeypatch.setattr(sys, "argv", ["install.py", "--if-stale"])
+    monkeypatch.setattr(sys, "argv", ["install.py"])
     monkeypatch.setattr(module.shutil, "which", lambda _: "/bin/runtime")
     monkeypatch.setattr(
         module, "install_codex",
@@ -768,7 +794,28 @@ def test_conditional_main_reports_per_runtime_applied_skipped_and_repair(
     output = capsys.readouterr().out
     assert "[codex] STATUS: SKIPPED" in output
     assert "[claude] STATUS: APPLIED" in output
+    assert "Conditional install complete" in output
     assert "config/registry health not checked" in output
+
+    skipped = lambda runtime: (lambda **_: module.InstallResult(
+        runtime, True, f"{runtime} payload SYNCHRONIZED — install skipped",
+    ))
+    monkeypatch.setattr(module, "install_codex", skipped("codex"))
+    monkeypatch.setattr(module, "install_claude", skipped("claude"))
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert "Payloads already current. No install performed." in output
+    assert "config/registry health not checked" in output
+
+    monkeypatch.setattr(sys, "argv", ["install.py", "--force"])
+    applied = lambda runtime: (lambda **_: module.InstallResult(runtime, True, "install complete"))
+    monkeypatch.setattr(module, "install_codex", applied("codex"))
+    monkeypatch.setattr(module, "install_claude", applied("claude"))
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert "Install complete on all detected runtimes." in output
+    assert "config/registry health not checked" not in output
+    monkeypatch.setattr(sys, "argv", ["install.py"])
 
     monkeypatch.setattr(
         module, "install_claude",
@@ -1318,7 +1365,12 @@ def test_codex_install_treats_existing_marketplace_as_success(tmp_path, monkeypa
     assert result.summary == "Codex install complete"
 
 
-def test_codex_install_without_force_stops_before_feature_enable_when_config_exists(tmp_path, monkeypatch):
+def test_default_codex_install_replaces_an_existing_harness_block_with_a_backup(tmp_path, monkeypatch):
+    """A stale default run refreshes the harness config block instead of refusing.
+
+    Before 2026-09-27 a plain run stopped with "already present … Re-run with
+    --force" on every re-install, so only the first install ever succeeded.
+    """
     module = _load_install_module()
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -1341,11 +1393,14 @@ def test_codex_install_without_force_stops_before_feature_enable_when_config_exi
 
     result = module.install_codex(dry_run=False, force=False, config_path=str(config_path))
 
-    assert result.ok is False
-    assert "already present" in result.summary
+    assert result.ok is True, result.summary + "\n" + "\n".join(result.steps)
+    assert "already present" not in result.summary
+    config = config_path.read_text()
+    assert 'command = "old"' not in config
+    assert config.count("[mcp_servers.harness]") == 1
+    assert result.backup_path and 'command = "old"' in Path(result.backup_path).read_text()
     lines = log.read_text().splitlines()
-    assert "features enable plugin_hooks" not in lines
-    assert not any(line.startswith("plugin marketplace add ") for line in lines)
+    assert "features enable plugin_hooks" in lines
 
 
 def test_sync_codex_payload_removes_legacy_top_level_plugin_shapes(tmp_path):

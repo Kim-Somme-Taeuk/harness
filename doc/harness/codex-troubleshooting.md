@@ -27,13 +27,13 @@ If `codex upgrade` is unavailable on your platform, follow OpenAI's manual insta
 
 ### "Existing key 'mcp_servers.harness' in ~/.codex/config.toml"
 
-**What you see:** Setup stops mid-install with "Backup at ~/.codex/config.toml.bak.<ts>. Resolve manually or run with `--force`".
-
-**Cause:** You already have a `[mcp_servers.harness]` block (manual install, prior harness version, or unrelated MCP server with the same name). Setup refuses to overwrite user config per contract C-15 (never overwrite user-authored files).
-
-**Fix:** Pick one:
-- **Manual**: open `~/.codex/config.toml`, compare your existing block to [`plugin-codex/config.toml.example`](../../plugin-codex/config.toml.example), reconcile differences.
-- **Force**: `python3 install.py --codex-only --force` (replaces existing block, keeps timestamped `.bak` for rollback).
+Older installers stopped here on every re-run unless given `--force`. Since
+2026-09-27 a plain `python3 install.py` replaces the harness-owned sections
+(`[plugins."harness@harness"]`, `[marketplaces.harness]`, `[mcp_servers.harness]`)
+whenever it refreshes a stale runtime, and keeps the previous file as
+`config.toml.bak.<timestamp>`. Every other section is left as it was. To
+rewrite the block while the payload is already synchronized, run
+`python3 install.py --codex-only --force`.
 
 ---
 
@@ -55,7 +55,7 @@ python3 install.py --codex-only
 
 ### "unsafe payload path component: … (mode 0777, uid 0)"
 
-**Symptom:** `python3 install.py --if-stale` (and so
+**Symptom:** `python3 install.py` (and so
 `plugin/scripts/install_verified.py`) fails with `unsafe payload path
 component: /home/<you>/.codex (mode 0777, uid 0) while inspecting …`, every
 run.
@@ -66,7 +66,7 @@ The installer refuses to trust a payload another local user could swap.
 this.
 
 **Fix:** when the line after `repair:` (also the `; fix: …` end of the error
-line) is a command, run it, then re-run `python3 install.py --if-stale`. When it
+line) is a command, run it, then re-run `python3 install.py`. When it
 names another owner or asks you to choose another install root, the directory
 is shared or not yours: install under your home instead of changing it (Claude:
 `HARNESS_DEST`; Codex: `--config-path <dir under your home>/config.toml`). A
@@ -110,7 +110,7 @@ once renamed prefixed MCP calls was removed on 2026-05-14.
 `plugin-codex/`. A Markdown sub-file that `install.py` `_build_codex_payload`
 copies from `plugin/skills/` is fixed in `plugin/skills/` in a runtime-neutral
 way, then re-run
-`python3 install.py --codex-only --if-stale`.
+`python3 install.py --codex-only`.
 
 ---
 

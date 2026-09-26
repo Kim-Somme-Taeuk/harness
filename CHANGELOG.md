@@ -6,6 +6,14 @@
 
 ### Changed
 
+- **`install.py` refreshes only what is stale by default; `--if-stale` is
+  gone** — a plain `python3 install.py` now skips a runtime whose installed
+  payload matches the source and refreshes a stale one, replacing the harness
+  sections of `~/.codex/config.toml` with a timestamped `.bak` instead of
+  stopping with "config already present … Re-run with --force". `--force`
+  remains and reinstalls even when synchronized (the payload comparison does not
+  see config/registry drift). **Action required:** drop `--if-stale` from any
+  script that passes it; the flag now exits 2 as unrecognized.
 - **PyYAML is a dev dependency** — `uv sync` now installs it, so the
   `QA_KNOWLEDGE.yaml` shape and note-freshness YAML tests run instead of
   skipping. The plugin runtime stays stdlib-only, and a new test now fails
