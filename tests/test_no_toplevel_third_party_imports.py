@@ -114,13 +114,28 @@ class NoThirdPartyToplevelImportsTests(unittest.TestCase):
             )
 
 
+def _literal_dynamic_import(node: ast.AST) -> str | None:
+    """The module named by `import_module("x")` / `__import__("x")`, if literal."""
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    func = node.func
+    called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    first = node.args[0]
+    if called in {"import_module", "__import__"} and isinstance(first, ast.Constant) \
+            and isinstance(first.value, str) and not first.value.startswith("."):
+        return first.value
+    return None
+
+
 class ShippedRuntimeIsStdlibOnlyTests(unittest.TestCase):
     """The installed payload runs on the user's bare python3.
 
     Since 2026-09-26 PyYAML is a dev dependency, so a stray `import yaml` in the
     runtime would import cleanly in every synced venv and only fail for users.
     This scans every import, not just top-level ones, since a lazy import in a
-    hook fails the same way.
+    hook fails the same way. `importlib.import_module("x")` and
+    `__import__("x")` count too when the name is a positional string literal; a computed
+    name cannot be resolved statically and is not checked.
     """
 
     def test_runtime_imports_only_stdlib_or_project_modules(self):
@@ -138,12 +153,27 @@ class ShippedRuntimeIsStdlibOnlyTests(unittest.TestCase):
                     names = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     names = [node.module]
+                elif (name := _literal_dynamic_import(node)) is not None:
+                    names = [name]
                 else:
                     continue
                 for name in names:
                     if name.split(".")[0] not in allowed:
                         violations.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}: {name}")
         self.assertEqual(violations, [], "runtime imports a non-stdlib module")
+
+    def test_literal_dynamic_imports_are_resolved(self):
+        cases = {
+            'importlib.import_module("yaml")': "yaml",
+            '__import__("requests.adapters")': "requests.adapters",
+            'import_module("json")': "json",
+            'importlib.import_module(name)': None,
+            'importlib.import_module(".sibling", "pkg")': None,
+            'len("yaml")': None,
+        }
+        for source, expected in cases.items():
+            call = ast.parse(source, mode="eval").body
+            self.assertEqual(_literal_dynamic_import(call), expected, source)
 
 
 if __name__ == "__main__":
