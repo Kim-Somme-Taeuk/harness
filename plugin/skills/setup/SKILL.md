@@ -255,8 +255,7 @@ Non-destructive detection. See `repo-census.md` for full detection bash, build/t
 ### Phase 2.0: Project interview
 
 Read `project-interview.md` and follow in full. Ask only for missing project
-purpose or undetectable verification facts. Apply the fixed audience, workflow,
-full-loop, and failure-avoidance defaults without asking.
+purpose or undetectable verification facts. Apply the fixed audience and full-loop defaults without asking.
 
 **Skip detection (evaluate in order; any match skips the interview):**
 

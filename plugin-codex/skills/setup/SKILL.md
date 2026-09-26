@@ -273,7 +273,7 @@ detection bash, build/test command sniffing, and summary format.
 
 Read the adjacent `project-interview.md` and follow in full. Ask only for
 missing project purpose or undetectable verification facts. Apply the fixed
-audience, workflow, full-loop, and failure-avoidance defaults without asking.
+audience and full-loop defaults without asking.
 Stage answers until the canonical manifest exists, then apply them in Phase 3.5.
 
 **Skip detection (evaluate in order; any match skips the interview):**
