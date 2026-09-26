@@ -79,8 +79,13 @@ same mechanism; it now surfaces as these two reasons instead of a crash.
 **Remedy:** spawn the lens fresh. `task_verify`'s "Recorded but unusable" next
 action already says so, but its stated cause (a misplaced verdict block) and the
 `receipts:verdict-unbound` breadcrumb's remedy ("re-deliver … with exactly one
-verdict block") misname this case; a follow-up child of
-GOAL__2026-09-26-0-setup-execution-5aef74d0 gives it its own cause.
+verdict block") named only the malformed-report causes. Both texts now also
+list this case as a possible cause, with its remedy (spawn fresh, run in the
+foreground); they enumerate rather than assert, because the receipt row alone
+cannot tell an interim stop from a malformed report
+(`tests/test_unbound_verdict_names_interim_stop.py`, including the written
+ledger line for a realistic task name, which the 400-character cap must not
+cut).
 
 Verification: `tests/test_subagent_lifecycle.py`
 (`test_a_resumed_lens_is_named_and_cannot_replace_its_completion`,

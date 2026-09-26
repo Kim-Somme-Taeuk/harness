@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **Unbound-verdict diagnostics name the interim stop** — the
+  `receipts:verdict-unbound` breadcrumb and `task_verify`'s "Recorded but
+  unusable" text now list a lens that ended its turn mid-work as a possible
+  cause, with the remedy (spawn fresh, run in the foreground).
 - **Unsafe install ancestors name their fix** — when `install.py --if-stale`
   refuses a writable directory above the payload, the output now prints the
   command that fixes it (`chmod go-w`, or `sudo chown … && chmod go-w` for a

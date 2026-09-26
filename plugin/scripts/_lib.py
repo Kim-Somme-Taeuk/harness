@@ -1065,7 +1065,11 @@ def log_gate_crash(exc, script, hook_input=None):
 _UNBOUND_COMPLETION_CAUSES = {
     "verdict": (
         "its verdict did not bind",
-        "Re-deliver that lens final with exactly one verdict block on line 1.",
+        # Kept short: `_log_gate_error` caps the ledger line at 400 characters,
+        # and a longer action lost its remedy clause for real task-dir names.
+        "Re-deliver that lens final with exactly one verdict block on line 1; "
+        "if it was an interim message from a lens waiting on its own work, "
+        "spawn it fresh in the foreground.",
     ),
     "counts": (
         "only its verdict line bound — its FINDING_COUNTS line did not",
@@ -4692,9 +4696,11 @@ def nonparsing_completion_note(lenses):
         parts.append(
             f"Recorded but unusable: {', '.join(shape)} completed for this run but no "
             "verdict could be bound — its verdict block was not in the position and "
-            "shape the agent definition requires, or the report carried conflicting "
-            "verdict or counts lines. This is not an unrun lens and not a missing "
-            "receipt. Spawn that lens fresh rather than sending another message to "
+            "shape the agent definition requires, the report carried conflicting "
+            "verdict or counts lines, or the lens ended its turn while its own work "
+            "was still running, so an interim message was recorded as its "
+            "completion (doc/harness/REQ__subagent-lifecycle-receipt-boundaries.md). "
+            "This is not an unrun lens and not a missing receipt. Spawn that lens fresh rather than sending another message to "
             "the one that already reported: a follow-up turn answers with a "
             "restatement, and a restatement is what failed to bind. Do not restate, "
             "relocate, or paraphrase the verdict format in the spawn prompt — the "
