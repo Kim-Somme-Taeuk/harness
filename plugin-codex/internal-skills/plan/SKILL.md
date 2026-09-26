@@ -18,7 +18,7 @@ Codex planning pipeline with compact and full procedures. Conservatively eligibl
 
 ## Sub-files
 
-This skill is split across four sub-files (Claude tree until AC-005 ports them):
+This skill is split across four sub-files, copied from the Claude tree into the installed payload by `install.py`:
 
 | File | Content |
 |------|---------|
