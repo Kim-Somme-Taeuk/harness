@@ -6,6 +6,10 @@
 
 ### Changed
 
+- **Unsafe install ancestors name their fix** — when `install.py --if-stale`
+  refuses a writable directory above the payload, the output now prints the
+  command that fixes it (`chmod go-w`, or `sudo chown … && chmod go-w` for a
+  root-owned config dir in your home) instead of a `--force` that cannot help.
 - **Install guard watches the Claude plugin cache** — the suite's removal guard
   and the verification-gate snapshot now include
   `~/.claude/plugins/cache/harness/harness`, skipping only versions the Claude

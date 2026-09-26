@@ -53,6 +53,30 @@ python3 install.py --codex-only
 
 ---
 
+### "unsafe payload path component: … (mode 0777, uid 0)"
+
+**Symptom:** `python3 install.py --if-stale` (and so
+`plugin/scripts/install_verified.py`) fails with `unsafe payload path
+component: /home/<you>/.codex (mode 0777, uid 0) while inspecting …`, every
+run.
+
+**Cause:** a directory above the installed payload is writable by other users.
+The installer refuses to trust a payload another local user could swap.
+`--force` does not change directories above the payload, so it cannot clear
+this.
+
+**Fix:** when the line after `repair:` (also the `; fix: …` end of the error
+line) is a command, run it, then re-run `python3 install.py --if-stale`. When it
+names another owner or asks you to choose another install root, the directory
+is shared or not yours: install under your home instead of changing it (Claude:
+`HARNESS_DEST`; Codex: `--config-path <dir under your home>/config.toml`). A
+writable directory *above* your home cannot be avoided; an administrator has to
+fix it. For a
+root-owned config directory in your home that is
+`sudo chown "$(id -u):$(id -g)" ~/.codex && chmod go-w ~/.codex` (and the same
+for `~/.claude`). `chmod +t` is not enough there: see
+`doc/harness/REQ__installed-tree-modes-are-installer-owned.md`.
+
 ## Runtime errors
 
 ### "MCP server harness not reachable"

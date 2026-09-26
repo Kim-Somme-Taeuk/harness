@@ -99,6 +99,9 @@ class InstallResult:
     summary: str
     steps: list[str] = field(default_factory=list)
     backup_path: str | None = None
+    # The command that fixes the refused directory, when the failure is one a
+    # re-run cannot fix by itself (an unsafe ancestor of the payload path).
+    repair: str | None = None
 
 
 PAYLOAD_SYNCHRONIZED = "SYNCHRONIZED"
@@ -119,6 +122,128 @@ def _trusted_inventory_directory(fd: int) -> bool:
         and info.st_uid == os.getuid()
         and not stat.S_IMODE(info.st_mode) & 0o022
     )
+
+
+_REPAIR_MARKER = "; fix: "
+
+
+def _inside(path: Path, home: Path) -> bool:
+    """True for your home directory itself and anything below it.
+
+    A home of `/` (a container uid with no passwd entry) makes nothing
+    "inside": otherwise every system directory would count as yours.
+    """
+    home_abs = Path(os.path.abspath(home))
+    if home_abs == Path(home_abs.anchor):
+        return False
+    try:
+        return Path(os.path.abspath(path)).is_relative_to(home_abs)
+    except (OSError, ValueError):
+        return False
+
+
+def _choose_another_root(component: Path, home: Path) -> str:
+    try:
+        above_home = Path(os.path.abspath(home)).is_relative_to(Path(os.path.abspath(component)))
+    except (OSError, ValueError):
+        above_home = False
+    if above_home:
+        return (
+            f"{component} is above your home and writable by others; no install "
+            "root can avoid it, so an administrator has to remove group/other "
+            "write from it"
+        )
+    return (
+        f"{component} is a shared or other-owned directory: install under your "
+        "home instead (Claude: set HARNESS_DEST; Codex: pass --config-path "
+        "<dir under your home>/config.toml; the Codex mirror always stays at "
+        "~/.codex/harness)"
+    )
+
+
+def _unsafe_component_remedy(
+    component: Path, st_uid: int, mode: int, *,
+    final: bool, current_uid: int, home: Path,
+) -> str:
+    """The command that makes `component` pass the inventory trust rule.
+
+    Mirrors the rule rather than loosening it, and never alters a directory
+    outside your home that is not plainly yours: `chown`/`chmod` on `/opt` or
+    `/tmp` would hand a system directory to one user or close it to everyone.
+    Inside the home directory a root-owned config directory gets chown + go-w
+    rather than `+t`: sticky only stops renaming other users' entries, so any
+    local user could still create new startup files there
+    (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`). Location is judged before
+    ownership, so running as root does not turn `/opt` into "yours".
+    """
+    del final  # the final component follows the same location rule
+    quoted = shlex.quote(str(component))
+    if _inside(component, home):
+        if st_uid == current_uid:
+            return f"chmod go-w {quoted}"
+        if st_uid == 0:
+            return f'sudo chown "$(id -u):$(id -g)" {quoted} && chmod go-w {quoted}'
+        return (
+            f"{component} is owned by uid {st_uid}: have its owner fix it, "
+            "or choose another install root"
+        )
+    if st_uid == current_uid and current_uid != 0:
+        return f"chmod go-w {quoted}"
+    return _choose_another_root(component, home)
+
+
+def _unsafe_component_message(
+    component: Path, info: os.stat_result, inspecting: Path, *, final: bool,
+) -> str:
+    mode = stat.S_IMODE(info.st_mode)
+    remedy = _unsafe_component_remedy(
+        component, info.st_uid, mode, final=final,
+        current_uid=os.getuid(), home=Path.home(),
+    )
+    return (
+        f"unsafe payload path component: {component} "
+        f"(mode {mode:04o}, uid {info.st_uid}) while inspecting {inspecting}"
+        f"{_REPAIR_MARKER}{remedy}"
+    )
+
+
+def _missing_target_remedy(
+    ancestor: Path, st_uid: int, mode: int, next_component: Path, *,
+    current_uid: int, home: Path,
+) -> str:
+    """Remedy for an untrusted nearest existing ancestor of a missing target.
+
+    The rule only needs a trusted directory to exist between that ancestor and
+    the target, so outside your home the fix creates the next missing directory
+    as you and never touches the ancestor (a shared `/tmp`, a system `/opt`).
+    Taking the ancestor over is offered only for a root-owned directory inside
+    your home.
+    """
+    quoted_next = shlex.quote(str(next_component))
+    quoted = shlex.quote(str(ancestor))
+    if _inside(ancestor, home):
+        if st_uid == current_uid:
+            return f"chmod go-w {quoted}"
+        if st_uid == 0:
+            return f'sudo chown "$(id -u):$(id -g)" {quoted} && chmod go-w {quoted}'
+        return (
+            f"{ancestor} is owned by uid {st_uid}: have its owner fix it, "
+            "or choose another install root"
+        )
+    if st_uid == 0 and mode & stat.S_ISVTX:
+        return f"mkdir -m 0755 {quoted_next}"
+    if st_uid == 0:
+        return f'sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 {quoted_next}'
+    if st_uid == current_uid:
+        return f"chmod go-w {quoted}"
+    return _choose_another_root(ancestor, home)
+
+
+def _repair_from_reason(reason: str) -> str | None:
+    """The remedy an unsafe-component refusal carries, if any."""
+    if _REPAIR_MARKER not in reason:
+        return None
+    return reason.rsplit(_REPAIR_MARKER, 1)[1].strip() or None
 
 
 def _open_inventory_root(root: Path) -> int:
@@ -157,8 +282,7 @@ def _open_inventory_root(root: Path) -> int:
                 # deserves at least an accurate name.
                 component = Path(*absolute.parts[: index + 2])
                 raise PermissionError(
-                    f"unsafe payload path component: {component} "
-                    f"(mode {mode:04o}, uid {info.st_uid}) while inspecting {absolute}"
+                    _unsafe_component_message(component, info, absolute, final=final)
                 )
         return current_fd
     except BaseException:
@@ -197,8 +321,19 @@ def _tree_inventory(root: Path) -> tuple[str, dict[str, tuple[str, int, str]], s
                         _trusted_inventory_directory(current_fd)
                         or sticky_shared_leaf
                     ):
+                        # Named like the sibling refusals, with a remedy that
+                        # creates the next directory rather than taking over a
+                        # possibly shared ancestor (see _missing_target_remedy).
+                        ancestor = Path(*absolute.parts[: index + 1])
+                        remedy = _missing_target_remedy(
+                            ancestor, parent_info.st_uid, parent_mode,
+                            Path(*absolute.parts[: index + 2]),
+                            current_uid=os.getuid(), home=Path.home(),
+                        )
                         return PAYLOAD_ERROR, {}, (
-                            f"unsafe nearest existing ancestor for missing target: {absolute}"
+                            "unsafe nearest existing ancestor for missing target: "
+                            f"{ancestor} (mode {parent_mode:04o}, uid {parent_info.st_uid}) "
+                            f"while inspecting {absolute}{_REPAIR_MARKER}{remedy}"
                         )
                     return PAYLOAD_STALE, {}, "target is missing"
                 info = os.fstat(next_fd)
@@ -214,9 +349,8 @@ def _tree_inventory(root: Path) -> tuple[str, dict[str, tuple[str, int, str]], s
                     # Same reason as the sibling check in
                     # `_open_inventory_root`: name the rejected component.
                     component = Path(*absolute.parts[: index + 2])
-                    return PAYLOAD_ERROR, {}, (
-                        f"unsafe payload path component: {component} "
-                        f"(mode {mode:04o}, uid {info.st_uid}) while inspecting {absolute}"
+                    return PAYLOAD_ERROR, {}, _unsafe_component_message(
+                        component, info, absolute, final=False,
                     )
                 os.close(current_fd)
                 current_fd = next_fd
@@ -1524,6 +1658,7 @@ def install_codex(*, dry_run: bool, force: bool,
             return InstallResult(
                 "codex", False,
                 f"Codex payload comparison failed: {payload_reason}", steps,
+                repair=_repair_from_reason(payload_reason),
             )
         if payload_state == PAYLOAD_SYNCHRONIZED:
             steps.append("payload comparison: SYNCHRONIZED")
@@ -1690,6 +1825,7 @@ def install_claude(*, dry_run: bool, force: bool, if_stale: bool = False) -> Ins
             return InstallResult(
                 "claude", False,
                 f"Claude payload comparison failed: {payload_reason}", steps,
+                repair=_repair_from_reason(payload_reason),
             )
         marketplace_current = True
         if payload_state == PAYLOAD_SYNCHRONIZED and not dry_run:
@@ -1934,7 +2070,14 @@ def main() -> int:
             print(f"    backup: {r.backup_path}")
         if not r.ok:
             any_failed = True
-            if args.if_stale:
+            if r.repair:
+                # `--force` does not change a directory above the payload, so
+                # printing it here looped: fix the named directory instead.
+                print(
+                    f"    repair: {r.repair}, then re-run: "
+                    f"python3 install.py --{r.runtime}-only --if-stale"
+                )
+            elif args.if_stale:
                 print(
                     "    repair after correcting the reported cause: "
                     f"python3 install.py --{r.runtime}-only --force"

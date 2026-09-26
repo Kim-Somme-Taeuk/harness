@@ -1,8 +1,8 @@
 ---
 tags: [harness, install, guards, permissions, diagnostics]
 summary: 설치된 런타임 트리의 권한 모드는 설치기의 책임이다. 가드가 group/other-writable 모듈을 거부하는 것은 정상이며, 완화 대상이 아니라 설치기가 그런 트리를 만들지 않아야 한다. 그리고 거부 메시지는 실제로 거부한 조건을 말해야 한다.
-updated: 2026-09-17
-freshness: suspect
+updated: 2026-09-26
+freshness: current
 invalidated_by_paths:
   - install.py
   - plugin/scripts/install_smoke.py
@@ -143,3 +143,60 @@ a mutation. The refusal now reports the component it actually rejected with its
 mode and uid, not the path that was asked for, on both rejection sites: the
 `_open_inventory_root` walk and the absent-target ancestor walk in
 `_tree_inventory` that a first install hits.
+
+## A named diagnosis carries its remedy (2026-09-26)
+
+A diagnosis alone still looped. On a host whose `~/.claude` and `~/.codex` were
+root:root 0777, every `--if-stale` run — and so every `install_verified.py`
+delivery — was refused, and the output then printed `--force` as the repair,
+which never touches a directory above the payload. The refusal now ends with
+`; fix: <command>`, `InstallResult.repair` carries it, and `main()` prints
+`repair: <command>, then re-run: python3 install.py --<runtime>-only --if-stale`
+in place of the `--force` line. The nearest-existing-ancestor refusal for a
+missing target names its component, mode, uid and remedy the same way.
+
+The remedy mirrors the trust rule and never loosens it. It also never alters a
+directory outside your home that is not plainly yours, and it judges location
+before ownership, so running as root does not make `/opt` "yours":
+
+| Refused component | Remedy |
+|---|---|
+| inside your home, owned by you | `chmod go-w <c>` |
+| inside your home, root-owned | `sudo chown "$(id -u):$(id -g)" <c> && chmod go-w <c>` |
+| inside your home, owned by another uid | no command: its owner must fix it, or choose another install root |
+| outside your home, owned by you (not root) | `chmod go-w <c>` |
+| outside your home, anything else (`/opt`, `/tmp`, another user's dir) | no command: install under your home (Claude: `HARNESS_DEST`; Codex: `--config-path <dir under your home>/config.toml`) — or, for a directory above your home, have an administrator remove its group/other write |
+
+When the target is **missing**, the refused directory is its nearest existing
+ancestor, and the rule only needs a trusted directory to exist below it. Outside
+your home that case creates the next directory as you and never touches the
+ancestor:
+
+| Nearest existing ancestor of a missing target | Remedy |
+|---|---|
+| inside your home | same as the table above, for the ancestor |
+| outside home, root-owned and sticky (e.g. `/tmp`) | `mkdir -m 0755 <next missing directory>` |
+| outside home, root-owned (e.g. `/opt`) | `sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 <next missing directory>` |
+| outside home, owned by you (not root) | `chmod go-w <ancestor>` |
+| outside home, anything else (including another user's sticky dir) | no command: choose another install root |
+
+The reviews of this change caught two unsafe alternatives: judging a missing
+target's ancestor like a final component printed
+`sudo chown … /tmp && chmod go-w /tmp`, and checking ownership before location
+printed `chmod go-w /opt` when the installer ran as root. A third review found two more: a
+home of `/` (a container uid with no passwd entry) made every directory "inside
+your home" and printed `chown /`, so `/` never counts as a home; and the Codex
+advice named `CODEX_HOME`, which install.py does not read, so it now names
+`--config-path`.
+
+`+t` is never offered, on purpose (the trust rule still accepts an existing
+root-owned sticky ancestor such as `/tmp`). The sticky bit only
+stops users renaming or deleting each other's entries; any local user could
+still create new names there, and `~/.claude` / `~/.codex` are read at startup
+(`CLAUDE.md`, `AGENTS.md`, agent and command directories). Passing the
+installer's check while leaving that open would hide the attack the check
+exists for. Symlinked or non-directory ancestors still fail with the bare
+`OSError` text (`O_NOFOLLOW|O_DIRECTORY` refuses before any `fstat`); that
+surface is out of scope here.
+
+Verification: `tests/test_install_unsafe_ancestor_remedy.py`.
