@@ -281,11 +281,14 @@ qa_notes:
       tests/test_receipt_watcher_fail_closed.py::TestVerdictAuthorityIsPositional::test_counts_line_whitespace_does_not_discard_the_review.
   qa_venv_has_no_pip_or_pyyaml:
     discovered: 2026-09-02
+    invalidated_by_paths:
+      - pyproject.toml
+      - uv.lock
     notes: >
-      .venv/bin/python has no pip module and no PyYAML; system python3 has no
-      PyYAML either. To parse doc/harness/qa/QA_KNOWLEDGE.yaml in a QA run use
-      `uv pip install pyyaml` (uv is on PATH and targets .venv), not
-      `.venv/bin/python -m pip`.
+      .venv/bin/python has no pip module. PyYAML is a dev dependency since
+      2026-09-26, so a venv synced from uv.lock (`uv sync`) can parse
+      doc/harness/qa/QA_KNOWLEDGE.yaml; system python3 still has no PyYAML.
+      Do not use `.venv/bin/python -m pip`; re-sync with uv instead.
   suite_is_green_and_xdist_stable:
     discovered: 2026-09-02
     notes: >

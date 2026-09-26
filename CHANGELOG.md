@@ -6,6 +6,11 @@
 
 ### Changed
 
+- **PyYAML is a dev dependency** — `uv sync` now installs it, so the
+  `QA_KNOWLEDGE.yaml` shape and note-freshness YAML tests run instead of
+  skipping. The plugin runtime stays stdlib-only, and a new test now fails
+  on any non-stdlib import in `plugin/scripts`, `plugin/mcp` or `install.py`,
+  since the dev venv would no longer catch one.
 - **Tests degrade cleanly without uv or codex** — the install dry-run, the
   codex-only run, and the verify-report runner probe no longer fail on a host
   whose PATH lacks `uv` or `codex`; the probe skips with the missing launcher
