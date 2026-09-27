@@ -181,6 +181,45 @@ def _is_protected_artifact(path, repo_root=None):
     )
 
 
+def _protected_denial(path):
+    """Return ``(owner, human)`` for a C-05 protected-artifact deny of ``path``."""
+    basename = os.path.basename(path)
+    goal_control = _is_goal_control_artifact(path)
+    owner = "goal-control-mcp" if goal_control else PROTECTED_ARTIFACTS.get(basename, "task-control-runtime")
+    owner_human = "native Goal MCP tools" if goal_control else PROTECTED_ARTIFACT_HUMAN.get(basename, owner)
+    human = (
+        f"{basename} is owned by {owner_human}. Use the owning skill or MCP "
+        f"tool (e.g. write_plan for PLAN.md)."
+    )
+    return owner, human
+
+
+def _foreign_protected_target(candidates, log_root):
+    """Return ``(path, root)`` when an out-of-root write hits another checkout's
+    protected artifact, else ``None``.
+
+    The hook cwd's Harness root does not contain the target (a batch lead's
+    worktree writing into the main checkout or a sibling worktree), so the
+    target's own root is resolved from its directory with pure file checks and
+    only the C-05 protected-artifact rules apply there. Any error is logged to
+    the cwd's root and yields ``None`` — today's allow (C-12).
+    """
+    try:
+        for candidate in dict.fromkeys(candidates):
+            # Cheap shape prefilter so ordinary out-of-root writes skip the walk.
+            if not (
+                os.path.basename(candidate) in PROTECTED_ARTIFACTS
+                or _is_protected_artifact(candidate, repo_root=os.sep)
+            ):
+                continue
+            root, error = harness_root_resolution(os.path.dirname(candidate))
+            if root and not error and _is_protected_artifact(candidate, repo_root=root):
+                return candidate, root
+    except Exception as exc:
+        _log_gate_error(exc, "prewrite_gate", repo_root=log_root)
+    return None
+
+
 def _is_claude_subagent_transcript(path):
     """Return True for the runtime-owned Claude subagent transcript surface."""
     if not path:
@@ -631,6 +670,18 @@ def _check_path(data: dict, file_path: str) -> None:
                 "The requested path resolves outside the Harness control root.",
                 repo_root,
             )
+            return 0
+        # Cross-checkout C-05: the physical path first, since the task-local
+        # REVIEWS.jsonl match compares against a realpath'd root.
+        foreign = _foreign_protected_target((file_path, requested_path), repo_root)
+        if foreign:
+            target, foreign_root = foreign
+            owner, human = _protected_denial(target)
+            _deny(
+                "C-05-protected-artifact", target, owner,
+                f"{human} The target belongs to another Harness checkout: {foreign_root}.",
+                foreign_root,
+            )
         return 0
     tasks_dir = os.path.join(repo_root, TASK_DIR)
     try:
@@ -644,15 +695,8 @@ def _check_path(data: dict, file_path: str) -> None:
         or file_path.startswith(tasks_dir + os.sep)
     )
 
-    basename = os.path.basename(file_path)
     if _is_protected_artifact(file_path, repo_root=repo_root):
-        goal_control = _is_goal_control_artifact(file_path)
-        owner = "goal-control-mcp" if goal_control else PROTECTED_ARTIFACTS.get(basename, "task-control-runtime")
-        owner_human = "native Goal MCP tools" if goal_control else PROTECTED_ARTIFACT_HUMAN.get(basename, owner)
-        human = (
-            f"{basename} is owned by {owner_human}. Use the owning skill or MCP "
-            f"tool (e.g. write_plan for PLAN.md)."
-        )
+        owner, human = _protected_denial(file_path)
         _deny("C-05-protected-artifact", file_path, owner, human, repo_root)
         return 0
 
