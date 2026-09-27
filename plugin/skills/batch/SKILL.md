@@ -53,7 +53,8 @@ what makes them concurrent. Each spawn:
 Agent(subagent_type: "harness:task-lead", prompt: "<request text>\nslug: <slug>\nscope: <declared path scope>\ncoordinator HEAD: <sha from step b.5>\npytest worker cap: 4")
 ```
 
-Do not pass `name=`. Default to at most **3 concurrent leads** per wave; raise
+Do not pass `name=`: with agent teams enabled a named spawn launches a
+teammate, which gets no `isolation: worktree`. Default to at most **3 concurrent leads** per wave; raise
 the cap only when the user explicitly asks for more in this conversation — a
 9p/drvfs mount, a `.venv` built per worktree, and `pytest -n auto` per lead
 oversubscribe CPU and IO past that point (see the REQ doc).
@@ -115,8 +116,9 @@ user to open a worktree folder directly on the host. Never run
 `git worktree prune` or a host client's worktree cleanup while any lead
 worktree exists: from the host every container worktree path looks missing,
 and prune deletes the metadata of every **unlocked** one (the Claude lock is
-what protects a running lead; kept blocked/failed worktrees and the
-unlock → remove gap are exposed).
+what protects a running lead and, while this session runs, a returned one;
+kept blocked/failed worktrees lose it once that lock is released, and the
+unlock → remove gap never has it).
 
 ## g) Report
 

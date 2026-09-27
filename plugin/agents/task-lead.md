@@ -42,6 +42,9 @@ and a pytest worker cap (default `4`).
   - Skip `python3 plugin/scripts/install_verified.py` even if you are working
     in the harness source repo — the coordinator's integration task installs
     once after all leads merge.
+  - Never call the `goal_*` tools, and skip any Goal step in the lifecycle
+    (e.g. run Phase 0's `goal_next_task` / `goal_add_task`). Goal tools act on
+    the coordinator's main checkout, and batch leads are not Goal children.
   - Pass `-n 4` (or the cap given in your prompt) to any `pytest` invocation.
   - Spawn nested review/QA subagents normally from `W`; their receipts bind to
     the task in your worktree because they inherit your cwd.
@@ -61,6 +64,11 @@ Stop and report. Do not force a PASS, do not remove your own worktree, and do
 not merge or push.
 
 ## Final response
+
+`verdict` is `closed` after `task_close` PASS and a commit; `blocked` when you
+stopped for a coordinator decision or a real blocker (task left open or parked
+with `task_blocked`); `failed` when the lifecycle could not reach PASS within
+its retry limit or an unexpected error stopped you.
 
 End every run with a fenced JSON block, followed by a short summary:
 

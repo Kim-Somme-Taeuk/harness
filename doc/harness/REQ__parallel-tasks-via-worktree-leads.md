@@ -5,12 +5,13 @@ updated: 2026-09-27
 freshness: current
 invalidated_by_paths:
   - plugin/mcp/harness_server.py
+  - plugin/scripts/prewrite_gate.py
   - plugin/scripts/_lib.py
   - plugin/scripts/batch_harvest.py
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-27T09:25:53Z
+freshness_updated: 2026-09-27T11:28:06Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -90,9 +91,10 @@ stores absolute container paths, so:
 - never run `git worktree prune` (or a host client's worktree cleanup) while
   any lead worktree exists. From the host every container path looks missing,
   and prune deletes the metadata of every **unlocked** worktree. Claude Code's
-  agent lock protects a running lead; kept blocked/failed worktrees and the
-  moment between `git worktree unlock` and `git worktree remove` do not have
-  that protection.
+  agent lock protects a running lead and, while the coordinator session runs,
+  a returned one; kept blocked/failed worktrees lose it once that lock is
+  released (for example after the coordinator session ends), and the moment
+  between `git worktree unlock` and `git worktree remove` never has it.
 
 Relative-path worktrees (git ≥ 2.48 `extensions.relativeWorktrees`) are out of
 scope by the user's decision; host clients that lack the extension also cannot
@@ -172,9 +174,10 @@ open the repository at all.
   start and stop receipts from `cwd=<worktree>` land in the worktree task.
 - `tests/test_mcp_tool_name_contracts.py`: the six task tools declare optional
   `workspace`; goal tools do not.
-- `tests/test_batch_harvest.py`: copy, append, idempotence, refusal for an
-  unregistered or unmerged worktree, links/FIFOs, archive collision, ambient
-  `GIT_DIR`, non-canonical paths.
+- `tests/test_batch_harvest.py`: copy, append, idempotence; refusal for an
+  unregistered or unmerged worktree, links/FIFOs, and an archive collision; an
+  ambient `GIT_DIR` cannot redirect the merged check; a non-canonical
+  `--worktree` path is canonicalized and accepted.
 - `tests/test_batch_skill_contract.py`: lead frontmatter and carve-outs, every
   coordinator step, the C-09 clause in both contract files, root CLAUDE.md
   clauses, and this repository's `baseRef`/ignore settings.

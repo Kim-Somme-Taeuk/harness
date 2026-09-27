@@ -188,3 +188,11 @@ def test_batch_skill_rejects_reused_slugs_before_merging():
     assert _normalized("Slugs must be distinct within the batch") in norm
     assert "doc/harness/archive/batch/task__<slug>" in norm
     assert _normalized("merging stopped at a conflict carried from step d.2") in norm
+
+
+def test_task_lead_never_touches_the_coordinator_goal_and_defines_verdicts():
+    norm = _normalized(_text(TASK_LEAD))
+    assert _normalized("Never call the `goal_*` tools") in norm
+    for verdict in ("`closed`", "`blocked`", "`failed`"):
+        assert verdict in norm
+    assert _normalized("`failed` when the lifecycle could not reach PASS") in norm
