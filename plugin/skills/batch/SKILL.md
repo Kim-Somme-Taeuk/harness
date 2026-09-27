@@ -24,12 +24,35 @@ the main checkout (`doc/harness/tasks/TASK__<slug>`) or an archived lead
 (`doc/harness/archive/batch/TASK__<slug>`). Harvest refuses an archive
 collision, but only after the merge, so reject a reused slug here instead.
 
+The preflight script (step b.1) classifies every declared scope path. Only a
+`tracked-area` scope may run in a lead. A request with a scope
+`inside-submodule` or `inside-ignored-nested-repo` is not batched: run it as
+an ordinary harness task in the main checkout, before or after the wave, never
+while one runs (step b.4). An `outside-root` scope cannot run in a batch lead
+at all.
+
 ## b) Preflight
 
 Before spawning anything:
 
-1. `git status --porcelain` in the main checkout must be empty (clean,
-   committed tree). If not, stop and tell the user to commit or stash first.
+1. Run the repo-shape preflight for exactly the wave you are about to spawn,
+   one `--request` per declared scope path (repeat the slug for a second
+   path; a comma list is refused):
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_preflight.py --repo <main checkout> --request <slug>=<path> --request <slug>=<path2> ...`
+   Spawn only when it exits 0 (`verdict: "ok"`) and steps b.2–b.5 hold. It
+   prints a JSON report:
+   - `verdict: "refuse"`: batch must not start; stop and tell the user the
+     `refusals`. Every control-root shape but `ok` refuses: a
+     `submodule-checkout`, a `linked-worktree`, a `non-git` directory, or a
+     `separate-git-dir` checkout. The clean check covers more than the main
+     checkout: `git status --porcelain` must be empty there, in every
+     populated submodule, and in every ignored nested repo, so tell the user
+     to commit or stash in the named repo. A post-checkout hook that mentions
+     `submodule` in a repository with submodules also refuses, because it
+     would initialize them in every lead worktree. So does a directory the
+     script cannot read: it could hide a nested repo.
+   - `verdict: "adjust"`: drop each `excluded_requests` entry (step a), move
+     one request of each `overlaps` pair to a later wave, and rerun.
 2. `.claude/settings.json` must have `"worktree": {"baseRef": "head"}`. If it
    is missing or set to anything else, stop and instruct the user to add it —
    this skill does not edit a project's own settings file (C-15: user-owned
@@ -50,8 +73,12 @@ Spawn every lead of the current wave in **one assistant message** — this is
 what makes them concurrent. Each spawn:
 
 ```
-Agent(subagent_type: "harness:task-lead", prompt: "<request text>\nslug: <slug>\nscope: <declared path scope>\ncoordinator HEAD: <sha from step b.5>\npytest worker cap: 4")
+Agent(subagent_type: "harness:task-lead", prompt: "<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\ncoordinator HEAD: <sha from step b.5>\npytest worker cap: 4")
 ```
+
+`off-limits` lists every submodule and nested repo path from the preflight
+report. An ignored nested repo does not exist in a lead worktree, so the lead
+cannot see what it must not write.
 
 Do not pass `name=`: with agent teams enabled a named spawn launches a
 teammate, which gets no `isolation: worktree`. Default to at most **3 concurrent leads** per wave; raise
@@ -80,7 +107,10 @@ For every lead with `verdict: "closed"`, **in order**, in the main checkout:
    `git worktree remove <W>` and `git branch -d <branch>`. Never pass
    `--force` to either — a failure there (dirty worktree, unmerged branch)
    means something is wrong and must be looked at, not overridden. Never
-   unlock a worktree whose lead is still running.
+   unlock a worktree whose lead is still running. If `git worktree remove`
+   refuses because a submodule was initialized in the worktree, keep it and
+   report it like a blocked lead: `--force` would delete the worktree's
+   module store and any submodule commit that exists nowhere else.
 
 A lead with `verdict: "blocked"` or `"failed"`: report it, and leave its
 worktree and branch in place — never remove or force-remove them. The
@@ -123,5 +153,7 @@ unlock → remove gap never has it).
 ## g) Report
 
 Give the user a table: task slug → branch → verdict → merge commit (or
-"kept, unmerged" for blocked/failed leads). End with the integration task's
-verdict.
+"kept, unmerged" for blocked/failed leads). Add a row for every request the
+preflight kept out of the wave: "excluded (ordinary task, done or pending)",
+"deferred to a later wave", or "outside the root, not batchable". End with
+the integration task's verdict.

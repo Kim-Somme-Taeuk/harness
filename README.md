@@ -168,6 +168,7 @@ All under `plugin/scripts/`. Stdlib only.
 | `req_detector.py` | Detect observable behavior that needs a durable `REQ__*.md` | stdout |
 | `req_scaffold.py` | Create or update durable REQ scaffolds before observable source work | `doc/<area>/REQ__*.md` |
 | `install_verified.py` | Stateless trusted post-QA delivery wrapper; compares canonical payloads from an isolated verified snapshot and refreshes only stale runtimes | stdout / exit status |
+| `batch_preflight.py` | `harness:batch` intake/preflight: read-only repo-shape report — control-root shape, submodules, ignored nested repos, a post-checkout hook whose text mentions `submodule`, per-scope class, cleanliness of the main checkout plus every populated submodule and nested repo, and scope overlap between requests; exits 0 only when those checks allow the wave | stdout (JSON) |
 | `batch_harvest.py` | `harness:batch` coordinator step: copies a merged lead worktree's gitignored task evidence and learnings into the main checkout before `git worktree remove`; refuses unregistered/unmerged worktrees, links, non-regular files, and archive collisions | `doc/harness/archive/batch/`, `doc/harness/learnings.jsonl` |
 | `install_smoke.py` | Drives an installed runtime tree once — imports every registered hook module and checks a bound subagent produces a receipt row; run by `install.py` after each sync and on the default run's SYNCHRONIZED skip path | stdout / exit status |
 | `runbook_memory.py` | Capture approved runbooks and pending setup-command candidates | `doc/harness/runbooks.yaml` |
