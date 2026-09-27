@@ -1883,6 +1883,59 @@ def _registered_source_metadata_binding(control_root, source_root, relpath):
     return target
 
 
+def resolve_registered_worktree(control_root, workspace):
+    """Return ``workspace`` when it is a linked worktree of ``control_root``.
+
+    Pure file checks, re-run on every call: canonical absolute path, a regular
+    gitfile whose target sits directly under ``<control>/.git/worktrees``, a
+    matching back-pointer, and the worktree's own Harness manifest. A workspace
+    equal to the control root returns ``""`` (treated as omitted).
+    """
+    control = os.path.realpath(control_root)
+    ws = str(workspace or "")
+
+    def refuse(message, invariant):
+        raise GitBindingError(
+            "WORKSPACE_NOT_REGISTERED_WORKTREE",
+            message,
+            path=ws,
+            invariant=invariant,
+            next_action=(
+                "Pass the realpath of a linked worktree of this repository "
+                "(git worktree add / Claude isolation: worktree), or omit workspace."
+            ),
+        )
+
+    if not ws or not os.path.isabs(ws) or os.path.realpath(ws) != ws:
+        refuse("workspace must be an absolute canonical path", "canonical_path")
+    if ws == control:
+        return ""
+    try:
+        target = _registered_source_metadata_binding(control, ws, ws)
+    except GitBindingError as exc:
+        refuse(f"workspace has no usable gitfile: {exc}", exc.invariant or "gitfile")
+    if not os.path.isfile(os.path.join(ws, ".git")):
+        refuse("workspace is a main checkout, not a linked worktree", "gitfile_regular")
+    worktrees_dir = os.path.realpath(os.path.join(control, ".git", "worktrees"))
+    target = os.path.realpath(target)
+    if os.path.dirname(target) != worktrees_dir:
+        refuse("workspace gitdir is not registered under this repository", "gitdir_registered")
+    try:
+        back = _read_regular_text_file(os.path.join(target, "gitdir"), max_size=4096).strip()
+    except (OSError, ValueError):
+        back = ""
+    if not back:
+        refuse("registered worktree has no gitdir back-pointer", "gitdir_backpointer")
+    if not os.path.isabs(back):
+        back = os.path.join(target, back)
+    if os.path.realpath(back) != os.path.join(ws, ".git"):
+        refuse("registered worktree back-pointer names another checkout", "gitdir_backpointer")
+    root, error = harness_root_resolution(ws)
+    if error or root != ws:
+        refuse("workspace does not carry its own Harness manifest", "harness_manifest")
+    return ws
+
+
 def harness_root_resolution(start_dir=None):
     """Return ``(root, error)`` for valid/none/invalid Harness ancestry.
 
@@ -2477,7 +2530,9 @@ def is_maintenance_task(task_dir, repo_root=None):
 
 
 def compile_routing(task_dir, repo_root=None):
-    repo_root = repo_root or find_repo_root()
+    # A task in a linked worktree routes by that worktree's manifest, not the
+    # process cwd (the MCP server's cwd is always the main checkout).
+    repo_root = repo_root or find_harness_root(task_dir) or find_repo_root()
     maintenance = is_maintenance_task(task_dir, repo_root)
     control = read_task_control(task_dir)
     micro_loop = _is_micro_loop_state(control)

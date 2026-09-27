@@ -87,6 +87,7 @@ from _lib import (  # type: ignore
     ensure_task_scaffold, emit_compact_context,
     artifact_exists, canonical_task_dir, canonical_task_id,
     find_harness_root, harness_root_resolution, find_repo_root,
+    resolve_registered_worktree,
     write_active_marker, clear_active_marker, read_session_hint,
     current_session_id,
     active_task_binding_matches,
@@ -1053,11 +1054,44 @@ def _log_gate_warn(task_id: str, key: str, insight: str) -> None:
         pass
 
 
+def _task_roots(args: dict) -> tuple[str, str]:
+    """Return ``(control_root, task_root)`` for a task tool call.
+
+    The control root owns session identity and diagnostics. The task root owns
+    task paths and focus markers: the control root itself, or a validated
+    linked worktree named by ``workspace`` (a batch lead's checkout).
+    """
+    control_root = _control_root()
+    workspace = args.get("workspace")
+    if workspace is None:
+        return control_root, control_root
+    if not isinstance(workspace, str):
+        raise _ToolArgumentError(
+            "workspace must be a string",
+            field="workspace",
+            reason="wrong_type",
+            rejected_value=repr(workspace)[:160],
+            next_action="Pass workspace as an absolute worktree path, or omit it.",
+        )
+    if _server_runtime() == "codex":
+        # Codex receipt watchers bind to the single control root this process
+        # hosts; a worktree task could never record its lifecycle there.
+        raise _ToolArgumentError(
+            "workspace is not supported on the Codex runtime",
+            field="workspace",
+            reason="unsupported_runtime",
+            rejected_value=repr(workspace)[:160],
+            expected="no workspace (harness:batch worktree leads are Claude-only)",
+            next_action="Omit workspace and run the task in the main checkout.",
+        )
+    return control_root, resolve_registered_worktree(control_root, workspace) or control_root
+
+
 def _resolve_td(args: dict) -> str:
     td = _selector_opt(args, "task_dir")
     ti = _selector_opt(args, "task_id")
     if ti or td:
-        return canonical_task_dir(task_id=ti, task_dir=td, repo_root=_control_root())
+        return canonical_task_dir(task_id=ti, task_dir=td, repo_root=_task_roots(args)[1])
     raise ValueError("task_id or task_dir required")
 
 
@@ -1151,12 +1185,12 @@ def handle_task_start(args: dict) -> dict:
         )
     fresh_run = fresh_run_raw
 
-    repo_root = _control_root()
+    control_root, repo_root = _task_roots(args)
     task_dir = canonical_task_dir(task_id=ti, slug=sl, task_dir=td, repo_root=repo_root)
     tid = canonical_task_id(task_dir=task_dir, repo_root=repo_root)
     existing_control_path = task_control_file(task_dir)
     resumed_existing = os.path.lexists(existing_control_path)
-    exact_session_id = _current_session_identity(repo_root)
+    exact_session_id = _current_session_identity(control_root)
     session_id = exact_session_id or current_session_id()
     defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
     if not defer_codex_binding and not resumed_existing and not _session_resumes(repo_root, task_dir, session_id):
@@ -1614,14 +1648,14 @@ def _session_resumes(repo_root: str, task_dir: str, session_id: str) -> bool:
 
 def handle_task_context(args: dict) -> dict:
     ti = _req(args, "task_id")
-    repo_root = _control_root()
+    control_root, repo_root = _task_roots(args)
     td = canonical_task_dir(task_id=ti, repo_root=repo_root)
     control = _validated_task_control(td)
     if not control:
         return _invalid_task_control_error("task_context", td)
     # Only a process-owned identity may publish here. Ordinary Codex binding is
     # performed by PostToolUse from this successful structured result.
-    exact_session_id = _current_session_identity(repo_root)
+    exact_session_id = _current_session_identity(control_root)
     defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
     session_id = exact_session_id or current_session_id()
     if not defer_codex_binding and task_control_status(td, control) == "open" and _session_resumes(
@@ -1672,7 +1706,7 @@ def handle_task_context(args: dict) -> dict:
 
 def handle_task_verify(args: dict) -> dict:
     ti = _req(args, "task_id")
-    td = canonical_task_dir(task_id=ti, repo_root=_control_root())
+    td = canonical_task_dir(task_id=ti, repo_root=_task_roots(args)[1])
     if not _validated_task_control(td):
         return _invalid_task_control_error("task_verify", td)
     verify_run = None
@@ -1744,7 +1778,7 @@ def handle_task_verify(args: dict) -> dict:
 
 def handle_task_close(args: dict) -> dict:
     ti = _req(args, "task_id")
-    td = canonical_task_dir(task_id=ti, repo_root=_control_root())
+    td = canonical_task_dir(task_id=ti, repo_root=_task_roots(args)[1])
     initial_control = _validated_task_control(td)
     if not initial_control:
         return _invalid_task_control_error("task_close", td)
@@ -1820,7 +1854,7 @@ def handle_task_close(args: dict) -> dict:
 
 
 def handle_task_blocked(args: dict) -> dict:
-    td = canonical_task_dir(task_id=_req(args, "task_id"), repo_root=_control_root())
+    td = canonical_task_dir(task_id=_req(args, "task_id"), repo_root=_task_roots(args)[1])
     st = _validated_task_control(td)
     if not st:
         return _invalid_task_control_error("task_blocked", td)
@@ -1861,13 +1895,16 @@ def _handle_task_blocked_locked(td: str, *, reason: str, unblock: str) -> dict:
         f"## Blocked At\n{now_iso()}\n"
     )
     blocked_path = os.path.join(td, "BLOCKED.md")
-    marker_snapshot = active_marker_snapshot(_control_root())
+    # Markers live in the checkout that owns the task (a batch lead's worktree
+    # or the main checkout), exactly as task_close resolves them.
+    task_root = find_harness_root(td) or find_repo_root(td)
+    marker_snapshot = active_marker_snapshot(task_root)
     blocked_snapshot = {
         blocked_path: _strict_regular_text_snapshot(blocked_path, max_size=256 * 1024)
     }
     try:
         _atomic_write_text(blocked_path, blocked_md)
-        clear_active_marker(_control_root(), td, strict=True)
+        clear_active_marker(task_root, td, strict=True)
     except Exception:
         _restore_text_snapshots(blocked_snapshot)
         restore_active_marker_snapshot(marker_snapshot)
@@ -1902,7 +1939,7 @@ def _record_write(path: str, text: str, written: list[str], bytes_written: dict[
 
 
 def handle_write_plan(args: dict) -> dict:
-    allowed_args = {"task_id", "task_dir", "plan", "required_lenses"}
+    allowed_args = {"task_id", "task_dir", "plan", "required_lenses", "workspace"}
     unknown_args = sorted(set(args) - allowed_args)
     if unknown_args:
         return _err(
@@ -2071,13 +2108,15 @@ TOOL_DEFS: list[dict[str, Any]] = [
          "task_dir": {"type": "string"}, "task_id": {"type": "string"},
          "slug": {"type": "string"}, "request_file": {"type": "string"},
          "fresh_run": {"type": "boolean", "description": "For an existing task, deliberately rotate run_id and discard current review/QA receipts."},
-         "execution_mode": {"type": "string", "enum": ["standard", "micro"]}},
+         "execution_mode": {"type": "string", "enum": ["standard", "micro"]},
+         "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
          "additionalProperties": False},
      "handler": handle_task_start},
     {"name": "task_context", "title": "Read the task pack",
      "description": "Return compact task context with on-the-fly routing.",
      "inputSchema": {"type": "object", "properties": {
-         "task_id": {"type": "string"}},
+         "task_id": {"type": "string"},
+         "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
          "required": ["task_id"], "additionalProperties": False},
      "handler": handle_task_context},
     {"name": "task_verify", "title": "Run task verification",
@@ -2086,13 +2125,15 @@ TOOL_DEFS: list[dict[str, Any]] = [
          "task_id": {"type": "string"},
          "run_commands": {"type": "boolean"},
          "parallel": {"type": "boolean"},
-         "max_workers": {"type": "integer"}},
+         "max_workers": {"type": "integer"},
+         "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
          "required": ["task_id"], "additionalProperties": False},
      "handler": handle_task_verify},
     {"name": "task_close", "title": "Run the completion gate",
      "description": "Check all verdicts PASS, then close the task.",
      "inputSchema": {"type": "object", "properties": {
-         "task_id": {"type": "string"}},
+         "task_id": {"type": "string"},
+         "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
          "required": ["task_id"], "additionalProperties": False},
      "handler": handle_task_close},
     {"name": "task_blocked", "title": "Park a task on a real environment or attestation blocker",
@@ -2100,7 +2141,8 @@ TOOL_DEFS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {
          "task_id": {"type": "string", "description": "A bare safe ID or TASK__<safe-id>; safe-id is 1-180 ASCII letters, digits, dots, underscores, or hyphens. Paths are not accepted in task_id."},
          "blocked_reason": {"type": "string", "description": "Nonblank text stored verbatim, up to and including 122880 UTF-8 bytes."},
-         "unblock_condition": {"type": "string", "description": "Nonblank text stored verbatim, up to and including 122880 UTF-8 bytes."}},
+         "unblock_condition": {"type": "string", "description": "Nonblank text stored verbatim, up to and including 122880 UTF-8 bytes."},
+         "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
          "required": ["task_id", "blocked_reason", "unblock_condition"],
          "additionalProperties": False},
      "handler": handle_task_blocked},
@@ -2109,7 +2151,8 @@ TOOL_DEFS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {
          "task_id": {"type": "string"}, "task_dir": {"type": "string"},
          "plan": {"type": "string"},
-         "required_lenses": {"type": "array", "items": {"type": "string"}}},
+         "required_lenses": {"type": "array", "items": {"type": "string"}},
+         "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
          "required": ["plan"],
          "additionalProperties": False},
      "handler": handle_write_plan},

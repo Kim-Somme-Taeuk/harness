@@ -57,3 +57,24 @@ def test_codex_qa_docs_do_not_suggest_claude_agent_subagent_type_call_shape():
     assert "harness:qa-browser" not in qa_section
     assert "harness:qa-api" not in qa_section
     assert "harness:qa-cli" not in qa_section
+
+
+def test_task_tools_declare_optional_workspace_and_goal_tools_do_not():
+    """harness:batch leads target their worktree task through `workspace`."""
+    import sys
+
+    if "harness_server" in sys.modules:
+        server = sys.modules["harness_server"]
+    else:
+        spec = importlib.util.spec_from_file_location("harness_server", SERVER_PATH)
+        assert spec and spec.loader
+        server = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = server
+        spec.loader.exec_module(server)
+    schemas = {tool["name"]: tool["inputSchema"] for tool in server.list_tools()}
+    for name in ("task_start", "task_context", "write_plan", "task_verify", "task_close", "task_blocked"):
+        props = schemas[name]["properties"]
+        assert props.get("workspace", {}).get("type") == "string", name
+        assert "workspace" not in schemas[name].get("required", []), name
+    for name in ("goal_start", "goal_context", "goal_add_task", "goal_next_task", "goal_finish"):
+        assert "workspace" not in schemas[name]["properties"], name
