@@ -102,12 +102,14 @@ Known limits:
   writes into it are allowed.
 - When a checkout's own `.claude` (or `.claude/worktrees`) is a symlink that
   leaves the repository — a layout manifest v7's ignore migration accepts — a
-  write addressed *through the main checkout's path* into a lead worktree
-  (`<main>/.claude/worktrees/<name>/...`) resolves outside the main control
-  root and is denied by `symlink-outside-control`, even for an ordinary source
-  file, before the cross-checkout branch runs. Leads are unaffected: they write
-  under their own worktree root. A coordinator that must edit a lead worktree
-  in that layout uses the worktree's real path.
+  write addressed *through the main checkout's path* into a linked worktree
+  under it (`<main>/.claude/worktrees/<name>/...`) resolves outside the main
+  control root and is denied by `symlink-outside-control`, even for an
+  ordinary source file, before the cross-checkout branch runs. A session
+  working in such a worktree writes under its own root and is unaffected;
+  otherwise use the worktree's real path. (`harness:batch` does not start in
+  that layout today: its preflight step b.3 stops there — see the REQ known
+  limit.)
 
 ## Workflow-control-surface
 

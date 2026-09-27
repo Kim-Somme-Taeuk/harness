@@ -345,6 +345,11 @@ stop-gap above applies.
   checks it and, when the path is not ignored (for example in a project not
   yet migrated to v7), tells the user to add it; a later
   `--migrate-harness-version` moves that line into the managed block.
+- Known limit: when `.claude` or `.claude/worktrees` is a symlink, step b.3's
+  `git check-ignore .claude/worktrees/x` exits 128 ("beyond a symbolic link")
+  even after the v7 migration has written the ignore entry, so batch stops at
+  preflight in that layout although v7 accepts it. Follow-up: make b.3 check
+  the path git actually sees, as `setup_finalize.py` does for the v7 entry.
 - Default concurrency is 3 leads; more only on explicit user request. Each
   worktree builds its own `.venv`, and on a 9p/drvfs mount pytest `-n auto` per
   lead oversubscribes CPU and IO, so leads pass `-n 4`.
