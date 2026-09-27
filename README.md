@@ -95,6 +95,7 @@ All under `plugin/agents/`. Narrow tool surface — each agent gets only what it
 | Agent | Role |
 |-------|------|
 | `developer` | Implements PLAN.md per AC |
+| `task-lead` | `harness:batch` lead: runs one whole task lifecycle inside its own `isolation: worktree` checkout and commits on its branch |
 | `defect-hunter` | Non-attesting evidence-only discovery: LIGHT runs 0, STANDARD 1 selected focus, and DEEP both focuses |
 | `code-reviewer` | Always runs fresh after discovery, independently sweeps the full scope, and is the sole `review-code` verdict authority |
 | `security-reviewer` | Conditional trust-boundary and exploitability specialist; sole `review-security` authority |
@@ -167,6 +168,7 @@ All under `plugin/scripts/`. Stdlib only.
 | `req_detector.py` | Detect observable behavior that needs a durable `REQ__*.md` | stdout |
 | `req_scaffold.py` | Create or update durable REQ scaffolds before observable source work | `doc/<area>/REQ__*.md` |
 | `install_verified.py` | Stateless trusted post-QA delivery wrapper; compares canonical payloads from an isolated verified snapshot and refreshes only stale runtimes | stdout / exit status |
+| `batch_harvest.py` | `harness:batch` coordinator step: copies a merged lead worktree's gitignored task evidence and learnings into the main checkout before `git worktree remove`; refuses unregistered/unmerged worktrees, links, non-regular files, and archive collisions | `doc/harness/archive/batch/`, `doc/harness/learnings.jsonl` |
 | `install_smoke.py` | Drives an installed runtime tree once — imports every registered hook module and checks a bound subagent produces a receipt row; run by `install.py` after each sync and on the default run's SYNCHRONIZED skip path | stdout / exit status |
 | `runbook_memory.py` | Capture approved runbooks and pending setup-command candidates | `doc/harness/runbooks.yaml` |
 | `review-log` | Append one bounded formal-review final from stdin to the task-local content-addressed detail store | task `REVIEWS.jsonl` |
@@ -242,12 +244,17 @@ PostToolUse routing hints.
 | `goal_finish` | Mark the active goal complete or blocked |
 | `write_plan` | Write PLAN.md and update TASK.json required lenses |
 
+The six task tools (`task_*`, `write_plan`) accept an optional `workspace`: the
+absolute path of a registered linked worktree whose task the call targets
+(Claude `harness:batch` leads; refused on Codex).
+
 ## Skills
 
 | Skill | Description |
 |-------|-------------|
 | `/harness:setup` | Bootstrap harness in target project |
 | `/harness:run` | Codex public entry for any repository-mutating workflow |
+| `/harness:batch` | Claude: run several independent tasks in parallel from one session, one worktree lead each, then merge and verify once |
 
 Normal usage is `/harness:setup` once per repository. On Codex, `$harness:run`
 is implicitly selected for plain repository mutation and may also be invoked

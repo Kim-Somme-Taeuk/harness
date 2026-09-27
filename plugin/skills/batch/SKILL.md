@@ -1,0 +1,120 @@
+---
+name: batch
+description: Coordinator procedure for running several independent harness tasks in parallel from one session, one harness:task-lead per linked git worktree, merged and verified afterward.
+argument-hint: <N requests, each with a slug and declared path scope>
+user-invocable: true
+allowed-tools: Read, Glob, Grep, Bash, Agent, Skill
+---
+
+Run N independent harness tasks in parallel, one `harness:task-lead` subagent
+per task in its own linked git worktree, then merge, harvest, and verify.
+
+See `doc/harness/REQ__parallel-tasks-via-worktree-leads.md` for the full model
+and rationale.
+
+## a) Intake
+
+Collect N requests. Each needs a slug and a declared path scope (the files or
+directories it is expected to touch). Requests whose declared scopes overlap,
+or where one depends on another's output, are not independent: sequence them
+into a later wave instead of running them in the same parallel batch.
+
+Slugs must be distinct within the batch, and none may already name a task in
+the main checkout (`doc/harness/tasks/TASK__<slug>`) or an archived lead
+(`doc/harness/archive/batch/TASK__<slug>`). Harvest refuses an archive
+collision, but only after the merge, so reject a reused slug here instead.
+
+## b) Preflight
+
+Before spawning anything:
+
+1. `git status --porcelain` in the main checkout must be empty (clean,
+   committed tree). If not, stop and tell the user to commit or stash first.
+2. `.claude/settings.json` must have `"worktree": {"baseRef": "head"}`. If it
+   is missing or set to anything else, stop and instruct the user to add it —
+   this skill does not edit a project's own settings file (C-15: user-owned
+   settings are not overwritten by a skill).
+3. `.claude/worktrees/` must be gitignored (`git check-ignore .claude/worktrees/x`).
+   If it is not ignored, stop and instruct the user to add it.
+4. No harness task may be open in the main checkout for this session while a
+   wave runs (`task_context` shows none, or park/close it first). A lead's
+   late lens stop that outlives its removed worktree must find nothing to
+   bind to in the main checkout.
+5. Record `git rev-parse HEAD` in the main checkout. Every lead gets this sha
+   and refuses to start if its own worktree HEAD differs.
+
+## c) Spawn one wave
+
+Spawn every lead of the current wave in **one assistant message** — this is
+what makes them concurrent. Each spawn:
+
+```
+Agent(subagent_type: "harness:task-lead", prompt: "<request text>\nslug: <slug>\nscope: <declared path scope>\ncoordinator HEAD: <sha from step b.5>\npytest worker cap: 4")
+```
+
+Do not pass `name=`. Default to at most **3 concurrent leads** per wave; raise
+the cap only when the user explicitly asks for more in this conversation — a
+9p/drvfs mount, a `.venv` built per worktree, and `pytest -n auto` per lead
+oversubscribe CPU and IO past that point (see the REQ doc).
+
+## d) Collect results and merge
+
+Each lead returns a fenced JSON block: `{"task_id","worktree","branch","commit","verdict","blocked_reason"}`.
+
+For every lead with `verdict: "closed"`, **in order**, in the main checkout:
+
+1. `git merge --no-ff <branch>`
+2. On conflict: `git merge --abort` immediately, stop merging further leads
+   from this wave, and carry the conflict into the integration task (step e).
+   Do not resolve conflicts here.
+3. On a clean merge: run
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_harvest.py --worktree <W> --task-id <id>`
+   to copy the lead's gitignored task evidence and learnings into the main
+   checkout before the worktree is gone. A non-zero exit (unmerged branch,
+   symlinked or non-regular evidence, an archive that already holds different
+   evidence for the same task id) stops removal of that worktree.
+4. The lead has returned, but Claude Code keeps its agent lock on the
+   worktree, so release it first: `git worktree unlock <W>`. Then
+   `git worktree remove <W>` and `git branch -d <branch>`. Never pass
+   `--force` to either — a failure there (dirty worktree, unmerged branch)
+   means something is wrong and must be looked at, not overridden. Never
+   unlock a worktree whose lead is still running.
+
+A lead with `verdict: "blocked"` or `"failed"`: report it, and leave its
+worktree and branch in place — never remove or force-remove them. The
+coordinator or the user resolves it directly in that worktree later.
+
+## e) Integration task
+
+When step d ends — every closed lead merged, or merging stopped at a conflict
+carried from step d.2 — open
+`TASK__batch-integrate-<slug>` in the **main checkout** through the normal
+`harness:run` lifecycle (`task_start` → plan → develop → QA → close). Under
+that task:
+
+1. Resolve any conflicts carried from step d.2: `git merge --no-ff <branch>`
+   again under this task, resolve, commit, then harvest and remove that
+   lead's worktree exactly as in steps d.3–d.4. Then continue steps d.1–d.4
+   in order for every remaining closed lead of the wave, resolving any further
+   conflicts under this same task, so every closed lead is merged before the
+   full suite runs.
+2. Run the full suite (e.g. `uv run pytest tests/ -q`).
+3. Run `review-code` and `qa-cli`.
+4. In this plugin source repo, before `task_close`, run
+   `python3 plugin/scripts/install_verified.py --task-dir <integration task dir>`
+   — this is the only place `install_verified.py` runs in batch mode; leads
+   skip it.
+5. Close.
+
+## f) Host visibility
+
+Tell the user their host git client (e.g. GitKraken over a drvfs mount) can
+inspect this work through **branches and commits only**. Never instruct the
+user to open a worktree folder directly on the host, and never prune or remove
+a worktree from the host while a lead has it locked.
+
+## g) Report
+
+Give the user a table: task slug → branch → verdict → merge commit (or
+"kept, unmerged" for blocked/failed leads). End with the integration task's
+verdict.

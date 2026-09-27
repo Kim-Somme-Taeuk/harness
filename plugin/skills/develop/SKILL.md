@@ -91,6 +91,7 @@ Phases run in strict order; each phase must complete before the next. Sub-files 
 ### Phase 0: Pre-flight
 
 Verify `doc/harness/manifest.yaml` and the exact four-field `TASK.json` parse. Derive terminal state from `TASK.json.close_receipt_fingerprint` or `BLOCKED.md`; do not expect a stored status or verdict. No other task holds write focus. On failure, `AskUserQuestion` with setup-skill / fresh-task / continue-anyway options.
+A `harness:batch` lead (`plugin/agents/task-lead.md`) runs this same flow inside its own worktree and never calls `AskUserQuestion`; it returns undelegated decisions to the coordinator instead.
 
 **Context Recovery:** inspect TASK.json/PROGRESS.md for the current task
 and list the 3 newest task directories. If an in-progress task matches the
@@ -402,7 +403,7 @@ python3 plugin/scripts/install_verified.py \
 
 This is part of completion, not a suggestion. Run it after the last source
 edit and verification, before `task_close`, so stale installed hooks cannot
-prevent the task from reaching the close gate. Capture the installer exit code
+prevent the task from reaching the close gate. A `harness:batch` lead (`plugin/agents/task-lead.md`) skips this step; the coordinator's integration task installs once after all leads merge. Capture the installer exit code
 and runtime summaries. The trusted helper verifies canonical harness identity,
 current-run review+QA receipts, and a byte-stable install-payload snapshot
 before it invokes the snapshot's
