@@ -574,7 +574,7 @@ def test_setup_ignores_ambient_alternate_git_index(tmp_path, monkeypatch):
     assert "[REGISTERED_SOURCE_NOT_DIRECT_GITLINK]" in errors[0]
 
 
-def canonical_manifest(version: int = 6) -> str:
+def canonical_manifest(version: int = 7) -> str:
     return (
         f"version: {version}\n"
         "initialized_at: 2026-07-20\n"
@@ -595,7 +595,7 @@ def test_fresh_setup_ignores_all_operational_artifacts_and_stamps_version(tmp_pa
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (repo / "doc/harness/.version").exists()
-    assert "version: 6\n" in (repo / "doc/harness/manifest.yaml").read_text()
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text()
     assert "harness_version" not in (repo / "doc/harness/manifest.yaml").read_text()
     assert not (repo / "doc/harness/.format-version").exists()
     for rel in (
@@ -725,7 +725,7 @@ def test_codex_finalize_rejects_marker_without_public_run_route(tmp_path):
     assert "route repository mutation to $harness:run" in result.stdout
 
 
-def test_prepare_migrates_legacy_manifest_to_v6_without_finalizing(tmp_path):
+def test_prepare_migrates_legacy_manifest_to_v7_without_finalizing(tmp_path):
     plugin_root = make_plugin_root(tmp_path)
     repo = make_repo(
         tmp_path,
@@ -740,7 +740,7 @@ def test_prepare_migrates_legacy_manifest_to_v6_without_finalizing(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     body = (repo / "doc/harness/manifest.yaml").read_text()
-    assert "version: 6" in body and "name: demo" in body and "type: api" in body
+    assert "version: 7" in body and "name: demo" in body and "type: api" in body
     assert "project_type:" not in body and "harness_version:" not in body
     assert "custom_field: keep-me" in body
     assert "qa:\n  default_mode: browser\n  browser_qa_supported: true" in body
@@ -753,11 +753,11 @@ def test_prepare_migrates_legacy_manifest_to_v6_without_finalizing(tmp_path):
 
 def test_future_schema_and_legacy_collision_fail_without_mutation(tmp_path):
     plugin_root = make_plugin_root(tmp_path)
-    future = make_repo(tmp_path / "future", manifest=canonical_manifest(7))
+    future = make_repo(tmp_path / "future", manifest=canonical_manifest(8))
     before = (future / "doc/harness/manifest.yaml").read_text()
     result = run(future, plugin_root)
     assert result.returncode == 1
-    assert "newer than supported version 6; upgrade Harness" in result.stdout
+    assert "newer than supported version 7; upgrade Harness" in result.stdout
     assert (future / "doc/harness/manifest.yaml").read_text() == before
     assert not (future / "doc/harness/.version").exists()
 
@@ -1029,7 +1029,7 @@ def test_codex_installed_mirror_prepare_and_finalize_end_to_end(tmp_path):
     finalized = run(repo, mirror)
     assert finalized.returncode == 0, finalized.stdout + finalized.stderr
     assert not (repo / "doc/harness/.version").exists()
-    assert "version: 6" in (repo / "doc/harness/manifest.yaml").read_text()
+    assert "version: 7" in (repo / "doc/harness/manifest.yaml").read_text()
 
 
 def test_canonical_setup_resources_exist_in_source_tree():
@@ -1141,10 +1141,11 @@ _CONVERGENCE_STARTING_STATES = [
     ("v5-with-harness-version", "version: 5\nname: demo\nharness_version: 1\n", {}),
     ("v5-with-format-version-file", "version: 5\nname: demo\n", {"doc/harness/.format-version": "1\n"}),
     ("v5-with-version-file", "version: 5\nname: demo\n", {"doc/harness/.version": "2.3.0\n"}),
+    ("v6-before-worktrees-ignore", "version: 6\nname: demo\n", {}),
 ]
 
 
-def test_migration_converges_every_starting_state_to_v6(tmp_path):
+def test_migration_converges_every_starting_state_to_v7(tmp_path):
     for label, manifest_text, extra_files in _CONVERGENCE_STARTING_STATES:
         repo = basic_repo(tmp_path / label, manifest_text)
         for rel, content in extra_files.items():
@@ -1160,12 +1161,12 @@ def test_migration_converges_every_starting_state_to_v6(tmp_path):
         assert "updated=true" in result.stdout, label
 
         body = (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
-        assert "version: 6" in body, label
+        assert "version: 7" in body, label
         assert "harness_version" not in body, label
         assert not (repo / "doc/harness/.version").exists(), label
         assert not (repo / "doc/harness/.format-version").exists(), label
         ignores = (repo / ".gitignore").read_text(encoding="utf-8")
-        for entry in ("doc/harness/tasks/", "doc/harness/.watcher-diagnostics.json"):
+        for entry in ("doc/harness/tasks/", "doc/harness/.watcher-diagnostics.json", ".claude/worktrees/"):
             assert entry in ignores, label
 
         rerun = subprocess.run(
@@ -1226,9 +1227,9 @@ def test_migrate_rollback_when_leftover_unlink_fails_after_manifest_write(tmp_pa
 
 
 
-def test_v5_to_v6_migration_preserves_crlf_line_endings(tmp_path):
+def test_v5_to_v7_migration_preserves_crlf_line_endings(tmp_path):
     """Hunter finding: reading the manifest in text mode dropped CRLF before
-    _strip_to_v6 could preserve it."""
+    _strip_to_current could preserve it."""
     repo = basic_repo(tmp_path, "placeholder\n")
     manifest = repo / "doc/harness/manifest.yaml"
     manifest.write_bytes(b"version: 5\r\nname: demo\r\nharness_version: 1\r\ntype: cli\r\n")
@@ -1239,4 +1240,208 @@ def test_v5_to_v6_migration_preserves_crlf_line_endings(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert manifest.read_bytes() == b"version: 6\r\nname: demo\r\ntype: cli\r\n"
+    assert manifest.read_bytes() == b"version: 7\r\nname: demo\r\ntype: cli\r\n"
+
+
+# --- Manifest version 7: .claude/worktrees/ joins the operational ignores ---
+
+
+def migrate_cli(repo: Path):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(repo), "--migrate-harness-version"],
+        capture_output=True, text=True, timeout=20,
+    )
+
+
+def git(repo: Path, *args: str):
+    return subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=setup@test", "-c", "user.name=Setup Test",
+         "-c", "commit.gpgsign=false", *args],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def committed_repo(tmp_path: Path, manifest_text: str) -> Path:
+    repo = basic_repo(tmp_path, manifest_text)
+    (repo / "README").write_text("demo\n", encoding="utf-8")
+    git(repo, "add", "README")
+    git(repo, "commit", "-qm", "init")
+    return repo
+
+
+def test_v6_to_v7_migration_preserves_crlf_and_nested_version_keys(tmp_path):
+    repo = basic_repo(tmp_path, "placeholder\n")
+    manifest = repo / "doc/harness/manifest.yaml"
+    manifest.write_bytes(b"version: 6\r\nname: demo\r\nextra:\r\n  version: 6\r\n")
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "HARNESS_MIGRATION_OK: version=7 updated=true" in result.stdout
+    assert manifest.read_bytes() == b"version: 7\r\nname: demo\r\nextra:\r\n  version: 6\r\n"
+
+
+def test_existing_user_worktrees_ignore_is_kept_exactly_once(tmp_path):
+    repo = basic_repo(tmp_path, "version: 6\nname: demo\n")
+    (repo / ".gitignore").write_text("# user\n.claude/worktrees/\ncustom.log\n", encoding="utf-8")
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert lines.count(".claude/worktrees/") == 1
+    assert "# user" in lines and "custom.log" in lines
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+
+
+def test_v7_migration_succeeds_with_live_linked_worktree_present(tmp_path):
+    repo = committed_repo(tmp_path, "version: 6\nname: demo\n")
+    git(repo, "worktree", "add", "-q", "--detach", str(repo / ".claude/worktrees/lead"), "HEAD")
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+    status = git(repo, "status", "--porcelain", "--untracked-files=all").stdout
+    assert ".claude" not in status, status
+    assert migrate_cli(repo).stdout.strip() == "HARNESS_MIGRATION_OK: version=7 updated=false"
+
+
+def test_v7_migration_refuses_tracked_worktree_paths_without_stamping(tmp_path):
+    # A stray tracked file and an accidentally added linked worktree (gitlink).
+    file_repo = basic_repo(tmp_path / "file", "version: 6\nname: demo\n")
+    (file_repo / ".gitignore").write_text("# user\ncustom.log\n", encoding="utf-8")
+    stray = file_repo / ".claude/worktrees/stray/notes.txt"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("notes\n", encoding="utf-8")
+    git(file_repo, "add", "-f", ".claude/worktrees/stray/notes.txt")
+
+    link_repo = committed_repo(tmp_path / "gitlink", "version: 6\nname: demo\n")
+    git(link_repo, "worktree", "add", "-q", "--detach", str(link_repo / ".claude/worktrees/lead"), "HEAD")
+    git(link_repo, "add", ".claude/worktrees/lead")
+
+    for repo, tracked in ((file_repo, ".claude/worktrees/stray/notes.txt"),
+                          (link_repo, ".claude/worktrees/lead")):
+        before = (repo / ".gitignore").read_bytes() if (repo / ".gitignore").exists() else None
+
+        result = migrate_cli(repo)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert f"operational artifact is already tracked: {tracked}" in result.stdout
+        assert (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8") == "version: 6\nname: demo\n"
+        after = (repo / ".gitignore").read_bytes() if (repo / ".gitignore").exists() else None
+        assert after == before
+
+
+def test_symlinked_claude_dir_satisfies_ignore_only_worktrees_entry(tmp_path):
+    # git never lists a path beyond a symlink, and check-ignore exits 128 there.
+    shared = tmp_path / "shared-claude"
+    (shared / "worktrees/lead").mkdir(parents=True)
+
+    repo = basic_repo(tmp_path / "migrate", "version: 6\nname: demo\n")
+    (repo / ".claude").symlink_to(shared, target_is_directory=True)
+    result = migrate_cli(repo)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+
+    plugin_root = make_plugin_root(tmp_path)
+    fresh = make_repo(tmp_path / "setup", manifest=canonical_manifest())
+    (fresh / ".claude").symlink_to(shared, target_is_directory=True)
+    finalized = run(fresh, plugin_root)
+    assert finalized.returncode == 0, finalized.stdout + finalized.stderr
+    assert "SETUP_OK" in finalized.stdout
+
+
+def test_symlinked_worktrees_dir_fails_until_the_symlink_is_ignored(tmp_path):
+    # The trailing-slash rule does not match a symlink, so git would list it.
+    repo = basic_repo(tmp_path, "version: 6\nname: demo\n")
+    target = tmp_path / "worktrees-elsewhere"
+    target.mkdir()
+    (repo / ".claude").mkdir()
+    (repo / ".claude/worktrees").symlink_to(target, target_is_directory=True)
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "existing operational path is not effectively ignored: .claude/worktrees" in result.stdout
+    assert (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8") == "version: 6\nname: demo\n"
+    assert not (repo / ".gitignore").exists()
+
+    (repo / ".gitignore").write_text("/.claude/worktrees\n", encoding="utf-8")
+    recovered = migrate_cli(repo)
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+    assert "/.claude/worktrees" in (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+
+def test_in_repo_symlinked_claude_dir_is_checked_where_git_sees_it(tmp_path):
+    # A symlink resolving inside the repository moves the worktrees git lists.
+    repo = basic_repo(tmp_path / "ignore", "version: 6\nname: demo\n")
+    (repo / "config/claude").mkdir(parents=True)
+    (repo / ".claude").symlink_to("config/claude", target_is_directory=True)
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (
+        "operational path is not effectively ignored: .claude/worktrees/__harness_probe__ "
+        "(git sees config/claude/worktrees/__harness_probe__)"
+    ) in result.stdout
+    assert (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8") == "version: 6\nname: demo\n"
+    assert not (repo / ".gitignore").exists()
+
+    (repo / ".gitignore").write_text("/config/claude/worktrees/\n", encoding="utf-8")
+    recovered = migrate_cli(repo)
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+
+    # A worktree tracked at the real path fails without stamping.
+    tracked = committed_repo(tmp_path / "tracked", "version: 6\nname: demo\n")
+    (tracked / "config/claude").mkdir(parents=True)
+    (tracked / ".claude").symlink_to("config/claude", target_is_directory=True)
+    git(tracked, "worktree", "add", "-q", "--detach", str(tracked / "config/claude/worktrees/lead"), "HEAD")
+    git(tracked, "add", "config/claude/worktrees/lead")
+    (tracked / ".gitignore").write_text("/config/claude/worktrees/\n", encoding="utf-8")
+
+    refused = migrate_cli(tracked)
+
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert "operational artifact is already tracked: config/claude/worktrees/lead" in refused.stdout
+    assert (tracked / "doc/harness/manifest.yaml").read_text(encoding="utf-8") == "version: 6\nname: demo\n"
+    assert (tracked / ".gitignore").read_text(encoding="utf-8") == "/config/claude/worktrees/\n"
+
+
+def test_in_repo_symlinked_worktrees_dir_needs_both_the_link_and_target_ignored(tmp_path):
+    repo = basic_repo(tmp_path, "version: 6\nname: demo\n")
+    (repo / "wt").mkdir()
+    (repo / ".claude").mkdir()
+    (repo / ".claude/worktrees").symlink_to("../wt", target_is_directory=True)
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "(git sees wt/__harness_probe__)" in result.stdout
+    assert "existing operational path is not effectively ignored: .claude/worktrees" in result.stdout
+    assert (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8") == "version: 6\nname: demo\n"
+
+    (repo / ".gitignore").write_text("/.claude/worktrees\n/wt/\n", encoding="utf-8")
+    recovered = migrate_cli(repo)
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+
+
+def test_looping_claude_symlink_does_not_crash_the_migration(tmp_path, monkeypatch):
+    repo = basic_repo(tmp_path, "version: 6\nname: demo\n")
+    (repo / ".claude").symlink_to(".claude")
+
+    result = migrate_cli(repo)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert "version: 7\n" in (repo / "doc/harness/manifest.yaml").read_text(encoding="utf-8")
+
+    # Python >= 3.13 returns a looping path unresolved instead of raising.
+    module = load_setup_finalize("setup_finalize_loop_resolve_test")
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: Path(os.path.abspath(self)))
+    assert module._git_visible_path(repo, ".claude/worktrees/__harness_probe__") is None
+    assert module._git_visible_path(repo, "doc/harness/tasks/x") == "doc/harness/tasks/x"

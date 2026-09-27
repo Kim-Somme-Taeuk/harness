@@ -26,7 +26,18 @@ from _lib import (  # type: ignore
 )
 
 
-MANIFEST_VERSION = 6
+# Numbered project migrations (doc/harness/REQ__versioned-project-file-migrations.md).
+# Every step is applied by migrate_project_format and verified the same way
+# before the new version is stamped: the standard OPERATIONAL_IGNORES list is
+# effectively ignored (git check-ignore) and no operational path is tracked.
+# On failure every write is rolled back and nothing is stamped.
+#   1-5  manifest schema: legacy key renames and the nested qa block.
+#   6    standard operational ignores; drop the harness_version key and the
+#        doc/harness/.version and .format-version files.
+#   7    standard operational ignores gain .claude/worktrees/ (linked
+#        worktrees of harness:batch leads). A tracked path there fails the
+#        migration until the user untracks it (git rm --cached -r).
+MANIFEST_VERSION = 7
 ROUTING_MARKER = "<!-- harness:routing-injected -->"
 CODEX_RUN_POLICY = "skills/run/agents/openai.yaml"
 ROUTING_BLOCK = """## Harness routing
@@ -77,7 +88,15 @@ OPERATIONAL_IGNORES = (
     "doc/harness/.maintain-last-run",
     "doc/harness/.maintain-observe.log",
     "doc/harness/.maintain-pending.json",
+    ".claude/worktrees/",
 )
+
+# Ignored in every project but never written by Harness: Claude Code creates
+# linked worktrees there. The managed-path symlink guard protects Harness
+# writes, so it skips these. Their ignore and tracked checks run at the path
+# git sees: a symlinked parent leading outside the repository (for example
+# .claude) satisfies them, one resolving inside is checked at its target.
+IGNORE_ONLY_OPERATIONAL = frozenset({".claude/worktrees/"})
 
 REQUIRED_SETUP_RESOURCES = (
     "skills/run/SKILL.md",
@@ -212,7 +231,7 @@ def migrate_project_format(repo: Path) -> bool:
     format_original, format_mode = _leftover_snapshot(format_path)
 
     original = gitignore_path.read_text(encoding="utf-8") if gitignore_path.is_file() else None
-    manifest_original = manifest_path.read_bytes().decode("utf-8")  # keep CRLF for _strip_to_v6
+    manifest_original = manifest_path.read_bytes().decode("utf-8")  # keep CRLF for _strip_to_current
     gitignore_mode = stat.S_IMODE(gitignore_path.stat().st_mode) if gitignore_path.exists() else None
     manifest_mode = stat.S_IMODE(manifest_path.stat().st_mode)
     candidate = render_gitignore(original or "")
@@ -408,8 +427,8 @@ def source_git_root_errors(repo: Path, manifest_text: str) -> list[str]:
     return errors
 
 
-def _strip_to_v6(text: str, version: int) -> str:
-    """Drop leftover harness_version lines and bump version 5 -> 6 in place."""
+def _strip_to_current(text: str, version: int) -> str:
+    """Drop leftover harness_version lines and bump a v5+ top-level version in place."""
     lines = text.splitlines(keepends=True)
     out: list[str] = []
     for line in lines:
@@ -417,7 +436,7 @@ def _strip_to_v6(text: str, version: int) -> str:
         ending = line[len(stripped):]
         if stripped.startswith("harness_version:"):
             continue
-        if version == 5 and stripped.startswith("version:"):
+        if version < MANIFEST_VERSION and stripped.startswith("version:"):
             out.append(f"version: {MANIFEST_VERSION}{ending}")
             continue
         out.append(line)
@@ -443,7 +462,7 @@ def migrate_manifest_text(original: str) -> tuple[str, list[str]]:
                 errors.append("schema v5 manifest contains legacy keys: " + ", ".join(legacy))
             if errors:
                 return original, errors
-            return _strip_to_v6(original, version), []
+            return _strip_to_current(original, version), []
 
     for legacy, canonical in _LEGACY_RENAMES.items():
         if legacy in top and canonical in top:
@@ -621,6 +640,8 @@ def validate_structure(
 def operational_symlink_errors(repo: Path) -> list[str]:
     errors: list[str] = []
     for pattern in OPERATIONAL_IGNORES:
+        if pattern in IGNORE_ONLY_OPERATIONAL:
+            continue
         base = pattern.rstrip("/")
         candidates = list(repo.glob(base)) if "*" in base else [repo / base]
         for candidate in candidates:
@@ -643,20 +664,51 @@ def representative_path(pattern: str) -> str:
     return pattern
 
 
+def _git_visible_path(repo: Path, rel: str) -> str | None:
+    """The in-repo path git sees for rel once symlinked parents are resolved.
+
+    None when a symlinked parent leads outside the repository or loops: git
+    never tracks or lists such a path, and check-ignore exits 128 for it.
+    """
+    try:
+        parent = (repo / rel).parent.resolve()
+        visible = parent.relative_to(repo.resolve()) / Path(rel).name
+    except (OSError, RuntimeError, ValueError):  # RuntimeError: loop on Python <= 3.12
+        return None
+    try:
+        parent.stat()
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:  # Python >= 3.13 returns a looping path unresolved
+            return None
+    return visible.as_posix()
+
+
 def effective_ignore_errors(repo: Path) -> list[str]:
     errors: list[str] = []
     if not (repo / ".git").exists():
         return errors
-    probes = {representative_path(pattern) for pattern in OPERATIONAL_IGNORES}
-    existing: set[Path] = set()
+    # Path sent to git -> path named in errors. Ignore-only entries are checked
+    # where git sees them: a symlinked parent inside the repository moves them.
+    probes: dict[str, str] = {}
+    existing: dict[str, str] = {}
+    tracked_patterns = list(OPERATIONAL_IGNORES)
     for pattern in OPERATIONAL_IGNORES:
+        ignore_only = pattern in IGNORE_ONLY_OPERATIONAL
+        probe = representative_path(pattern)
+        seen = _git_visible_path(repo, probe) if ignore_only else probe
+        if seen is not None:
+            probes[seen] = probe if seen == probe else f"{probe} (git sees {seen})"
+            if seen != probe:
+                tracked_patterns.append(Path(seen).parent.as_posix() + "/")
         base = pattern.rstrip("/")
         candidates = list(repo.glob(base)) if "*" in base else [repo / base]
         for candidate in candidates:
             if candidate.is_file() or candidate.is_symlink():
-                existing.add(candidate)
-    existing_rel = {str(path.relative_to(repo)) for path in existing}
-    requested = sorted(probes | existing_rel)
+                rel = str(candidate.relative_to(repo))
+                seen = _git_visible_path(repo, rel) if ignore_only else rel
+                if seen is not None:
+                    existing[seen] = rel if seen == rel else f"{rel} (git sees {seen})"
+    requested = sorted(set(probes) | set(existing))
     result = subprocess.run(
         ["git", "-C", str(repo), "check-ignore", "--no-index", "-z", "--stdin"],
         input="\0".join(requested) + "\0",
@@ -667,10 +719,10 @@ def effective_ignore_errors(repo: Path) -> list[str]:
     if result.returncode not in (0, 1):
         errors.append("git check-ignore failed while validating operational paths")
     ignored = set(filter(None, result.stdout.split("\0")))
-    for rel in sorted(probes - ignored):
-        errors.append(f"operational path is not effectively ignored: {rel}")
-    for rel in sorted(existing_rel - ignored):
-        errors.append(f"existing operational path is not effectively ignored: {rel}")
+    for rel in sorted(set(probes) - ignored):
+        errors.append(f"operational path is not effectively ignored: {probes[rel]}")
+    for rel in sorted(set(existing) - ignored):
+        errors.append(f"existing operational path is not effectively ignored: {existing[rel]}")
     tracked = subprocess.run(
         ["git", "-C", str(repo), "ls-files", "-z"], capture_output=True, text=True,
         env=_trusted_git_env(),
@@ -679,7 +731,7 @@ def effective_ignore_errors(repo: Path) -> list[str]:
         errors.append("repository is not a readable git worktree")
         return errors
     for rel in filter(None, tracked.stdout.split("\0")):
-        for pattern in OPERATIONAL_IGNORES:
+        for pattern in tracked_patterns:
             matches = rel.startswith(pattern) if pattern.endswith("/") else fnmatch.fnmatch(rel, pattern)
             if matches:
                 errors.append(f"operational artifact is already tracked: {rel}")

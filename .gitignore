@@ -1,7 +1,6 @@
 .omc
 .claude/settings.local.json
 .claude/harness/
-.claude/worktrees/
 .claude/scheduled_tasks.lock
 __pycache__
 .DS_Store
@@ -44,3 +43,4 @@ doc/harness/quality-trend.jsonl
 doc/harness/.maintain-last-run
 doc/harness/.maintain-observe.log
 doc/harness/.maintain-pending.json
+.claude/worktrees/
