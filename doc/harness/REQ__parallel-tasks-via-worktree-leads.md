@@ -337,12 +337,11 @@ stop-gap above applies.
   leads branch from the coordinator's local HEAD, not the remote default
   branch. Each lead refuses to start when its HEAD differs from the
   coordinator HEAD it was given.
-- `.claude/worktrees/` is gitignored. This repository ignores it directly; the
-  batch SKILL preflight step b.3 (`git check-ignore`, not `batch_preflight.py`)
-  checks it in any project and tells the user to add it.
-  Adding it to setup's managed operational ignores requires a manifest
-  version bump and migration (`doc/harness/REQ__versioned-project-file-migrations.md`)
-  and is a follow-up.
+- `.claude/worktrees/` is gitignored in every harness project: manifest
+  version 7 adds it to setup's managed operational ignores
+  (`doc/harness/REQ__versioned-project-file-migrations.md`). The batch SKILL
+  preflight step b.3 (`git check-ignore`, not `batch_preflight.py`) still
+  checks it, so a project not yet migrated to v7 is told to migrate.
 - Default concurrency is 3 leads; more only on explicit user request. Each
   worktree builds its own `.venv`, and on a 9p/drvfs mount pytest `-n auto` per
   lead oversubscribes CPU and IO, so leads pass `-n 4`.
@@ -353,14 +352,15 @@ stop-gap above applies.
   checkout that owns it, and a lead's worktree has no Goal, so closing a lead
   never changes the coordinator's Goal. The MCP server refuses `workspace` on
   the Codex runtime (`reason: unsupported_runtime`).
-- Known limit: from a lead's worktree `cwd`, the prewrite gate resolves the
-  worktree as its root and lets Edit/Write targets outside it through before
-  the C-05 protected-artifact check, so the main checkout's or a sibling
-  worktree's `TASK.json`/`PLAN.md`/`RECEIPTS.jsonl` are not gate-denied from
-  there. Claude Code's worktree isolation refuses such Write calls (observed
-  above), and C-05 already leaves Bash unguarded, so this is no new
-  privilege. Follow-up: apply the protected-artifact check against the target's
-  own harness root.
+- Cross-checkout protection: when a lead's Edit/Write target lies outside its
+  worktree, the prewrite gate resolves the target's own harness root and
+  applies the C-05 protected-artifact rules there, so the main checkout's or a
+  sibling worktree's `TASK.json`/`PLAN.md`/`RECEIPTS.jsonl`/`REVIEWS.jsonl`,
+  goal state, and focus markers are denied from a lead. Ordinary source files
+  of another checkout are not gated (Claude Code's worktree isolation refuses
+  such Write calls, observed above), and C-05 leaves Bash unguarded. Remaining
+  limits are listed in `doc/harness/patterns/prewrite-gate.md`
+  ("Cross-checkout protection").
 - A failed or blocked lead's worktree is kept and reported, never
   force-removed. Evidence harvest (`plugin/scripts/batch_harvest.py`) copies
   `<worktree>/doc/harness/tasks/<task_id>` to

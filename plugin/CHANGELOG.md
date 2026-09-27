@@ -17,6 +17,14 @@ All notable changes to the harness Claude Code plugin.
   while session identity stays on the main checkout. Contract C-09 adds that
   each linked worktree has its own write focus. See
   `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`.
+- `plugin/scripts/batch_preflight.py` classifies the repository shape and each
+  batch request before leads spawn. Batch refuses a control root that is a
+  submodule checkout, a linked worktree, a separate-git-dir checkout, or not a
+  git repository. It also refuses when the main checkout, a populated
+  submodule, or an ignored nested repository is dirty or unreadable. Requests
+  scoped inside a submodule or nested repository are excluded and run as
+  ordinary tasks. Leads never run `git submodule` subcommands other than
+  `status`.
 
 ### Removed
 
@@ -27,6 +35,14 @@ All notable changes to the harness Claude Code plugin.
 
 ### Changed
 
+- **Breaking:** manifest version 7. Setup's managed operational ignores now
+  include `.claude/worktrees/` in every project. Existing v6 projects are
+  reminded at session start and migrate with `--migrate-harness-version`,
+  which refuses without stamping if anything under that path is tracked.
+- The prewrite gate denies C-05 protected artifacts of *another* checkout (a
+  lead writing into the main checkout's or a sibling worktree's task, goal, or
+  focus files). `verify_runner` resolves a linked worktree's own root, so
+  `task_verify(run_commands=true, workspace=...)` runs there.
 - Codex task binding now occurs in successful `task_start`/`task_context`
   PostToolUse using the exact hook session and returned task generation. The
   shared session hint/default marker no longer selects receipt ownership,
