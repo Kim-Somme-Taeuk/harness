@@ -91,7 +91,7 @@ _CONTRIBUTORS=$(git log --oneline --format='%ae' 2>/dev/null | sort -u | wc -l |
 [ "$_CONTRIBUTORS" -le 1 ] 2>/dev/null && _REPO_MODE="solo" || _REPO_MODE="collaborative"
 
 # Version check
-_HARNESS_MANIFEST_VERSION=6
+_HARNESS_MANIFEST_VERSION=7
 _MANIFEST="$_ROOT/doc/harness/manifest.yaml"
 _INSTALLED_VERSION=$({ tr -d '\r"'"'" < "$_MANIFEST"; } 2>/dev/null | sed -n 's/^version:[[:space:]]*//p' | head -1 | sed 's/[[:space:]]*$//')
 [ -f "$_MANIFEST" ] && _INSTALLED_VERSION=${_INSTALLED_VERSION:-0}
@@ -138,7 +138,7 @@ A/B: skip to Phase 3 preserving existing manifest values; first re-run Phase 4.2
 
 | Issue | Auto-fix? | Action |
 |-------|-----------|--------|
-| legacy `project_type`/flat QA manifest schema | Yes | Run `setup_finalize.py`; migrate to manifest `version: 6` while preserving unknown fields |
+| legacy `project_type`/flat QA manifest schema | Yes | Run `setup_finalize.py`; migrate to manifest `version: 7` while preserving unknown fields |
 | dev_command missing from manifest | Yes | Detect from package.json, add |
 | entry_url missing from manifest | Yes | Default from framework port table |
 | Test command wrong in manifest | Yes | Re-detect and update |

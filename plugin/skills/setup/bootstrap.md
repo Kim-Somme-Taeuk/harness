@@ -50,7 +50,7 @@ doc/<area>/<TYPE>__<name>.md     # durable knowledge by area / bounded context
 ## 3.2 manifest.yaml
 
 ```yaml
-version: 6
+version: 7
 initialized_at: {date}
 name: {project_name}
 type: {detected_or_chosen}
@@ -88,8 +88,12 @@ as a quoted YAML scalar. The explicit `./` keeps leading-dash directory names
 from being parsed as `cd` options.
 `source_git_roots` is omitted for a normal Git repository. For a non-Git
 workspace that controls several independent repositories, write the exact
-setup-census roots (for example `[pay-api, pay-webapp]`). Harness uses these
-roots for baseline, receipt, and QA freshness checks.
+setup-census roots (for example `[pay-api, pay-webapp]`). Only setup reads
+this field: `setup_finalize.py` requires it when the control root is not a Git
+repository and validates each entry: a checked-out entry must be an exact
+child Git root, and under a Git control root every entry must also be a direct
+gitlink in the control index. The runtime lifecycle, hooks, MCP server, and
+close gates do not read it.
 
 ### Browser project fields (required when browser_qa_supported: true)
 
@@ -233,7 +237,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 "${_PLUGIN_ROOT}/scripts/setup_finalize.py" \
 
 This early call applies ignores without validating or stamping a version.
 Phase 4 runs the full finalizer after every required artifact exists.
-Manifest `version: 6` comes from the template above (or from `--prepare` /
+Manifest `version: 7` comes from the template above (or from `--prepare` /
 `--migrate-harness-version` migrating an older manifest); it records the
 project-file format, not setup success. The full finalizer validates it,
 deletes any legacy `doc/harness/.version` and `doc/harness/.format-version`

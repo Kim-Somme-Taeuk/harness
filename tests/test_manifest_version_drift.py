@@ -1,10 +1,11 @@
-"""AC-007: the manifest version is coordinated across setup docs and code.
+"""The manifest version is coordinated across setup docs and code.
 
 setup_finalize.MANIFEST_VERSION is the single source of truth. The setup
 skill docs (Claude + Codex) and the bootstrap manifest template each hardcode
 the same integer for their own reasons (a shell upgrade check and a rendered
-template respectively); this test asserts they never drift from the runtime
-constant.
+template respectively), and the setup docs, verify-report.md, and
+plugin/scripts/README.md repeat it in prose; this test asserts none of them
+drift from the runtime constant.
 """
 from __future__ import annotations
 
@@ -52,20 +53,50 @@ def test_bootstrap_manifest_template_matches_manifest_version():
     )
 
 
+# Prose mirrors of the supported version: `version: N` in backticks and the
+# verify-report "manifest schema: vN" completion line.
+_PROSE_MIRRORS = (
+    "plugin/skills/setup/SKILL.md",
+    "plugin-codex/skills/setup/SKILL.md",
+    "plugin/skills/setup/bootstrap.md",
+    "plugin/skills/setup/verify-report.md",
+    "plugin/scripts/README.md",
+)
+
+
+def test_every_prose_version_mirror_matches_manifest_version():
+    expected = load_setup_finalize().MANIFEST_VERSION
+    seen = 0
+    for rel in _PROSE_MIRRORS:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        for match in re.finditer(r"`version: (\d+)`|manifest schema: v(\d+)", text):
+            seen += 1
+            value = int(match.group(1) or match.group(2))
+            assert value == expected, (
+                f"{rel} mentions {match.group(0)!r}; "
+                f"setup_finalize.MANIFEST_VERSION is {expected}"
+            )
+    # SKILL.md x2, bootstrap.md, verify-report.md x4, scripts README.
+    assert seen >= 8, f"expected at least 8 prose version mirrors, found {seen}"
+
+
 
 def test_setup_skill_version_check_block_reads_the_manifest_robustly(tmp_path):
     """QA finding: CRLF, quoted, and keyless manifests were reported as current."""
     import subprocess
 
+    current = load_setup_finalize().MANIFEST_VERSION
+    previous = current - 1
     cases = {
-        b"version: 5\r\nname: x\r\n": "UPGRADE_AVAILABLE: 5 -> 6",
-        b'version: "5"\n': "UPGRADE_AVAILABLE: 5 -> 6",
-        b"name: x\n": "UPGRADE_AVAILABLE: 0 -> 6",
-        b"version: 6\n": "UPGRADE_AVAILABLE: no",
-        b"version: 5  \n": "UPGRADE_AVAILABLE: 5 -> 6",
-        b"version: 5  \r\n": "UPGRADE_AVAILABLE: 5 -> 6",
+        b"version: 5\r\nname: x\r\n": f"UPGRADE_AVAILABLE: 5 -> {current}",
+        b'version: "5"\n': f"UPGRADE_AVAILABLE: 5 -> {current}",
+        b"name: x\n": f"UPGRADE_AVAILABLE: 0 -> {current}",
+        f"version: {previous}\n".encode(): f"UPGRADE_AVAILABLE: {previous} -> {current}",
+        f"version: {current}\n".encode(): "UPGRADE_AVAILABLE: no",
+        b"version: 5  \n": f"UPGRADE_AVAILABLE: 5 -> {current}",
+        b"version: 5  \r\n": f"UPGRADE_AVAILABLE: 5 -> {current}",
         b"version: 99999999999999999999\n": "UPGRADE_AVAILABLE: no",  # newer; no bash overflow
-        b"version: 05\n": "UPGRADE_AVAILABLE: 05 -> 6",
+        b"version: 05\n": f"UPGRADE_AVAILABLE: 05 -> {current}",
         b"version: 5 # c\n": (
             "UPGRADE_AVAILABLE: unknown (manifest version '5 # c' is not an integer; "
             "run setup_finalize.py --check)"

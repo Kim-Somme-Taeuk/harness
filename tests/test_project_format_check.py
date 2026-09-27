@@ -43,13 +43,13 @@ def test_legacy_project_is_prompted_and_migrated_once(tmp_path):
     (root / ".gitignore").write_text("# user\ncustom.log\n", encoding="utf-8")
     check = load_check()
     message = check.reminder(root)
-    assert "manifest version 5 -> 6" in message
+    assert "manifest version 5 -> 7" in message
     assert "--migrate-harness-version" in message
 
     first = migrate(root)
     assert first.returncode == 0, first.stdout + first.stderr
     assert "updated=true" in first.stdout
-    assert "version: 6\n" in (root / "doc/harness/manifest.yaml").read_text()
+    assert "version: 7\n" in (root / "doc/harness/manifest.yaml").read_text()
     assert "harness_version" not in (root / "doc/harness/manifest.yaml").read_text()
     ignores = (root / ".gitignore").read_text()
     assert "custom.log" in ignores
@@ -64,7 +64,7 @@ def test_legacy_project_is_prompted_and_migrated_once(tmp_path):
 
 def test_current_field_with_missing_ignore_is_repaired(tmp_path):
     root = repo(tmp_path)
-    (root / "doc/harness/manifest.yaml").write_text("version: 6\nname: demo\n")
+    (root / "doc/harness/manifest.yaml").write_text("version: 7\nname: demo\n")
     (root / ".gitignore").write_text("# user\n")
     assert "operational .gitignore drift" in load_check().reminder(root)
     assert migrate(root).returncode == 0
@@ -107,7 +107,7 @@ def test_reminder_names_absolute_git_root_for_nested_session(tmp_path):
 def test_invalid_and_future_fields_do_not_mutate(tmp_path):
     root = repo(tmp_path)
     manifest = root / "doc/harness/manifest.yaml"
-    for raw in ("garbage", "7", "1.5", "true", "-1", ""):
+    for raw in ("garbage", "8", "1.5", "true", "-1", ""):
         manifest.write_text(f"version: {raw}\nname: demo\n")
         before = manifest.read_text()
         message = load_check().reminder(root)
@@ -157,7 +157,7 @@ def test_legacy_standalone_marker_removed_after_success(tmp_path):
     root = repo(tmp_path)
     legacy = root / "doc/harness/.format-version"
     legacy.write_text("1\n")
-    assert "manifest version 5 -> 6" in load_check().reminder(root)
+    assert "manifest version 5 -> 7" in load_check().reminder(root)
     assert migrate(root).returncode == 0
     assert not legacy.exists()
     assert "harness_version" not in (root / "doc/harness/manifest.yaml").read_text()
@@ -191,7 +191,7 @@ def test_pre_v5_manifest_migrates_schema_before_stamping(tmp_path):
     result = migrate(root)
     assert result.returncode == 0, result.stdout + result.stderr
     body = manifest.read_text()
-    assert "version: 6\n" in body
+    assert "version: 7\n" in body
     assert "name: demo\n" in body
     assert "harness_version:" not in body
     assert load_check().reminder(root) == ""
@@ -200,11 +200,11 @@ def test_pre_v5_manifest_migrates_schema_before_stamping(tmp_path):
 def test_future_manifest_schema_is_not_modified(tmp_path):
     root = repo(tmp_path)
     manifest = root / "doc/harness/manifest.yaml"
-    manifest.write_text("version: 7\nname: future\n")
+    manifest.write_text("version: 8\nname: future\n")
     result = migrate(root)
     assert result.returncode == 1
-    assert "newer than supported version 6; upgrade Harness" in result.stdout
-    assert manifest.read_text() == "version: 7\nname: future\n"
+    assert "newer than supported version 7; upgrade Harness" in result.stdout
+    assert manifest.read_text() == "version: 8\nname: future\n"
     assert not (root / ".gitignore").exists()
 
 
@@ -214,7 +214,7 @@ def test_terminal_manifest_version_without_newline_remains_valid(tmp_path):
     manifest.write_text("name: demo\nversion: 5")
     result = migrate(root)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert manifest.read_text() == "name: demo\nversion: 6"
+    assert manifest.read_text() == "name: demo\nversion: 7"
     assert load_check().reminder(root) == ""
 
 
@@ -239,7 +239,7 @@ def test_symlinked_version_marker_fails_closed_without_writes(tmp_path):
     assert result.returncode == 1
     assert "symlink" in result.stdout
     assert not (root / ".gitignore").exists()
-    assert "version: 6" not in (root / "doc/harness/manifest.yaml").read_text()
+    assert "version: 7" not in (root / "doc/harness/manifest.yaml").read_text()
     assert outside.read_text() == "2.3.0\n"
 
 
@@ -250,7 +250,7 @@ def test_directory_format_version_marker_fails_closed_without_writes(tmp_path):
     assert result.returncode == 1
     assert "must be a regular file" in result.stdout
     assert not (root / ".gitignore").exists()
-    assert "version: 6" not in (root / "doc/harness/manifest.yaml").read_text()
+    assert "version: 7" not in (root / "doc/harness/manifest.yaml").read_text()
 
 
 def test_both_session_start_hooks_run_check():
@@ -264,7 +264,53 @@ def test_both_session_start_hooks_run_check():
 def test_future_version_wording_is_identical_in_reminder_and_migrate(tmp_path):
     """Both surfaces must say the same thing, including the "upgrade Harness" advice."""
     root = repo(tmp_path)
-    (root / "doc/harness/manifest.yaml").write_text("version: 7\nname: demo\n")
-    expected = "manifest version 7 is newer than supported version 6; upgrade Harness"
+    (root / "doc/harness/manifest.yaml").write_text("version: 8\nname: demo\n")
+    expected = "manifest version 8 is newer than supported version 7; upgrade Harness"
     assert expected in load_check().reminder(root)
     assert expected in migrate(root).stdout
+
+
+def test_v6_project_is_reminded_and_migrated_to_v7_worktrees_ignore(tmp_path):
+    root = repo(tmp_path)
+    check = load_check()
+    pre_v7 = [entry for entry in check.OPERATIONAL_IGNORES if entry != ".claude/worktrees/"]
+    assert len(pre_v7) == len(check.OPERATIONAL_IGNORES) - 1
+    (root / "doc/harness/manifest.yaml").write_text("version: 6\nname: demo\n", encoding="utf-8")
+    (root / ".gitignore").write_text(
+        "# user\ncustom.log\n\n# harness - operational artifacts (ephemeral, not durable knowledge)\n"
+        + "\n".join(pre_v7) + "\n",
+        encoding="utf-8",
+    )
+
+    message = check.reminder(root)
+    assert "manifest version 6 -> 7" in message
+    assert "1 ignore entries missing" in message
+    assert "--migrate-harness-version" in message
+
+    first = migrate(root)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert first.stdout.strip() == "HARNESS_MIGRATION_OK: version=7 updated=true"
+    assert (root / "doc/harness/manifest.yaml").read_text() == "version: 7\nname: demo\n"
+    ignores = (root / ".gitignore").read_text()
+    assert ignores.splitlines().count(".claude/worktrees/") == 1
+    assert "custom.log" in ignores.splitlines()
+    probe = subprocess.run(
+        ["git", "-C", str(root), "check-ignore", "-q", "--no-index", ".claude/worktrees/lead/file"],
+    )
+    assert probe.returncode == 0
+    assert check.reminder(root) == ""
+
+    second = migrate(root)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "updated=false" in second.stdout
+    assert (root / ".gitignore").read_text() == ignores
+
+
+def test_reminder_is_silent_for_migrated_project_with_symlinked_claude_dir(tmp_path):
+    root = repo(tmp_path)
+    shared = tmp_path / "shared-claude"
+    (shared / "worktrees").mkdir(parents=True)
+    (root / ".claude").symlink_to(shared, target_is_directory=True)
+    assert "manifest version 5 -> 7" in load_check().reminder(root)
+    assert migrate(root).returncode == 0
+    assert load_check().reminder(root) == ""
