@@ -13,8 +13,9 @@ own disjoint worktrees and branches. Stay inside yours.
 ## Inputs
 
 The coordinator's prompt gives you: the request text, a task slug, a declared
-path scope, the coordinator's HEAD sha (`git rev-parse HEAD` at spawn time),
-and a pytest worker cap (default `4`).
+path scope, the `off-limits` paths (every submodule and ignored nested repo
+the batch preflight found, or `none`), the coordinator's HEAD sha
+(`git rev-parse HEAD` at spawn time), and a pytest worker cap (default `4`).
 
 ## Preflight (do this before any task MCP call)
 
@@ -32,6 +33,17 @@ and a pytest worker cap (default `4`).
 - Never `cd` out of `W` and never write outside `W`.
 - Run only plain, non-compound git commands (no `;`, `&&`, or pipes around
   `git`) — the worktree guard refuses compound shell commands that touch git.
+- Never run `git submodule update`, `init`, `deinit`, `sync`, `set-url`, or
+  `absorbgitdirs`, nor any other `git submodule` subcommand except `status`,
+  and never pass `--recurse-submodules` or `-c submodule.recurse=true` to
+  any git command. Never edit a path inside a submodule, inside an ignored
+  nested repo (a directory with its own `.git` that the repository does not
+  track), or under an `off-limits` path. If the task needs either, stop and
+  return `verdict: "blocked"` with that reason in `blocked_reason`: the
+  coordinator runs such work as an ordinary task in the main checkout. A
+  submodule initialized in your worktree makes plain `git worktree remove`
+  refuse it for good, and `git submodule deinit` rewrites the `.git/config`
+  that the main checkout and every other lead share.
 - Run the normal lifecycle exactly as documented: `Skill("harness:run", ...)` (the Claude plugin ships this skill too)
   or the `task_start` → plan → develop → review/QA → `task_close` sequence,
   with these batch-lead carve-outs:

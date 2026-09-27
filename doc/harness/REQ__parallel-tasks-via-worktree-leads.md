@@ -8,10 +8,11 @@ invalidated_by_paths:
   - plugin/scripts/prewrite_gate.py
   - plugin/scripts/_lib.py
   - plugin/scripts/batch_harvest.py
+  - plugin/scripts/batch_preflight.py
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-27T11:28:06Z
+freshness_updated: 2026-09-27T16:48:34Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -31,7 +32,8 @@ freshness_updated: 2026-09-27T11:28:06Z
 - One Claude Code session can run several harness tasks at once. The main
   session is the coordinator. It spawns one `harness:task-lead` subagent per
   task, and each lead runs in its own linked git worktree (Claude Code
-  `isolation: worktree`, under `<repo>/.claude/worktrees/<name>`).
+  `isolation: worktree`, under `<repo>/.claude/worktrees/<name>`; see
+  "Worktree location").
 - Each linked worktree is a separate checkout with its own write focus (C-09).
   Task state under `doc/harness/tasks/` is gitignored, so every worktree has
   its own task namespace, focus markers, and `RECEIPTS.jsonl`.
@@ -100,6 +102,208 @@ Relative-path worktrees (git ≥ 2.48 `extensions.relativeWorktrees`) are out of
 scope by the user's decision; host clients that lack the extension also cannot
 open the repository at all.
 
+## Worktree location
+
+- The runtime picks where a lead worktree lives. Claude Code
+  `isolation: worktree` always creates `<repo>/.claude/worktrees/<name>` (its
+  `worktree.location` setting is not read for agent isolation); the Codex app
+  uses `$CODEX_HOME/worktrees`, outside the repository.
+- Harness is location-agnostic: it validates registration, not path. The MCP
+  `workspace` check (`resolve_registered_worktree`) and `batch_harvest.py`
+  accept a linked worktree because its gitdir is registered under
+  `<control>/.git/worktrees/` with a matching back-pointer, wherever the
+  checkout sits; `batch_preflight.py` recognizes lead worktrees by the paths
+  `git worktree list --porcelain` registers, not by where they live. The only
+  location-specific step is batch SKILL preflight step b.3, which checks that
+  Claude's default `.claude/worktrees/` is gitignored.
+- Placing worktrees under `.git` (for example `.git/harness-worktrees/<name>`)
+  was evaluated and rejected:
+  - Claude Code treats any absolute path with a `.git` segment as protected,
+    so every lead Edit/Write prompts (default, acceptEdits), goes to the
+    classifier (auto), or is denied (dontAsk); only bypassPermissions lets it
+    through, and neither a settings allow rule nor a PreToolUse `allow`
+    bypasses it.
+  - Claude only relocates a worktree through a WorktreeCreate hook. A
+    hook-made worktree loses the agent lock, the creation marker that keeps
+    the periodic sweep away from it, `.worktreeinclude`, and `baseRef`; the
+    hook replaces worktree creation for the whole settings scope, and it
+    cannot keep C-12's `|| true` fail-safe because a failing hook aborts
+    creation.
+  - The Codex workspace-write sandbox makes `<writable root>/.git` read-only.
+  - `.git` and `.claude` sit on the same 9p mount, so there is no speed gain.
+  - None of the surveyed prior-art tools (eleven) puts worktrees under `.git`;
+    they use a dedicated in-repo directory, a sibling, or a tool-owned
+    directory outside the repository.
+- The cost of the kept location: `.claude/worktrees/` must be ignored, and
+  `git clean -ffdx` in the main checkout deletes it, lead work included,
+  despite the ignore. Never run it while any lead worktree exists.
+
+## Multi-repo and submodules
+
+Batch supports exactly one shape: a single git control root whose scopes lie
+in its own tracked area. A repository with submodules or nested repos still
+batches the requests scoped to its tracked area; only the requests scoped
+inside a submodule or nested repo are sequenced outside the wave. Three other
+shapes exist:
+
+- (a) **Submodules**: mode-160000 gitlinks, normally declared in
+  `.gitmodules`.
+- (b) **Ignored nested repos inside a git root**: directories holding their
+  own `.git` that the superproject does not track (for example sibling
+  service repos under an ignored `repos/`).
+- (c) **A non-git parent with child repos**: no control root at all.
+
+What happens without the stop-gap:
+
+- `git worktree add` never initializes submodules (it has no recursive option
+  and `submodule.recurse` does not change that), and neither Claude Code nor
+  Codex does, so every submodule is an empty directory in a lead worktree —
+  unless the repository's post-checkout hook initializes them, which Claude
+  Code does not suppress.
+- An ignored nested repo does not exist in a lead worktree at all. Its only
+  copy is in the main checkout, which no lead may write, and a plain
+  `git status --porcelain` there does not report its changes.
+- (c) cannot host a batch: Claude Code cannot create an isolation worktree
+  without a git root, and the workspace validator refuses it. A control root
+  that is itself a linked worktree, an absorbed submodule checkout (whose
+  `.git` is a gitfile), or a separate-git-dir checkout is refused by the
+  validator too, because it requires `<control>/.git/worktrees`; a submodule
+  checkout with an embedded `.git` directory passes the validator, so only the
+  preflight's superproject check refuses it.
+
+Stop-gap rules (current):
+
+- `plugin/scripts/batch_preflight.py` runs at intake and preflight for exactly
+  the wave about to be spawned, and the coordinator spawns only on exit 0
+  (`verdict: ok`). It refuses a control root whose shape is
+  `submodule-checkout`, `linked-worktree`, `non-git`, or `separate-git-dir`;
+  refuses when `git status --porcelain` is not empty in the main checkout
+  (submodule changes included, whatever `submodule.<name>.ignore` says), in
+  any populated submodule, or in any ignored nested repo; and refuses when a
+  post-checkout hook (the default hooks dir or `core.hooksPath`) mentions
+  `submodule` in a repository with submodules. It fails closed: a directory
+  it cannot read while looking for nested repos or placing a declared scope,
+  a tracked or untracked path git reports it could not open (git itself only
+  warns and exits 0), a submodule directory it cannot inspect, and an
+  unreadable or non-regular `.gitmodules` all refuse instead of being
+  skipped, because each could hide a nested repo, a submodule, or
+  uncommitted work. It never writes: every git call uses the trusted
+  environment, `--no-optional-locks`, and `core.fsmonitor=false`.
+- Verdict and exit status: the script prints one JSON report whose `verdict`
+  is `ok` (exit 0), `adjust` (exit 1: a request is listed in
+  `excluded_requests` or two requests are listed in `overlaps`), or `refuse`
+  (exit 1: anything in `refusals`), with precedence refuse > adjust > ok.
+  Every failure the report depends on — a failed git command, an unreadable
+  directory, hook, or `.gitmodules`, a nested repo or submodule whose `.git`
+  resolves to another work tree, or an unexpected crash — yields a `refuse`
+  report, never a pass. A malformed `--request` (no `SLUG=PATH`, a slug
+  outside `[A-Za-z0-9._-]+`, an empty path, or a glob pattern or comma list,
+  meaning a value with `*?[` or a comma that names no existing path; an
+  existing path such as `app/[locale]` is fine, and each path gets its own
+  `--request`) is a usage error: exit 2 and no report. `ok` covers only these
+  checks; the coordinator's other preflight steps (`baseRef`, the worktree
+  ignore, no open main-checkout task, the recorded HEAD) still apply. The
+  coordinator acts on `verdict` and on `refusals`, `excluded_requests`,
+  `overlaps`, and `off_limits`, and reruns the script after adjusting a wave;
+  `control_root.shape` is informational (it reads `non-git` with an empty
+  reason when shape detection itself could not run). Every report key
+  (`verdict`, `control_root`, `submodules`, `nested_repos`, `off_limits`,
+  `post_checkout_hooks`, `dirty`, `scopes`, `overlaps`, `excluded_requests`,
+  `refusals`) is always present, even on an early refusal or a crash, and
+  `dirty` lists at most 20 status entries per repo alongside the full `count`.
+  Hook detection reads the first 256 KiB of each post-checkout hook, matches
+  `submodule` case-insensitively, and ignores the executable bit.
+- No refusal advises deleting anything, with one exception: when git cannot
+  open a nested repo or populated submodule because its `.git` is a gitfile
+  naming a missing `.../worktrees/<name>` registration (a leftover worktree
+  whose metadata was pruned), the refusal says to copy out anything still
+  needed and then remove the directory. Every other failure, including an
+  unreadable directory inside a nested repo that holds uncommitted work,
+  gives no delete advice: it names the path and, where one applies, a
+  non-destructive remedy (for example commit or stash, make it readable or
+  move it out of the checkout, run from the main checkout, make the hook skip
+  linked worktrees or run the requests one at a time as ordinary tasks). The
+  first read failure stops further inspection, so `refusals` may name only
+  that one and later report sections stay empty; fix it and rerun. When the
+  control-root shape is not `ok`, `scopes` and `excluded_requests` are empty.
+- Registered linked worktrees of the repository under the root (kept lead
+  worktrees) are not nested repos: they are left out of `nested_repos` and
+  `off_limits` and not status-checked, so a kept lead's uncommitted work does
+  not refuse a new wave; a scope inside one is still `inside-ignored-nested-repo`.
+- Each declared scope is classified on its symlink-resolved path:
+  `outside-root` when it lies outside the root or under its `.git/`;
+  `inside-submodule` when it equals or lies under a submodule path (populated
+  or not); `inside-ignored-nested-repo` when an existing directory between the
+  root (exclusive) and the scope (inclusive) holds its own `.git` entry, which
+  also covers a scope inside a registered lead worktree under the root; and
+  `tracked-area` for every other path inside the root. `tracked-area` is
+  therefore broader than its name: it includes untracked, ignored (for
+  example `build/`), and not-yet-existing paths, and a scope that contains a
+  submodule or nested repo (`libs` around `libs/sub`); `off_limits` is what
+  keeps a lead out of the repos inside such a scope. A separate class for
+  ignored non-repo scopes is deferred: a lead's edits there are never
+  committed, which is a task-planning problem rather than a repo-shape hazard.
+  Only `tracked-area` may run in a lead. A request scoped inside a submodule or
+  an ignored nested repo runs as an ordinary task in the main checkout,
+  outside the wave; an `outside-root` scope cannot run in `harness:batch` at
+  all. `excluded_requests` keeps every exclusion reason of a request.
+- Two requests overlap when one of their symlink-resolved scopes equals or is
+  a path-segment ancestor of one of the other's (`a/b` and `a/bc` do not
+  overlap; `.` overlaps everything); a request's own paths are never paired,
+  and neither is an excluded request, because it never runs in a wave.
+  Overlapping requests move one of them to a later wave.
+- The report's `off_limits` (every submodule, and every nested repo the scan
+  found; a directory with its own `.git` among files the superproject tracks
+  is not listed, though a scope under it is still excluded) goes into each
+  lead prompt. A lead never runs `git submodule
+  update/init/deinit/sync/set-url/absorbgitdirs` or any other subcommand but
+  `status`, never passes `--recurse-submodules` or
+  `-c submodule.recurse=true`, and never edits inside a submodule, an ignored
+  nested repo, or an off-limits path; if the task needs that, it returns
+  `blocked` with the reason.
+- With no submodule ever initialized in a lead worktree, plain
+  `git worktree remove` keeps working, so the batch rule "never `--force`"
+  stays satisfiable. If a removal still refuses because of a submodule, the
+  worktree is kept and reported.
+- Residual risk: `git status` in a nested repo or submodule runs that repo's
+  configured clean filters, as any status there does. Nested repos in the
+  user's project are trusted like the main checkout; refusing filter configs
+  would falsely refuse git-lfs repos.
+- Known limit: the clean check is literally `git status --porcelain`, so
+  `status.showUntrackedFiles=no` in the main checkout, a submodule, or a
+  nested repo hides that repo's untracked files and the preflight does not
+  refuse for them.
+- Known limit: the preflight checks repository shape, scopes, and
+  cleanliness, not HEAD state or earlier waves. A main checkout on a detached
+  HEAD or in the middle of a rebase, merge, cherry-pick, revert, or bisect
+  is not refused for that state (it gets `ok` when the tree is otherwise
+  clean; unmerged entries still refuse as dirt), and kept blocked/failed lead
+  worktrees are not compared with the new wave's scopes; both are follow-ups.
+
+Verified hazards (git 2.43, reproduced in the 2026-09-27 investigation):
+
+- Once a submodule was initialized in a worktree, plain `git worktree remove`
+  refuses that worktree forever, clean or even after `deinit`, because the
+  per-worktree module store (`.git/worktrees/<wt>/modules/`) exists and the
+  index holds a populated gitlink.
+- `git worktree remove --force` then deletes that module store together with
+  any submodule commit that was never fetched or pushed elsewhere, and it
+  skips the superproject's dirty and untracked check.
+- `git submodule deinit` in a lead removes the `submodule.*` entries from the
+  `.git/config` shared by the main checkout and every lead; afterwards
+  `git submodule update` in main exits 0 and does nothing.
+- Two leads that bump the same submodule to sibling commits always conflict
+  on merge.
+- `git merge` does not update the submodule checkout, and a later
+  `git commit -a` records the stale checkout and silently reverts the bump.
+- Git's own documentation (git-worktree, BUGS): "It is NOT recommended to make
+  multiple checkouts of a superproject."
+
+Full submodule support is a later task (Goal child G): lead init on a named
+branch, coordinator local fetch → merge → immediate `submodule update`, and a
+guarded single `--force` removal in `batch_harvest.py`. Until it lands, the
+stop-gap above applies.
+
 ## Guards observed (live probes, 2026-09-27)
 
 - Receipt binding (AC-003 gate, run before the lead agent and batch skill were
@@ -134,7 +338,8 @@ open the repository at all.
   branch. Each lead refuses to start when its HEAD differs from the
   coordinator HEAD it was given.
 - `.claude/worktrees/` is gitignored. This repository ignores it directly; the
-  batch preflight checks it in any project and tells the user to add it.
+  batch SKILL preflight step b.3 (`git check-ignore`, not `batch_preflight.py`)
+  checks it in any project and tells the user to add it.
   Adding it to setup's managed operational ignores requires a manifest
   version bump and migration (`doc/harness/REQ__versioned-project-file-migrations.md`)
   and is a follow-up.
@@ -178,8 +383,29 @@ open the repository at all.
   unregistered or unmerged worktree, links/FIFOs, and an archive collision; an
   ambient `GIT_DIR` cannot redirect the merged check; a non-canonical
   `--worktree` path is canonicalized and accepted.
+- `tests/test_batch_preflight.py` (scratch repos): the five control-root
+  shapes; submodules from gitlinks and `.gitmodules`, populated or not; deep,
+  gitfile, and ignored nested repos, but not a registered lead worktree; the
+  four scope classes including symlink escapes; dirt in the root, a nested
+  repo, and a submodule hidden by `ignore=all`; broken nested `.git` metadata
+  refuses, and the delete hint appears only for a gitfile naming a pruned
+  worktree registration; an unreadable directory (scan and scope), an
+  unreadable tracked directory, an unreadable directory inside a nested repo
+  (no delete hint), an untraversable populated submodule, git's unreadable-path
+  warning on the untracked listing, and an unreadable or non-regular
+  `.gitmodules` refuse; every exclusion reason of a request is kept, and an
+  excluded request is never paired in `overlaps`; overlaps and
+  refuse-over-adjust precedence; post-checkout hooks in the default dir and
+  `core.hooksPath`; byte-identical tree (index included) after a run; no
+  `core.fsmonitor` launched (root, submodule, or nested repo); ambient
+  `GIT_*` ignored; CLI exit codes and JSON, including usage errors for globs
+  and comma lists that name nothing while existing paths with `,` or `[` are
+  accepted; an unexpected crash still prints a `refuse` report.
 - `tests/test_batch_skill_contract.py`: lead frontmatter and carve-outs, every
   coordinator step, the C-09 clause in both contract files, root CLAUDE.md
-  clauses, and this repository's `baseRef`/ignore settings.
+  clauses, and this repository's `baseRef`/ignore settings; the preflight
+  script in intake/preflight and the off-limits spawn line; the lead's
+  submodule and nested-repo prohibitions; this document's worktree-location
+  and multi-repo sections.
 - Live probe: a real worktree subagent starts a task with `workspace` and its
   nested reviewer's start/stop receipts appear in the worktree task.

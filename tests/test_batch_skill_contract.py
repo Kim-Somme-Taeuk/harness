@@ -190,6 +190,84 @@ def test_batch_skill_rejects_reused_slugs_before_merging():
     assert _normalized("merging stopped at a conflict carried from step d.2") in norm
 
 
+def test_batch_skill_gates_spawning_on_the_repo_shape_preflight():
+    body = _text(BATCH_SKILL)
+    norm = _normalized(body)
+    # Installed payload path, like batch_harvest; a user project has no plugin/.
+    assert "${claude_plugin_root}/scripts/batch_preflight.py" in norm
+    assert "python3 plugin/scripts/batch_preflight.py" not in norm
+    assert _normalized("Spawn only when it exits 0") in norm
+    for shape in ("`submodule-checkout`", "`linked-worktree`", "`non-git`", "`separate-git-dir`"):
+        assert shape in norm, shape
+    _assert_all(
+        body,
+        (
+            "in every populated submodule, and in every ignored nested repo",
+            "`inside-submodule` or `inside-ignored-nested-repo` is not batched",
+            "ordinary harness task in the main checkout",
+            "`outside-root` scope cannot run in a batch lead",
+            "excluded_requests",
+            "overlaps",
+            "off-limits: <preflight off_limits",
+            "keep it and report it like a blocked lead",
+            # One path per flag; `ok` is necessary, not sufficient.
+            "--request <slug>=<path> --request <slug>=<path2>",
+            "a comma list is refused",
+            "exits 0 (`verdict: \"ok\"`) and steps b.2–b.5 hold",
+            # Step g accounts for every request kept out of the wave.
+            "excluded (ordinary task, done or pending)",
+            "deferred to a later wave",
+            "outside the root, not batchable",
+        ),
+        BATCH_SKILL,
+    )
+    # The plain root-only status check is gone; the script owns cleanliness.
+    assert _normalized("`git status --porcelain` in the main checkout must be empty") not in norm
+
+
+def test_task_lead_forbids_submodule_commands_and_nested_repo_edits():
+    body = _text(TASK_LEAD)
+    norm = _normalized(body)
+    for subcommand in ("update", "init", "deinit", "sync", "set-url", "absorbgitdirs"):
+        assert f"`{subcommand}`" in norm or f"git submodule {subcommand}" in norm, subcommand
+    _assert_all(
+        body,
+        (
+            "Never run `git submodule update`",
+            "any other `git submodule` subcommand except `status`",
+            "`--recurse-submodules`",
+            "`-c submodule.recurse=true`",
+            "Never edit a path inside a submodule, inside an ignored nested repo",
+            "`off-limits`",
+            "return `verdict: \"blocked\"` with that reason",
+        ),
+        TASK_LEAD,
+    )
+
+
+def test_req_documents_worktree_location_and_multi_repo_shapes():
+    path = REPO / "doc/harness/REQ__parallel-tasks-via-worktree-leads.md"
+    body = _text(path)
+    frontmatter = body.split("\n---", 1)[0]
+    assert "plugin/scripts/batch_preflight.py" in frontmatter
+    assert "\n## Worktree location\n" in body
+    assert "\n## Multi-repo and submodules\n" in body
+    _assert_all(
+        body,
+        (
+            "validates registration, not path",
+            "$CODEX_HOME/worktrees",
+            "WorktreeCreate hook",
+            "read-only",
+            "same 9p mount",
+            "It is NOT recommended to make multiple checkouts of a superproject.",
+            "refuses that worktree forever",
+            "Goal child G",
+        ),
+        path,
+    )
+
+
 def test_task_lead_never_touches_the_coordinator_goal_and_defines_verdicts():
     norm = _normalized(_text(TASK_LEAD))
     assert _normalized("Never call the `goal_*` tools") in norm
