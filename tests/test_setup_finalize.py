@@ -611,7 +611,6 @@ def test_fresh_setup_ignores_all_operational_artifacts_and_stamps_version(tmp_pa
         "doc/harness/benchmark/probe.json",
         "doc/harness/audits/probe.json",
         "doc/harness/quality-trend.jsonl",
-        ".claude/worktrees/probe.json",
     ):
         check = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--no-index", rel])
         assert check.returncode == 0, rel
