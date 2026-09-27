@@ -37,9 +37,10 @@ Before spawning anything:
 3. `.claude/worktrees/` must be gitignored (`git check-ignore .claude/worktrees/x`).
    If it is not ignored, stop and instruct the user to add it.
 4. No harness task may be open in the main checkout for this session while a
-   wave runs (`task_context` shows none, or park/close it first). A lead's
-   late lens stop that outlives its removed worktree must find nothing to
-   bind to in the main checkout.
+   wave runs: if the session's `[harness-context]` names an open task, park it
+   with `task_blocked` or close it first. A lead's late lens stop that
+   outlives its removed worktree resolves to the main checkout and must find
+   nothing to bind to there.
 5. Record `git rev-parse HEAD` in the main checkout. Every lead gets this sha
    and refuses to start if its own worktree HEAD differs.
 
@@ -110,8 +111,12 @@ that task:
 
 Tell the user their host git client (e.g. GitKraken over a drvfs mount) can
 inspect this work through **branches and commits only**. Never instruct the
-user to open a worktree folder directly on the host, and never prune or remove
-a worktree from the host while a lead has it locked.
+user to open a worktree folder directly on the host. Never run
+`git worktree prune` or a host client's worktree cleanup while any lead
+worktree exists: from the host every container worktree path looks missing,
+and prune deletes the metadata of every **unlocked** one (the Claude lock is
+what protects a running lead; kept blocked/failed worktrees and the
+unlock → remove gap are exposed).
 
 ## g) Report
 

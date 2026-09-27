@@ -37,6 +37,7 @@ Legend:
 | **`mcp__server__tool` prefix** | native | bare | Codex strips the prefix; tools exposed by short name (e.g. `task_start`). Codex skill bodies use the bare names directly (hand-maintained; no sync engine since 2026-05-14). |
 | **Structured user questions** | ✅ native | 🟡 capability-dependent | Codex uses structured input when exposed by the active mode and conversational input otherwise. |
 | **Independent-agent fan-out** | ✅ `Agent(subagent_type=...)` | ✅ `spawn_agent` | Syntax differs, but current plan/develop workflows capability-route fresh independent contexts on both runtimes. |
+| **Parallel tasks in one session (`harness:batch`, task-tool `workspace`)** | ✅ | ❌ runtime-bound | Claude leads run as `isolation: worktree` subagents that nest their own review/QA subagents; the MCP server refuses `workspace` on Codex (`reason: unsupported_runtime`) because Codex receipt watchers bind to the single control root. See `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`. |
 | **`Skill(...)` chaining** | ✅ native | ❌ runtime-bound | Codex invokes public skills directly and the run skill owns its internal workflow instead of calling a `Skill(...)` primitive. |
 | **Setup skill** | ✅ | ✅ | A dedicated Codex setup skill installs and configures the runtime-specific payload. |
 | **Maintain skill** | ✅ | 🟡 no dedicated Codex skill | Maintenance work still routes through the public run workflow. |

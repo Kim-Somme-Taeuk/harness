@@ -3,7 +3,7 @@
 tags: [harness, spec, architecture]
 status: draft
 created: 2026-04-09
-updated: 2026-09-15
+updated: 2026-09-27
 task_ref: TASK__harness-architecture
 
 ---
@@ -90,7 +90,11 @@ task artifacts and active marker without capturing HEAD, dirty paths,
 submodules, gitlinks, worktree bindings, or a source baseline. `task_context`,
 `task_verify`, and `task_close` likewise do not run `git status`, `git diff`, or
 source fingerprinting. This keeps nested repositories, ignored checkouts,
-submodules, and linked worktrees outside the control plane.
+submodules, and linked worktrees outside the control plane. The one exception
+is the optional task-tool `workspace` argument (`harness:batch` leads): the
+server reads that linked worktree's gitfile and back-pointer files, without
+running Git, to validate it and use it as the task root
+(`doc/harness/REQ__parallel-tasks-via-worktree-leads.md`).
 
 The plan declares the intended source scope in `PLAN.md`; `TASK.json` stores
 the applicable review/QA lenses. These declarations route work and verification; Harness does
