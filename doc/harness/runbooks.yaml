@@ -1,0 +1,13 @@
+runbooks:
+  pytest-via-mise-uv:
+    description: "Run the harness test suite when uv is not on PATH"
+    command: "~/.local/bin/mise exec -- uv run pytest -q tests/"
+    failed_command: "uv run pytest -q tests/"
+    failure_class: "missing-tool"
+    source_phase: "develop"
+    source_task: "TASK__parallel-tasks-in-one-session"
+    learned_at: "2026-09-27T11:07:00Z"
+    verified_at: "2026-09-27T11:52:30Z"
+    gotchas:
+      - "Some Claude Code shells lack the mise shims on PATH, so bare uv is 'command not found'; mise exec or the project .venv interpreter works"
+      - "Equivalent without uv: .venv/bin/python -m pytest -q tests/"
