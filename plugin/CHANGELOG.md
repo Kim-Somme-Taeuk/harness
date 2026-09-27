@@ -4,6 +4,20 @@ All notable changes to the harness Claude Code plugin.
 
 ## [Unreleased]
 
+### Added
+
+- One session can run several harness tasks in parallel with the new
+  `harness:batch` skill. It spawns one `harness:task-lead` subagent per task,
+  each in its own Claude Code `isolation: worktree` checkout. The coordinator
+  merges lead branches one at a time and harvests evidence with
+  `plugin/scripts/batch_harvest.py`. A post-merge integration task then runs
+  the full verification and the verified install. The task MCP tools accept an
+  optional `workspace`, which must be a validated, registered linked worktree
+  of the controlled repository. Task paths and focus markers resolve there,
+  while session identity stays on the main checkout. Contract C-09 adds that
+  each linked worktree has its own write focus. See
+  `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`.
+
 ### Removed
 
 - Harness setup no longer creates, imports, validates, or writes

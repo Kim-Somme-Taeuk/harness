@@ -149,6 +149,8 @@ unwanted changes.
 **On violation:** soft-warn. New task is queued, not merged into current.
 **Why:** Parallel mutations make task ownership and review ordering ambiguous.
 
+**Batch clause:** Each linked git worktree is a separate checkout with its own write focus; a coordinator may run one task per worktree via `harness:batch`.
+
 ### C-10
 
 **Title:** CLAUDE.md is self-managed via continuous maintenance.

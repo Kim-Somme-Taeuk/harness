@@ -270,6 +270,9 @@ current_session_id()` 를 한 번 구한 뒤, 태스크 상태가 `open` 이고
 열려 있지 않은 태스크를 가리키거나, 이미 이 `task_dir` 로 resolve 될 때 —
 `write_active_marker(repo_root, td, session_id=session_id)` 를 호출한다.
 판정과 쓰기가 같은 `session_id` 를 쓰는 것이 이 구현의 핵심 불변이다.
+(2026-09-27 보강: task 도구에 `workspace` 가 오면 hint 는 여전히 control root
+에서 읽고, 판정과 마커 쓰기는 그 worktree 를 `repo_root` 로 삼는다 — 불변은 같다.
+`doc/harness/REQ__parallel-tasks-via-worktree-leads.md` 참고.)
 다른 허용 항목, `authorized()`, `_lib` 의 어댑터 정체성 guard 는
 건드리지 않았다.
 

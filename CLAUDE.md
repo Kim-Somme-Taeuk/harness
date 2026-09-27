@@ -31,7 +31,7 @@ do not create tasks automatically.
 # Operating mode
 - `doc/harness/manifest.yaml` is the initialization marker.
 - Canonical public loop for every repo-mutating child task: **task start → plan when needed → develop → QA → close**. Independent review and `task_verify` remain mandatory internal close gates. Smallest coherent diff per step. No verification skipped. See `plugin/CLAUDE.md` for the authoritative runtime rules.
-- In this harness plugin source repo, a successful repo-mutating development task runs `python3 plugin/scripts/install_verified.py --task-dir doc/harness/tasks/<task_id>` automatically after current-run review+QA PASS and before `task_close`, unless the user explicitly opts out. From a stable payload snapshot, the helper invokes `python3 install.py`, whose default run skips synchronized runtimes and refreshes only stale runtime payloads. It writes no install receipt or deduplication state; retries recompute actual payload equality. Post-close self-improvement may then commit the completed diff; it must not introduce a second install phase. Report the commit hash when applicable and the pre-close conditional delivery result.
+- In this harness plugin source repo, a successful repo-mutating development task runs `python3 plugin/scripts/install_verified.py --task-dir doc/harness/tasks/<task_id>` automatically after current-run review+QA PASS and before `task_close`, unless the user explicitly opts out. From a stable payload snapshot, the helper invokes `python3 install.py`, whose default run skips synchronized runtimes and refreshes only stale runtime payloads. It writes no install receipt or deduplication state; retries recompute actual payload equality. Post-close self-improvement may then commit the completed diff; it must not introduce a second install phase. Report the commit hash when applicable and the pre-close conditional delivery result. In `harness:batch` mode, batch leads skip this verified install; it runs once from the post-merge integration task in the main checkout.
 - The hard gate at task completion is receipt-backed `runtime_verdict: PASS` for the current task run. Source edits and scope drift after review/QA are developer-owned.
 - Durable user requirements and reusable discoveries must be promoted to the
   right committed surface: REQ/GUIDE/ADR/POLICY, skill/pattern docs, or tests.
@@ -52,6 +52,7 @@ do not create tasks automatically.
   Codex/Claude lifecycle hooks.
 - Pre-plan source writes are blocked until PLAN.md exists on the active task (plan-first rule).
 - Only one repo-mutating task may hold write focus at a time. A second mutating request creates or resumes a separate task that stays queued until the user switches focus or the current task closes.
+  Each linked git worktree is its own checkout with its own write focus, so a coordinator running `harness:batch` may run one task per worktree from a single session.
 - Short approvals such as `ㅇㅇ ㄱ` approve only the last explicit transition the harness proposed; they never authorize skipping task creation, planning, or verify gates.
 - When an answer-lane exchange turns into repo mutation, make the lane switch
   explicit and sync/open the native Goal child task or a direct harness task

@@ -1,6 +1,7 @@
 .omc
 .claude/settings.local.json
 .claude/harness/
+.claude/worktrees/
 .claude/scheduled_tasks.lock
 __pycache__
 .DS_Store

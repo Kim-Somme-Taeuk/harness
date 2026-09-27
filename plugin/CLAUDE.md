@@ -32,6 +32,12 @@ step is skipped. Smallest coherent diff per step.
   evidence-preserving plain `task_start` resume and destructive
   `task_start(..., fresh_run=true)` choice
 
+The task tools and `write_plan` take an optional `workspace`: a validated,
+registered linked worktree whose task the call targets (`harness:batch` leads,
+Claude only). Task paths and focus markers resolve there; session identity
+stays on the main checkout. See
+`doc/harness/REQ__parallel-tasks-via-worktree-leads.md`.
+
 **Artifact writes (role-owned):**
 - `write_plan` → PLAN.md + TASK.json required-lens declaration (plan-skill)
 - durable docs such as `doc/<area>/REQ__*.md` are normal repo docs, not MCP evidence tools

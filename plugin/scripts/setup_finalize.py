@@ -77,6 +77,7 @@ OPERATIONAL_IGNORES = (
     "doc/harness/.maintain-last-run",
     "doc/harness/.maintain-observe.log",
     "doc/harness/.maintain-pending.json",
+    ".claude/worktrees/",
 )
 
 REQUIRED_SETUP_RESOURCES = (
