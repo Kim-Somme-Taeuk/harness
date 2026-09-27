@@ -20,7 +20,10 @@ from pathlib import Path
 def _find_repo_root(start: str | None = None) -> Path:
     cur = Path(start or os.getcwd()).resolve()
     while cur != cur.parent:
-        if (cur / ".git").is_dir():
+        # A linked worktree's ``.git`` is a gitfile; stopping there keeps
+        # verify commands in the worktree instead of the main checkout.
+        git = cur / ".git"
+        if git.is_dir() or git.is_file():
             return cur
         cur = cur.parent
     return Path(start or os.getcwd()).resolve()

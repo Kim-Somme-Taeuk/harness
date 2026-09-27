@@ -21,6 +21,7 @@ by signalling decisions via stdout JSON rather than exit code.
 |---|---------|------|-----------------------|
 | 1 | (escape) | `HARNESS_SKIP_PREWRITE=1` | — (silent allow, logs `gate-bypass`) |
 | 2 | `C-05-protected-artifact` | Write to any `PROTECTED_ARTIFACTS` basename *inside* a task dir | the owning skill / CLI |
+| 2a | `C-05-protected-artifact` | Target outside the cwd's Harness root that is a protected artifact of *its own* valid Harness root (see [Cross-checkout protection](#cross-checkout-protection)); any other out-of-root target is a silent allow | same as rule 2 |
 | 3 | (allow) | Other writes *inside* any task dir | — |
 | 4 | (allow) | Paths under `EXEMPT_PREFIXES` | — |
 | 5 | `workflow-control-surface` | Write to any `WORKFLOW_CONTROL_SURFACE` entry without a MAINTENANCE marker on the active task | `maintain-skill` |
@@ -50,6 +51,55 @@ so the structured tail remains grep-stable; the deny sentence names the human
 tool to route through (for example `write_plan` for `PLAN.md`). Claude
 `projects/*/<session>/subagents/agent-*.jsonl` leaves are also protected outside
 the repository because stop-only receipt provenance depends on them.
+
+## Cross-checkout protection
+
+A `harness:batch` lead runs with its cwd in a linked worktree
+(`<main>/.claude/worktrees/<name>`). The gate's control root is then the
+worktree, so the main checkout and sibling worktrees lie outside it. Without
+this rule, writes to those checkouts' protected artifacts were allowed. The same
+applies to a main-checkout session writing into an out-of-tree worktree.
+
+How the gate handles a target outside the cwd's Harness root:
+
+1. It skips targets whose name cannot be a protected artifact: the basename is
+   not a `PROTECTED_ARTIFACTS` key, the path is not goal JSON, and it is not
+   `.active` or under `.active_sessions/`.
+2. For the remaining targets it resolves the target's own root with
+   `harness_root_resolution(dirname(target))`. That call does file checks only
+   and runs no Git subprocess. It tries the realpath first, then the requested
+   path.
+3. If that root is valid (a regular manifest and no resolution error) and the
+   target is one of its protected artifacts (`TASK.json`, `PLAN.md`,
+   `RECEIPTS.jsonl`, task-local `REVIEWS.jsonl`, `doc/harness/goals/*.json`,
+   `doc/harness/tasks/.active`, `doc/harness/tasks/.active_sessions/*`), the
+   gate denies the write:
+   - rule id: `C-05-protected-artifact`;
+   - owner and sentence: the same as an in-root deny;
+   - extra sentence: `The target belongs to another Harness checkout: <root>.`;
+   - tail `path=`: relative to that other root.
+
+Only C-05 crosses checkouts. Plan-first, workflow-control-surface, REQ and
+scope-lock rules belong to the checkout that holds the active task. An ordinary
+source file of another checkout therefore stays a silent allow from a worktree
+cwd. So does that checkout's `plugin/scripts/prewrite_gate.py`.
+
+Behavior that does not change:
+- A cwd outside any Harness root keeps its early return.
+- A target outside every Harness root is still a silent allow.
+- An exception in this branch is logged to the cwd's root through
+  `_log_gate_error`, and the write is allowed (C-12). It never ends the loop
+  over the remaining paths of the same tool call.
+
+Known limits:
+- From the main checkout, an in-tree worktree is inside the main root, so the
+  in-root rules apply to it. The task-local `REVIEWS.jsonl` test is then
+  relative to the main checkout's task dir, so an in-tree worktree's
+  `REVIEWS.jsonl` is not denied from main.
+- A directory symlink inside a foreign root that points out of every Harness
+  root is allowed.
+- A foreign root with an invalid manifest is not treated as a valid root, so
+  writes into it are allowed.
 
 ## Workflow-control-surface
 
