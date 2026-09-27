@@ -342,7 +342,9 @@ stop-gap above applies.
   version 7 adds it to setup's managed operational ignores
   (`doc/harness/REQ__versioned-project-file-migrations.md`). The batch SKILL
   preflight step b.3 (`git check-ignore`, not `batch_preflight.py`) still
-  checks it, so a project not yet migrated to v7 is told to migrate.
+  checks it and, when the path is not ignored (for example in a project not
+  yet migrated to v7), tells the user to add it; a later
+  `--migrate-harness-version` moves that line into the managed block.
 - Default concurrency is 3 leads; more only on explicit user request. Each
   worktree builds its own `.venv`, and on a 9p/drvfs mount pytest `-n auto` per
   lead oversubscribes CPU and IO, so leads pass `-n 4`.
