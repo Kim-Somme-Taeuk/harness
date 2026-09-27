@@ -8,6 +8,7 @@ invalidated_by_paths:
   - plugin/scripts/prewrite_gate.py
   - plugin/scripts/_lib.py
   - plugin/scripts/batch_harvest.py
+  - plugin/scripts/setup_finalize.py
   - plugin/scripts/batch_preflight.py
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
