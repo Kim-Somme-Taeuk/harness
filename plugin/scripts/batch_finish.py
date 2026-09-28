@@ -49,6 +49,7 @@ only.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -343,7 +344,7 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict) -> None:
     cleanup["branch_deleted"] = True
 
 
-def finish(repo_root: str, args) -> dict:
+def finish(repo_root: str, args, checkpoint=None) -> dict:
     """Run step d for one lead; never raises, the result carries the status."""
     repo = os.path.realpath(repo_root)
     worktree = os.path.realpath(args.worktree)
@@ -351,10 +352,15 @@ def finish(repo_root: str, args) -> dict:
     ref = f"refs/heads/{args.branch}"
     try:
         main_ref, main_head = _check(repo, worktree, args, result)
+        result["destination_ref"] = main_ref
         _rebase(repo, worktree, main_head, result)
         result["branch_tip"] = _resolve_commit(repo, ref)
+        if checkpoint:
+            checkpoint("rebase", copy.deepcopy(result))
         try:
             _check_main_ref(repo, main_ref)
+            if _status_lines(repo):
+                raise Outcome("ff-refused", "the main checkout became dirty after rebase")
             merged = _git(repo, "merge", "--ff-only", ref)
             if merged.returncode != 0:
                 raise Outcome("ff-refused", f"`git merge --ff-only {ref}` refused: {_detail(merged)}")
@@ -374,10 +380,19 @@ def finish(repo_root: str, args) -> dict:
             except (Exception, KeyboardInterrupt) as reconcile_error:
                 reason += f"; integration state unknown: {type(reconcile_error).__name__}: {reconcile_error}"
             raise Outcome(exc.status if isinstance(exc, Outcome) else "error", reason) from exc
+        if checkpoint:
+            checkpoint("integrated", copy.deepcopy(result))
         try:
             result["harvest"] = batch_harvest.harvest(repo, worktree, args.task_id)
         except Exception as exc:  # any harvest failure is local to this lead
             raise Outcome("kept", f"harvest refused, worktree kept: {type(exc).__name__}: {exc}")
+        if checkpoint:
+            checkpoint("harvested", copy.deepcopy(result))
+        _check_main_ref(repo, main_ref)
+        if _resolve_commit(repo, ref) != result["integrated_tip"]:
+            raise Outcome("kept", "lead branch changed before cleanup")
+        if _status_lines(worktree):
+            raise Outcome("kept", "lead worktree became dirty before cleanup")
         _cleanup(repo, worktree, args.branch, result)
         result["status"] = "integrated"
     except Outcome as outcome:

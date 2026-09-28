@@ -1,0 +1,637 @@
+#!/usr/bin/env python3
+"""Durable, non-authoritative batch coordinator. See REQ__batch-state-pool-recovery."""
+from __future__ import annotations
+
+import argparse
+import copy
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+from types import SimpleNamespace
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import batch_finish as finish_helper
+import batch_harvest
+import batch_preflight
+from _lib import find_repo_root, read_task_control, task_control_status, resolve_registered_worktree
+
+LIMIT = 1024 * 1024
+MAX_BATCHES = 100
+IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+STATES = {'queued', 'reserved', 'running', 'returned', 'integrating', 'integrated', 'blocked', 'failed', 'kept', 'abandoned', 'recovery-required'}
+LIVE = {'reserved', 'running', 'integrating'}
+FREE = {'queued', 'integrated'}
+
+
+class Refusal(RuntimeError):
+    pass
+
+
+class Busy(Refusal):
+    pass
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def require(condition, reason):
+    if not condition:
+        raise Refusal(reason)
+
+
+def safe(path, directory=False):
+    info = os.lstat(path)
+    require((stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+            and info.st_uid == os.getuid() and not info.st_mode & 0o022
+            and (directory or info.st_nlink == 1), f'unsafe metadata path: {path}')
+
+
+def parents(path, create=False):
+    current = os.path.abspath(path)
+    missing = []
+    while not os.path.lexists(current):
+        missing.append(current)
+        current = os.path.dirname(current)
+    # Validate every existing component, including symlinked ancestors.
+    part = '/'
+    metadata = False
+    for component in current.strip('/').split('/'):
+        part = os.path.join(part, component)
+        info = os.lstat(part)
+        require(stat.S_ISDIR(info.st_mode), f'unsafe metadata parent: {part}')
+        metadata = metadata or component == 'doc'
+        if metadata:
+            safe(part, True)
+    safe(current, True)
+    if create:
+        for item in reversed(missing):
+            os.mkdir(item, 0o700)
+    elif missing:
+        raise Refusal(f'missing state directory: {path}')
+
+
+def read_json(path):
+    safe(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid == os.getuid(), 'unsafe opened file')
+        raw = handle.read(LIMIT + 1)
+    require(len(raw) <= LIMIT, 'JSON exceeds 1 MiB')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, f'duplicate JSON key: {key}')
+            result[key] = value
+        return result
+    try:
+        return json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as exc:
+        raise Refusal(f'invalid JSON: {path}') from exc
+
+
+def write_json(path, value):
+    raw = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
+    require(len(raw) <= LIMIT, 'state exceeds 1 MiB')
+    parents(os.path.dirname(path))
+    if os.path.lexists(path):
+        safe(path)
+    fd, temporary = tempfile.mkstemp(prefix='.batch-', dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def requests_valid(items):
+    require(isinstance(items, list) and 0 < len(items) <= 100, 'requests must contain 1..100 entries')
+    slugs = set()
+    for item in items:
+        require(isinstance(item, dict), 'invalid request')
+        slug = item.get('slug')
+        require(isinstance(slug, str) and IDENT.fullmatch(slug) and slug not in slugs, 'invalid or duplicate slug')
+        slugs.add(slug)
+        require(isinstance(item.get('request'), str) and bool(item['request'].strip()), 'empty request')
+        scopes = item.get('scopes')
+        require(isinstance(scopes, list) and scopes and len(scopes) <= 100, 'invalid scopes')
+        for scope in scopes:
+            require(isinstance(scope, str) and scope and not os.path.isabs(scope)
+                    and '\x00' not in scope and '..' not in scope.split('/'), 'scope must be a literal relative path')
+        deps = item.get('depends_on', [])
+        require(isinstance(deps, list) and all(isinstance(x, str) for x in deps) and len(set(deps)) == len(deps), 'invalid dependencies')
+    visiting, visited = set(), set()
+    mapping = {x['slug']: x for x in items}
+    def visit(slug):
+        require(slug in slugs and slug not in visiting, 'unknown dependency or dependency cycle')
+        if slug in visited:
+            return
+        visiting.add(slug)
+        for dep in mapping[slug].get('depends_on', []):
+            visit(dep)
+        visiting.remove(slug)
+        visited.add(slug)
+    for slug in slugs:
+        visit(slug)
+
+
+def validate(data, repo, batch_id):
+    require(isinstance(data, dict) and type(data.get('schema_version')) is int and data['schema_version'] == 1, 'unknown state schema')
+    require(data.get('repo') == repo and data.get('batch_id') == batch_id, 'state identity mismatch')
+    require(type(data.get('max_leads')) is int and 1 <= data['max_leads'] <= 8, 'invalid capacity')
+    require(isinstance(data.get('destination_ref'), str) and data['destination_ref'].startswith('refs/heads/'), 'invalid destination')
+    require(data.get('status') in {'open', 'closed'} and type(data.get('halted')) is bool, 'invalid batch status')
+    for key in ('initial_head', 'created_at', 'updated_at', 'cap_source'):
+        require(isinstance(data.get(key), str) and data[key], f'invalid {key}')
+    requests_valid(data.get('requests'))
+    for item in data['requests']:
+        require(item.get('status') in STATES and item.get('task_id') == 'TASK__' + item['slug'], 'invalid request state')
+        require(isinstance(item.get('resolved_scopes'), list) and len(item['resolved_scopes']) == len(item['scopes'])
+                and all(isinstance(p, str) and os.path.isabs(p) and os.path.commonpath((repo, p)) == repo for p in item['resolved_scopes']), 'invalid scope bindings')
+        require(isinstance(item.get('depends_on'), list), 'missing dependency list')
+        if item['status'] == 'reserved':
+            require(isinstance(item.get('spawn_head'), str) and finish_helper.COMMIT_RE.fullmatch(item['spawn_head']), 'invalid reservation HEAD')
+        if item['status'] in {'running', 'returned', 'integrating', 'integrated', 'kept'}:
+            require(all(isinstance(item.get(k), str) and item[k] for k in ('worker_id', 'worktree', 'branch', 'spawn_head')), 'missing work binding')
+        for key in ('worker_id', 'worktree', 'branch', 'spawn_head', 'run_id', 'close_fingerprint'):
+            require(item.get(key) is None or isinstance(item[key], str), f'invalid {key}')
+        if item.get('worktree'):
+            require(os.path.isabs(item['worktree']) and item['worktree'] == os.path.realpath(item['worktree']), 'invalid worktree path')
+            require(isinstance(item.get('branch'), str) and finish_helper.BRANCH_RE.fullmatch(item['branch']), 'invalid bound branch')
+        if item.get('result') is not None:
+            result = item['result']
+            require(isinstance(result, dict) and result.get('verdict') in {'closed', 'blocked', 'failed'}, 'invalid stored result')
+            require(all(result.get(k) == item.get(k) for k in ('task_id', 'worktree', 'branch')), 'stored result identity mismatch')
+        if item['status'] in {'returned', 'integrating', 'integrated', 'kept', 'recovery-required'}:
+            require(isinstance(item.get('result'), dict) and item['result'].get('verdict') == 'closed'
+                    and isinstance(item.get('run_id'), str) and isinstance(item.get('close_fingerprint'), str), 'missing closed result identity')
+        if 'checkpoint' in item:
+            checkpoint = item['checkpoint']
+            require(isinstance(checkpoint, dict) and checkpoint.get('stage') in {'started', 'rebase', 'integrated', 'harvested'}, 'invalid checkpoint')
+            require(checkpoint.get('destination_ref') == data['destination_ref'] and checkpoint.get('run_id') == item.get('run_id')
+                    and checkpoint.get('close_fingerprint') == item.get('close_fingerprint'), 'checkpoint identity mismatch')
+            require(isinstance(checkpoint.get('branch_tip'), str) and finish_helper.COMMIT_RE.fullmatch(checkpoint['branch_tip']), 'invalid checkpoint tip')
+            if checkpoint.get('harvest'):
+                require(isinstance(checkpoint['harvest'], dict) and checkpoint['harvest'].get('archived') == os.path.join(repo, 'doc/harness/archive/batch', item['task_id']), 'invalid checkpoint archive')
+    return data
+
+
+def load_all(directory, repo):
+    names = [name for name in os.listdir(directory) if name.endswith('.json')]
+    require(len(names) <= MAX_BATCHES, 'batch history limit reached; retained ownership must not be discarded')
+    records = {}
+    ownership = {key: set() for key in ('task_id', 'worktree', 'branch', 'worker_id')}
+    for name in sorted(names):
+        batch_id = name[:-5]
+        require(IDENT.fullmatch(batch_id), 'invalid batch filename')
+        data = validate(read_json(os.path.join(directory, name)), repo, batch_id)
+        records[batch_id] = data
+        for item in data['requests']:
+            for key in ownership:
+                value = item.get(key)
+                if value and (key == 'task_id' or item['status'] != 'integrated'):
+                    require(value not in ownership[key], f'duplicate {key} ownership')
+                    ownership[key].add(value)
+    require(sum(any(x['status'] in LIVE for x in d['requests']) for d in records.values()) <= 1, 'multiple active pools')
+    return records
+
+
+def cap(repo, explicit):
+    if explicit is not None:
+        require(re.fullmatch(r'[0-9]+', explicit) and int(explicit) > 0, 'max-leads must be a positive integer')
+        return min(8, int(explicit)), 'explicit'
+    path = os.path.join(repo, 'doc/harness/manifest.yaml')
+    if os.path.isfile(path):
+        # Preserve scalar type: quotes and booleans are deliberately not integers.
+        inside = False
+        for line in open(path, encoding='utf-8'):
+            if re.match(r'^batch:\s*(?:#.*)?$', line):
+                inside = True
+                continue
+            if inside and line.strip() and not line[0].isspace() and not line.startswith('#'):
+                inside = False
+            match = re.match(r'^\s+max_leads:\s*([^#]*?)(?:\s+#.*)?$', line) if inside else None
+            if match:
+                value = match.group(1).strip()
+                if re.fullmatch(r'[0-9]+', value) and int(value) > 0:
+                    return min(8, int(value)), 'manifest'
+                return 3, 'default-invalid-manifest'
+    return 3, 'default'
+
+
+def main_boundary(repo, expected=None):
+    ref = finish_helper._git(repo, 'symbolic-ref', '-q', 'HEAD').stdout.strip()
+    require(ref.startswith('refs/heads/') and (expected is None or expected == ref), 'detached or changed destination branch')
+    for marker in ('rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_LOG', 'BISECT_START'):
+        path = finish_helper._git_out(repo, 'rev-parse', '--git-path', marker).strip()
+        require(not os.path.exists(path if os.path.isabs(path) else os.path.join(repo, path)), 'Git operation in progress')
+    require(not finish_helper._status_lines(repo), 'destination checkout is dirty')
+    return ref, finish_helper._resolve_commit(repo, ref)
+
+
+def preflight(repo, item):
+    report = batch_preflight.preflight(repo, {item['slug']: item['scopes']})
+    require(report['verdict'] == 'ok', 'preflight refused: ' + json.dumps(report))
+    resolved = [x['resolved'] for x in report['scopes']]
+    require('resolved_scopes' not in item or resolved == item['resolved_scopes'], 'scope resolution changed')
+    return resolved, report['off_limits']
+
+
+def overlap(left, right):
+    return any(os.path.commonpath((a, b)) in (a, b) for a in left for b in right)
+
+
+def bound(repo, item):
+    require(resolve_registered_worktree(repo, item['worktree']), 'worktree is not linked')
+    ref = finish_helper._git(item['worktree'], 'symbolic-ref', '-q', 'HEAD').stdout.strip()
+    require(ref == 'refs/heads/' + item['branch'], 'worktree branch changed')
+    return finish_helper._resolve_commit(repo, ref)
+
+
+def control(item, base=None, closed=False):
+    directory = os.path.join(base or item['worktree'], 'doc/harness/tasks', item['task_id'])
+    if base is not None:
+        directory = base
+    data = read_task_control(directory)
+    require(data, 'task control missing or invalid')
+    require(item.get('run_id') in (None, data['run_id']), 'task generation changed')
+    if closed:
+        require(task_control_status(directory, data) == 'closed', 'task is not validly closed')
+        require(item.get('close_fingerprint') in (None, data['close_receipt_fingerprint']), 'close fingerprint changed')
+    return data
+
+
+def resume_control(item, observe=False):
+    """Pin an unobserved running generation; otherwise require exact presence."""
+    directory = os.path.join(item['worktree'], 'doc/harness/tasks', item['task_id'])
+    if not item.get('run_id') and not observe:
+        require(not os.path.lexists(directory), 'task appeared after recorded absence')
+        return None
+    if not os.path.lexists(directory):
+        require(not item.get('run_id'), 'previously observed task is missing')
+        return None
+    proof = control(item)
+    status = task_control_status(directory, proof)
+    require(status != 'closed', 'closed task requires genuine final result or integration reconciliation, not resume')
+    require(status in {'open', 'blocked'}, 'task control is not valid open/blocked work')
+    return proof['run_id']
+
+
+def no_main_task(repo):
+    # Focus markers identify a session's active task, not every open task.
+    # A stopped coordinator can leave valid open control without a marker.
+    directory = os.path.join(repo, 'doc/harness/tasks')
+    if not os.path.lexists(directory):
+        return
+    parents(directory)
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if batch_harvest.TASK_ID_RE.fullmatch(entry.name):
+                safe(entry.path, True)
+                require(task_control_status(entry.path) != 'open', 'main checkout has an open task')
+
+
+def fingerprint(path):
+    parents(path)
+    batch_harvest._refuse_non_regular_tree(path)
+    for root, dirs, files in os.walk(path):
+        safe(root, True)
+        for name in files:
+            safe(os.path.join(root, name))
+    return 'sha256:' + hashlib.sha256(json.dumps(batch_harvest._tree_entries(path), sort_keys=True).encode()).hexdigest()
+
+
+def active_pool(records, batch_id):
+    require(not any(key != batch_id and any(x['status'] in LIVE for x in data['requests']) for key, data in records.items()), 'another batch has an active pool')
+
+
+def held(records, target):
+    return [x for data in records.values() for x in data['requests'] if x is not target and x['status'] not in FREE]
+
+
+def observation(repo, item):
+    result = {'next_action': {'queued': 'claim', 'reserved': 'bind or explicitly release unused reservation', 'running': 'await worker result', 'returned': 'finish', 'integrated': 'none', 'abandoned': 'retained work requires explicit disposition'}.get(item['status'], 'recover or resume with stopped worker assertion')}
+    if item['status'] == 'abandoned' and not item.get('worktree'):
+        result['next_action'] = 'unknown external work retained; explicit disposition required'
+    if item['status'] == 'reserved' and item.get('worktree'):
+        result['next_action'] = 'bind same-worktree bootstrap; after failed bootstrap confirm worker stopped and resume same reservation'
+    if item.get('worktree'):
+        result['worktree_exists'] = os.path.exists(item['worktree'])
+        result['branch_tip'] = finish_helper._resolve_commit(repo, 'refs/heads/' + item['branch'])
+        try:
+            result['registered_tip'] = bound(repo, item)
+            result['task_status'] = task_control_status(os.path.join(item['worktree'], 'doc/harness/tasks', item['task_id']))
+        except Exception as exc:
+            result['identity_error'] = str(exc)
+        if not result['worktree_exists'] and result['branch_tip']:
+            result['next_action'] = 'recover; remaining branch: ' + item['branch']
+    return result
+
+
+def execute(args, directory, records):
+    repo, batch_id = args.repo, args.batch_id
+    path = os.path.join(directory, batch_id + '.json')
+    if args.command == 'init':
+        requests = read_json(args.requests_file)
+        requests_valid(requests)
+        maximum, source = cap(repo, args.max_leads)
+        normalized = [{k: x.get(k, []) for k in ('slug', 'request', 'scopes', 'depends_on')} for x in requests]
+        if batch_id in records:
+            old = records[batch_id]
+            require([{k: x[k] for k in ('slug', 'request', 'scopes', 'depends_on')} for x in old['requests']] == normalized
+                    and old['max_leads'] == maximum, 'conflicting existing batch')
+            return {'status': 'ok', 'batch': old}
+        require(len(records) < MAX_BATCHES, 'batch history limit reached')
+        ref, head = main_boundary(repo)
+        ids = {x['task_id'] for d in records.values() for x in d['requests']}
+        for item in normalized:
+            task_id = 'TASK__' + item['slug']
+            require(task_id not in ids and not os.path.lexists(os.path.join(repo, 'doc/harness/archive/batch', task_id))
+                    and not os.path.lexists(os.path.join(repo, 'doc/harness/tasks', task_id)), 'task/archive identity already used')
+            resolved, _ = preflight(repo, item)
+            item.update(status='queued', task_id=task_id, resolved_scopes=resolved)
+        data = dict(schema_version=1, batch_id=batch_id, repo=repo, destination_ref=ref, initial_head=head,
+                    max_leads=maximum, cap_source=source, created_at=now(), updated_at=now(), status='open', halted=False, requests=normalized)
+        write_json(path, data)
+        return {'status': 'ok', 'batch': data}
+    require(batch_id in records, 'batch does not exist')
+    data = records[batch_id]
+    if args.command == 'status':
+        return {'status': 'ok', 'batch': data, 'observed': {x['slug']: observation(repo, x) for x in data['requests']}}
+    require(data['status'] == 'open', 'batch is closed')
+    if args.command in {'claim', 'resume', 'finish'}:
+        unresolved = [x for x in data['requests'] if x['status'] in {'integrating', 'recovery-required'}]
+        require(not unresolved or (args.command == 'finish' and args.resume
+                and all(x['slug'] == args.slug for x in unresolved)), 'unresolved integration requires targeted recovery')
+        require(finish_helper._git(repo, 'merge-base', '--is-ancestor', data['initial_head'], data['destination_ref']).returncode == 0,
+                'destination no longer contains the initial HEAD')
+        for completed in data['requests']:
+            if completed['status'] == 'integrated':
+                tip = completed.get('checkpoint', {}).get('integrated_tip') or completed.get('finish_result', {}).get('integrated_tip')
+                require(tip and finish_helper._git(repo, 'merge-base', '--is-ancestor', tip, data['destination_ref']).returncode == 0,
+                        'destination no longer contains integrated predecessor: ' + completed['slug'])
+    def save():
+        data['updated_at'] = now()
+        write_json(path, data)
+    def capacity(target):
+        active_pool(records, batch_id)
+        require(sum(x is not target and x['status'] in {'reserved', 'running'} for x in data['requests']) < data['max_leads'], 'capacity exhausted')
+    if args.command == 'claim':
+        require(not data['halted'], 'batch halted; recover retained integration first')
+        active_pool(records, batch_id)
+        _, head = main_boundary(repo, data['destination_ref'])
+        no_main_task(repo)
+        claims, reasons = [], {}
+        slots = data['max_leads'] - sum(x['status'] in {'reserved', 'running'} for x in data['requests'])
+        by_slug = {x['slug']: x for x in data['requests']}
+        for item in data['requests']:
+            if item['status'] != 'queued':
+                continue
+            reason = None
+            if slots <= 0:
+                reason = 'capacity'
+            elif any(by_slug[dep]['status'] != 'integrated' for dep in item['depends_on']):
+                reason = 'dependencies'
+            elif any(overlap(item['resolved_scopes'], x['resolved_scopes']) for x in held(records, item)):
+                reason = 'retained scope ownership'
+            if reason:
+                reasons[item['slug']] = reason
+                continue
+            _, off_limits = preflight(repo, item)
+            item.update(status='reserved', spawn_head=head, off_limits=off_limits, reserved_at=now())
+            claims.append(copy.deepcopy(item))
+            slots -= 1
+        save()
+        return {'status': 'ok', 'claims': claims, 'reasons': reasons, 'max_leads': data['max_leads']}
+    if args.command == 'close':
+        require(all(x['status'] in {'integrated', 'abandoned'} for x in data['requests']), 'unfinished work or cleanup remains')
+        require(not data['halted'], 'recovery remains unresolved')
+        data['status'] = 'closed'
+        save()
+        return {'status': 'closed', 'disposition': 'retained-abandonment' if any(x['status'] == 'abandoned' for x in data['requests']) else 'integrated', 'batch': data}
+    item = next((x for x in data['requests'] if x['slug'] == args.slug), None)
+    require(item is not None, 'unknown slug')
+    if args.command == 'bind':
+        require(item['status'] == 'reserved', 'bind requires reservation')
+        no_main_task(repo)
+        require(args.worker_id and len(args.worker_id) <= 256 and os.path.isabs(args.worktree), 'invalid worker/worktree')
+        require(finish_helper._git(repo, 'check-ref-format', '--branch', args.branch).returncode == 0, 'invalid branch')
+        worktree = os.path.realpath(args.worktree)
+        for other in held(records, item):
+            require(other.get('worktree') != worktree and other.get('branch') != args.branch and other.get('worker_id') != args.worker_id, 'worktree/branch/worker already owned')
+        candidate = dict(item, worktree=worktree, branch=args.branch, worker_id=args.worker_id)
+        if item.get('resuming'):
+            require(worktree == item['worktree'] and args.branch == item['branch'], 'resume must use original worktree and branch')
+            bound(repo, candidate)
+            resume_control(candidate)
+        else:
+            require(bound(repo, candidate) == item['spawn_head'], 'bootstrap HEAD differs from reservation')
+            require(not finish_helper._status_lines(worktree), 'bootstrap modified source before binding')
+            require(not os.path.exists(os.path.join(worktree, 'doc/harness/tasks', item['task_id'])), 'bootstrap started task before binding')
+        item.update(candidate)
+        item['status'] = 'running'
+    elif args.command == 'result':
+        require(item['status'] == 'running' and args.worker_id == item['worker_id'], 'result worker/state mismatch')
+        result = read_json(args.result_file)
+        require(isinstance(result, dict) and result.get('verdict') in {'closed', 'blocked', 'failed'}, 'invalid result verdict')
+        for key in ('task_id', 'branch', 'worktree'):
+            require(result.get(key) == item[key], f'result {key} mismatch')
+        require(result.get('worker_id', args.worker_id) == args.worker_id, 'result worker mismatch')
+        tip = bound(repo, item)
+        commit = result.get('commit')
+        require(commit is None or (isinstance(commit, str) and finish_helper.COMMIT_RE.fullmatch(commit)), 'invalid result commit')
+        if result['verdict'] == 'closed':
+            require(commit and finish_helper._resolve_commit(repo, commit) == tip, 'closed result commit is not branch tip')
+            proof = control(item, closed=True)
+        else:
+            proof = read_task_control(os.path.join(item['worktree'], 'doc/harness/tasks', item['task_id']))
+            if proof:
+                control(item)
+        if proof:
+            require(result.get('run_id', proof['run_id']) == proof['run_id'], 'result run mismatch')
+            item.update(run_id=proof['run_id'], close_fingerprint=proof.get('close_receipt_fingerprint'))
+        else:
+            require(result.get('run_id') is None, 'result claims missing task run')
+            require(not os.path.lexists(os.path.join(item['worktree'], 'doc/harness/tasks', item['task_id'])), 'task control missing or invalid')
+            item['run_id'] = None
+        item.update(result=result, status='returned' if result['verdict'] == 'closed' else result['verdict'], returned_at=now())
+    elif args.command == 'release':
+        require(args.worker_stopped and args.no_external_work, 'release requires stopped/no-external-work assertions')
+        require(item['status'] == 'reserved' and not item.get('worktree'), 'only unused reservations may be released')
+        item['status'] = 'queued'
+        item.pop('spawn_head', None)
+    elif args.command == 'abandon':
+        require(args.worker_stopped and args.reason.strip(), 'abandon requires stopped assertion and reason')
+        require(item['status'] not in {'queued', 'integrated', 'integrating'}, 'cannot abandon this state')
+        require(not item.get('checkpoint', {}).get('integrated_tip'), 'integrated cleanup requires recovery')
+        item.update(status='abandoned', abandonment_reason=args.reason, worker_stopped=True)
+    elif args.command == 'resume':
+        require(args.worker_stopped and (item['status'] in {'blocked', 'failed', 'running'}
+                or (item['status'] == 'reserved' and item.get('resuming') and item.get('worktree'))),
+                'resume requires a stopped retained worker')
+        require(not data['halted'], 'batch halted')
+        no_main_task(repo)
+        capacity(item)
+        main_boundary(repo, data['destination_ref'])
+        bound(repo, item)
+        run_id = resume_control(item, observe=item['status'] == 'running')
+        require(not any(overlap(item['resolved_scopes'], x['resolved_scopes']) for x in held(records, item)), 'retained scope collision')
+        preflight(repo, item)
+        item.update(status='reserved', resuming=True, worker_stopped=True, run_id=run_id)
+        save()
+        return {'status': 'reserved', 'handoff': dict(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], run_id=item.get('run_id'), worker_id=item['worker_id'], agent='task-lead-resume', fresh_run=False)}
+    elif args.command == 'finish':
+        require(not data['halted'] or args.resume, 'batch halted; recover first')
+        require(item['status'] == 'returned' or (args.resume and item['status'] in {'kept', 'recovery-required'}), 'finish requires closed returned result')
+        active_pool(records, batch_id)
+        main_boundary(repo, data['destination_ref'])
+        bound(repo, item)
+        control(item, closed=True)
+        item['status'] = 'integrating'
+        item['checkpoint'] = dict(stage='started', branch_tip=bound(repo, item), destination_ref=data['destination_ref'], run_id=item['run_id'], close_fingerprint=item['close_fingerprint'])
+        save()
+        def checkpoint(stage, result):
+            require(result['destination_ref'] == data['destination_ref'], 'destination changed')
+            control(item, closed=True)
+            result.update(stage=stage, run_id=item['run_id'], close_fingerprint=item['close_fingerprint'])
+            if stage == 'harvested':
+                archive = result['harvest']['archived']
+                control(item, base=archive, closed=True)
+                result['archive_fingerprint'] = fingerprint(archive)
+            item['checkpoint'] = result
+            save()
+        result = finish_helper.finish(repo, SimpleNamespace(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], commit=item['result']['commit'], resume=args.resume), checkpoint=checkpoint)
+        item['finish_result'] = result
+        item['status'] = 'integrated' if result['status'] == 'integrated' else 'kept'
+        if result['status'] in {'conflict', 'ff-refused', 'error'}:
+            data['halted'] = True
+            item['status'] = 'recovery-required'
+        if result['status'] == 'integrated':
+            data['halted'] = any(x['status'] in {'integrating', 'recovery-required'} for x in data['requests'])
+        save()
+        return result
+    elif args.command == 'recover':
+        require(args.worker_stopped and item['status'] in {'integrating', 'kept', 'recovery-required', 'integrated'}, 'recover requires stopped integration')
+        checkpoint = item.get('checkpoint', {})
+        try:
+            main_boundary(repo, data['destination_ref'])
+            tip = checkpoint.get('branch_tip')
+            require(tip and checkpoint.get('destination_ref') == data['destination_ref'], 'exact post-rebase tip missing')
+            require(checkpoint.get('run_id') == item.get('run_id') and checkpoint.get('close_fingerprint') == item.get('close_fingerprint'), 'checkpoint task identity mismatch')
+            branch_tip = finish_helper._resolve_commit(repo, 'refs/heads/' + item['branch'])
+            require(not branch_tip or branch_tip == tip, 'branch tip changed since checkpoint')
+            integrated = finish_helper._git(repo, 'merge-base', '--is-ancestor', tip, data['destination_ref']).returncode == 0
+            if os.path.exists(item['worktree']):
+                require(bound(repo, item) == tip, 'worktree tip changed')
+                control(item, closed=True)
+                # A retained worktree can safely retry harvest through the existing helper.
+                if checkpoint.get('archive_fingerprint'):
+                    archive = checkpoint['harvest']['archived']
+                    require(fingerprint(archive) == checkpoint['archive_fingerprint'], 'archive fingerprint changed')
+                    control(item, base=archive, closed=True)
+                item['status'] = 'returned'
+                item['recovery_action'] = 'finish --resume'
+            else:
+                require(integrated and checkpoint.get('integrated_tip') == tip and checkpoint.get('archive_fingerprint'), 'integration/archive proof missing after removal')
+                archive = checkpoint['harvest']['archived']
+                require(fingerprint(archive) == checkpoint['archive_fingerprint'], 'archive fingerprint changed')
+                control(item, base=archive, closed=True)
+                listing = finish_helper._git_out(repo, 'worktree', 'list', '--porcelain')
+                require('worktree ' + item['worktree'] + '\n' not in listing, 'missing worktree still registered')
+                if branch_tip:
+                    deleted = finish_helper._git(repo, 'branch', '-d', item['branch'])
+                    require(deleted.returncode == 0, 'remaining branch cleanup refused: ' + item['branch'])
+                item['status'] = 'integrated'
+                item['recovery_action'] = 'none'
+            data['halted'] = any(x['status'] in {'integrating', 'recovery-required'} for x in data['requests'])
+        except Exception as exc:
+            item.update(status='recovery-required', recovery_action=str(exc))
+            data['halted'] = True
+            save()
+            raise Refusal('recovery required: ' + str(exc)) from exc
+    save()
+    return {'status': item['status'], 'request': item}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repo', default=None)
+    parser.add_argument('--batch-id', required=True)
+    commands = parser.add_subparsers(dest='command', required=True)
+    init = commands.add_parser('init')
+    init.add_argument('--requests-file', required=True)
+    init.add_argument('--max-leads')
+    for name in ('status', 'claim', 'close'):
+        commands.add_parser(name)
+    for name in ('bind', 'result', 'finish', 'recover', 'resume', 'abandon', 'release'):
+        command = commands.add_parser(name)
+        command.add_argument('--slug', required=True)
+        if name in {'bind', 'result'}:
+            command.add_argument('--worker-id', required=True)
+        if name == 'bind':
+            command.add_argument('--worktree', required=True)
+            command.add_argument('--branch', required=True)
+        if name == 'result':
+            command.add_argument('--result-file', required=True)
+        if name == 'finish':
+            command.add_argument('--resume', action='store_true')
+        if name in {'recover', 'resume', 'abandon', 'release'}:
+            command.add_argument('--worker-stopped', action='store_true')
+        if name == 'release':
+            command.add_argument('--no-external-work', action='store_true')
+        if name == 'abandon':
+            command.add_argument('--reason', required=True)
+    args = parser.parse_args(argv)
+    lock = None
+    try:
+        require(IDENT.fullmatch(args.batch_id), 'invalid batch id')
+        args.repo = os.path.realpath(args.repo or find_repo_root())
+        directory = os.path.join(args.repo, 'doc/harness/runtime/batches')
+        parents(directory, create=args.command == 'init')
+        if args.command != 'status':
+            lock_path = os.path.join(directory, '.lock')
+            if os.path.lexists(lock_path):
+                safe(lock_path)
+            lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+            info = os.fstat(lock)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and not info.st_mode & 0o022, 'unsafe lock')
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise Busy('batch lock is busy; retry') from exc
+        records = load_all(directory, args.repo)
+        result = execute(args, directory, records)
+        print(json.dumps(result, indent=2))
+        return 0 if result.get('status') not in {'error', 'kept', 'conflict', 'ff-refused'} else 3
+    except Busy as exc:
+        print(json.dumps({'status': 'busy', 'reason': str(exc)}))
+        return 3
+    except (Refusal, ValueError, OSError, RuntimeError) as exc:
+        print(json.dumps({'status': 'refused', 'reason': str(exc)}))
+        return 3
+    except Exception as exc:
+        print(json.dumps({'status': 'error', 'reason': f'{type(exc).__name__}: {exc}'}))
+        return 1
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
