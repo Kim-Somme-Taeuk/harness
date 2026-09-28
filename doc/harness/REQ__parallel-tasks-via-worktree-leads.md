@@ -14,7 +14,7 @@ invalidated_by_paths:
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-28T08:31:36Z
+freshness_updated: 2026-09-28T10:47:52Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -548,14 +548,56 @@ stop-gap above applies.
   such Write calls, observed above), and C-05 leaves Bash unguarded. Remaining
   limits are listed in `doc/harness/patterns/prewrite-gate.md`
   ("Cross-checkout protection").
-- A failed or blocked lead's worktree is kept and reported, never
-  force-removed. Evidence harvest (`plugin/scripts/batch_harvest.py`) copies
+- A failed or blocked lead's worktree is kept and reported while its work is
+  unresolved, never force-removed. A later verified recovery may finish its
+  disposition under the completion rules below. Evidence harvest
+  (`plugin/scripts/batch_harvest.py`) copies
   `<worktree>/doc/harness/tasks/<task_id>` to
   `doc/harness/archive/batch/<task_id>/` and appends the lead's learnings
   before `git worktree remove` and `git branch -d`. It refuses to replace an
   existing archive that holds different evidence for the same task id.
 
+## Temporary-worktree completion and interrupted recovery
+
+Temporary worktrees explicitly owned or adopted by the task are development
+resources: completion includes integrating their intended changes by rebase
+and fast-forward only, then removing the worktrees and disposable branches.
+No merge-commit fallback is allowed. Ordinary closed batch leads retain the
+existing `batch_finish.py` sequence: rebase, fast-forward, harvest, remove;
+the coordinator's integration task subsequently reviews and tests the combined
+result before reporting completion. Leads never remove their own checkout.
+
+Both runtimes' normal develop completion and run recovery completion load
+`plugin/skills/run/worktree-completion.md` (projected into Codex internal
+skills). That shared procedure owns the execution details. The coordinator
+records each owned source path/branch, intended destination, worker and final
+disposition. Unrelated worktrees, running or unknown workers, unintegrated
+changes, failed archives and cleanup refusals remain intact with a concrete
+remaining action; a closed implementation task does not imply cleanup passed.
+
+Resume interrupted work in its original worktree where possible. An unsupported
+runtime is a blocker to that lifecycle, not permission to silently copy changes
+to main and declare completion. When a separate recovery already copied work,
+the coordinator must account for every original change against a committed,
+independently reviewed and QA-passed destination, preserve byte-verified source
+and non-cache ignored evidence outside the removed tree, and recheck ownership,
+stopped writers, branch identity and the exact inventory before narrow cleanup.
+An archive alone or an ancestor branch alone does not prove dirty changes were
+integrated. Unaccounted changes remain protected. Original task status and
+receipts are not rewritten or relabeled as closed; recovery evidence is separate.
+Verified, fully accounted originals are then removed rather than kept forever.
+
+This is coordinator workflow, not a Git-state gate in `task_verify` or
+`task_close`. Routing and payload tests establish that the rule is available;
+they do not prove an agent obeyed it. Actual completion reporting must name
+the integrated destination and removed resources, or the exact retained work
+and blocker.
+
 ## Verification cues
+
+- `tests/test_worktree_completion_contract.py`: normal and recovery caller
+  routing in both runtimes, safe disposal and recovery boundaries, and the
+  actual built Codex payload's shared completion procedure.
 
 - `tests/test_worktree_workspace.py`: accepted registered worktree; refusals for
   plain directory, other repository, relative/symlinked path, missing manifest,

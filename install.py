@@ -1002,7 +1002,7 @@ def _build_codex_payload(target: Path, final_root: Path) -> None:
         ),
         "internal-skills/plan-devex-review": ("dx-hall-of-fame.md",),
         "internal-skills/plan-eng-review": ("rubrics-threat-rollback.md",),
-        "internal-skills/run": ("self-improvement.md",),
+        "internal-skills/run": ("self-improvement.md", "worktree-completion.md"),
     }
     for relative_dir, names in shared_skill_files.items():
         source_dir = PLUGIN_ROOT / "skills" / relative_dir.removeprefix("internal-skills/")

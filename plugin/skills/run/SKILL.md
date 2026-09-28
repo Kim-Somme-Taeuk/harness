@@ -81,6 +81,8 @@ harness task. If one exists, call `mcp__plugin_harness_harness__task_context`
 and resume rather than creating a duplicate.
 
 Resume routing:
+- Already closed with outstanding coordinator disposal → Phase 5's shared
+  completion procedure; do not repeat close or review solely for cleanup.
 - PLAN.md missing → Phase 2 Plan.
 - PLAN.md exists and runtime_verdict is not PASS → Phase 3 Develop/Verify.
 - runtime_verdict is PASS and `missing_for_close` is empty → Phase 5 Close.
@@ -201,6 +203,13 @@ Store the printed score for inclusion in the completion report.
 
 ### Phase 5: Close
 
+Read `${CLAUDE_PLUGIN_ROOT}/skills/run/worktree-completion.md`. Skip
+`task_close` when develop already closed the task; finish any outstanding
+coordinator disposal under that procedure without repeating review solely for
+cleanup. Otherwise close once after Phase 4 restores PASS, then complete the
+procedure before claiming overall completion. Batch leads return to their
+coordinator without integrating or removing their own worktree.
+
 ```
 mcp__plugin_harness_harness__task_close { task_id: "<task_id>" }
 ```
@@ -233,6 +242,8 @@ the commit hash and pre-close conditional verified-delivery result in the comple
 
 Before writing DONE, assert:
 - primary task is closed
+- owned temporary worktrees and disposable branches are integrated and removed;
+  unresolved disposal is remaining coordinator work, reported with blocker and next action
 - runtime_verdict is PASS or task is BLOCKED
 - post-close self-improvement has run
 - if this was a native Goal child task, the Goal is done/blocked/stopped/budgeted

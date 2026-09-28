@@ -1,12 +1,19 @@
 # Batch Wave 2 recovery
 
-Recovered six interrupted implementations without modifying their source worktrees
-or claiming their tasks closed. The combined change adds safe batch completion,
+Initially recovered six interrupted implementations while preserving their source
+worktrees without claiming their tasks closed. The combined change adds safe batch completion,
 proof-based Claude integration-review carry, explicit AC ownership and parallel
 test authoring, test-ledger isolation, and protected-write checks for large or
 invalid-byte payloads and Codex child failures. It also aligns contracts, CI and
 the Harness guide with current behavior. The complete recovered diff requires
 fresh review and QA; original lead receipts are not carried.
+
+The six originals were subsequently fully archived with byte verification under
+`doc/harness/archive/worktree-recovery-wave2`, then removed along with their
+six disposable branches. All original branches had zero unique commits and were
+ancestors of the recovered destination. This was disposition of already-recovered
+work, not a new rebase or a claim that the original lead tasks closed. The archives
+remain local; original task status and receipts were not rewritten.
 
 The completion helper also protects untracked files when Git is configured to
 hide them, reconciles actual integration after a merge timeout, and attempts to

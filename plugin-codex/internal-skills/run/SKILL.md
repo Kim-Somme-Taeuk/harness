@@ -148,6 +148,8 @@ harness task. If an active task exists, call `task_context` for that task and
 resume instead of creating a duplicate.
 
 Resume routing:
+- Source task already closed with owned temporary worktrees remaining → Phase 5
+  coordinator disposal only; do not repeat close or lenses solely for cleanup.
 - PLAN.md missing → Phase 2 Plan.
 - PLAN.md exists and runtime_verdict is not PASS → Phase 3 Develop/Verify.
 - runtime_verdict is PASS and `missing_for_close` is empty → Phase 5 Close.
@@ -193,7 +195,7 @@ does not maintain a separate feedback sidecar.
 
 ### Phase 4: Verify recovery (only when develop returned before close)
 
-Skip this phase when Phase 3 closed the task. This is a recovery path for an
+Skip this phase when the source task is already closed. This is a recovery path for an
 interrupted or older develop flow, not a second QA pass. First call
 `task_context`: when fresh required QA receipts and a PASS verdict already
 exist, call `task_verify` only; spawn QA below only for an actually unrun,
@@ -280,8 +282,16 @@ Store the printed score for inclusion in the completion report.
 
 ### Phase 5: Close
 
-Skip the `task_close` call when Phase 3 already closed the task. Otherwise this
-phase owns the one recovery close attempt after Phase 4 has restored fresh PASS
+Read `${HARNESS_PLUGIN_ROOT}/internal-skills/run/worktree-completion.md` now.
+Follow its ownership, surviving-checkout and batch-lead rules. After source
+close, finish outstanding coordinator integration/disposal before reporting
+overall completion; report retained originals with their blocker and next action.
+Already-closed sources still need this disposition, without repeating close or
+rerunning lenses solely for cleanup.
+
+Skip the `task_close` call when Phase 3 already closed the task or the source
+was already closed on resume. Otherwise this phase owns the one recovery close
+attempt after Phase 4 has restored fresh PASS
 evidence.
 
 ```
@@ -316,6 +326,7 @@ the commit hash and pre-close conditional verified-delivery result in the comple
 
 Before writing DONE, assert:
 - primary task is closed
+- owned temporary worktree disposition is complete under the shared rule
 - runtime_verdict is PASS or task is BLOCKED
 - post-close self-improvement has run
 - if this was a native Goal child task, the Goal is done/blocked/stopped/budgeted

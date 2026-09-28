@@ -100,6 +100,12 @@ Leads are integrated by rebase and fast-forward, never by a merge commit, so
 the main branch history stays linear. `batch_finish.py` runs this whole step
 for one lead.
 
+Before invoking the helper, read
+`${CLAUDE_PLUGIN_ROOT}/skills/run/worktree-completion.md` and apply its
+ownership, stopped-writer and evidence-preservation checks, including ignored
+content. Keep the normal helper order: rebase, fast-forward, harvest, remove,
+then combined review/QA in step e.
+
 1. For every lead with `verdict: "closed"`, **in order**, from the main
    checkout:
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_finish.py --repo <main checkout> --worktree <W> --branch <branch> --task-id <id> --commit <commit>`
@@ -165,9 +171,13 @@ for one lead.
    Whatever the status, a non-null `integrated_tip` means the lead's commits
    are already on the main branch.
 
-A lead with `verdict: "blocked"` or `"failed"`: report it, and leave its
-worktree and branch in place — never remove or force-remove them. The
-coordinator or the user resolves it directly in that worktree later.
+A lead with `verdict: "blocked"` or `"failed"`: report it and retain its
+worktree and branch while unresolved. Prefer resuming in that worktree. Once
+already-copied recovery is independently reviewed and QA-passed, the coordinator
+may dispose of the stopped originals only through the shared procedure's
+per-change accounting, byte-verified archive and unchanged-inventory checks.
+Never fabricate a closed lead result for `batch_finish.py` or change original
+task status/receipts to enable cleanup.
 
 ## e) Integration task
 
@@ -233,4 +243,7 @@ whose result has `trailer_present: false`: its commits carry no
 `Harness-Task` trailer. Add a row for every request the
 preflight kept out of the wave: "excluded (ordinary task, done or pending)",
 "deferred to a later wave", or "outside the root, not batchable". End with
-the integration task's verdict.
+the integration task's verdict. Distinguish unresolved retained originals from
+verified recovery: report the recovery destination/tip and actual worktree and
+branch removal, or the retained path/branch, blocker and next action. Do not
+claim overall completion while owned cleanup remains unresolved.

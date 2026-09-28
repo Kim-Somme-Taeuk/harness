@@ -431,7 +431,9 @@ Before `task_close`, verify these are true:
 4. User corrections are reflected in PLAN.md or durable documentation.
 5. Durable docs are updated when the task changed user-visible behavior, external contracts, or reusable guidance.
 
-Call `task_close`, then provide a concise final response with:
+Read `${CLAUDE_PLUGIN_ROOT}/skills/run/worktree-completion.md`; after `task_close`, complete its coordinator disposal before claiming overall completion. Batch leads return to the coordinator without self-removal. If already closed, finish outstanding disposal without repeating close or review solely for cleanup.
+
+Then provide a concise final response with:
 
 1. Summary (one sentence per AC or task slice)
 2. Files changed (important files only, with one-line description)

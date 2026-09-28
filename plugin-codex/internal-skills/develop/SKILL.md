@@ -475,6 +475,11 @@ One-paragraph summary of the task's user-visible behavior change. Lives at `doc/
 
 ### Phase 9: Final verification, install, close, and response
 
+Read `${HARNESS_PLUGIN_ROOT}/internal-skills/run/worktree-completion.md` now.
+Follow its ownership, surviving-checkout and batch-lead rules; finish required
+coordinator integration/disposal after source close, before overall completion.
+Report retained originals and their next action; never silently leave them.
+
 Phase 9 is the only normal owner of `task_close` and the user-facing completion
 response. The developer owns deciding whether work after review or QA affects
 the evidence and therefore warrants rerunning the applicable lenses. Harness
