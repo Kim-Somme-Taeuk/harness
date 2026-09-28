@@ -1565,10 +1565,10 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
         → git merge --ff-only → harvest·제거, 이어서 남은 lead 도 (d) 순서대로 (남겨 둔 lead 는 제외) → full suite → review-code + qa-cli
       → (harness 플러그인 소스 저장소일 때만) install_verified.py (batch 에서 유일하게 실행되는 곳, lead 는 생략) → close
 (f) 사용자에게 branch/commit 으로만 확인하라고 안내
-(g) 보고 표: slug, branch, verdict, fast-forward 된 tip commit 또는 'kept, unmerged', 제외/미룸/outside-root, 통합 결과
+(g) 보고 표: slug, branch, verdict, lead 가 반환한 commit(rebase 전), 통합된 tip(ff 뒤 main HEAD) 또는 'kept, unmerged'(사유 포함)·'not integrated', 제외/미룸/outside-root, 통합 결과
 ```
 
-근거: `batch/SKILL.md:16-189`, REQ `:48-57, 66-107`.
+근거: `batch/SKILL.md:16-196`, REQ `:48-57, 66-115`.
 
 `name=`을 금지하는 이유는 영수증 문제만이 아니다. 이 저장소처럼 agent teams 실험 플래그가 켜져 있으면(§2.1) 이름을 준 스폰이 `isolation: worktree` 없는 teammate가 된다.
 
@@ -1596,8 +1596,8 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 - **깨끗함**: main, 채워진 submodule 전부, nested repo 전부에서 `git status --porcelain --ignore-submodules=none`이 비어 있어야 한다.
 - **post-checkout 훅**: submodule이 있는 저장소에서 기본 또는 유효(`core.hooksPath`) post-checkout 훅에 `submodule`이 들어 있으면 refuse한다. 그런 훅은 모든 lead worktree에서 submodule을 초기화하기 때문이다.
 - **`off_limits`**: submodule 경로와 nested repo의 합집합. ignored nested repo는 lead worktree 안에 존재하지 않으므로 모든 lead prompt에 넘긴다.
-- **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:222-229, 268, 440-446`, REQ `:282-285`).
-- **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:60-62, 86-103, 163-190, 252-269`, REQ `:237-244`).
+- **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:222-229, 268, 440-446`, REQ `:290-293`).
+- **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:60-62, 86-103, 163-190, 252-269`, REQ `:245-252`).
 - preflight는 아무것도 쓰지 않는다. git 호출은 GIT_* 환경 변수를 모두 지우고 `--no-optional-locks`, `-c core.fsmonitor=false`, `LC_ALL=C`, 120초 timeout으로 실행한다. 예기치 않은 crash도 `refuse` 보고를 낸다.
 
 ### 10.3 lead의 수명주기
@@ -1642,7 +1642,7 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
 
 ### 10.5 host 가시성
 
-host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit만 본다. worktree 폴더를 host에서 열지 않는다. lead worktree가 하나라도 존재하는 동안에는 `git worktree prune`이나 host 쪽 정리를 하지 않는다. host에서는 컨테이너 경로가 모두 없는 것으로 보이고, prune은 잠기지 않은 모든 worktree의 메타데이터를 지운다. `git clean -ffdx`도 ignore 설정과 관계없이 `.claude/worktrees/`를 지운다(`batch/SKILL.md:171-181`, REQ `:138-192`).
+host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit만 본다. worktree 폴더를 host에서 열지 않는다. lead worktree가 하나라도 존재하는 동안에는 `git worktree prune`이나 host 쪽 정리를 하지 않는다. host에서는 컨테이너 경로가 모두 없는 것으로 보이고, prune은 잠기지 않은 모든 worktree의 메타데이터를 지운다. `git clean -ffdx`도 ignore 설정과 관계없이 `.claude/worktrees/`를 지운다(`batch/SKILL.md:174-184`, REQ `:146-200`).
 
 ### 10.6 알려진 한계
 

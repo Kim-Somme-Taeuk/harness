@@ -12,7 +12,7 @@ All notable changes to the harness Claude Code plugin.
   integrates leads one at a time by rebasing each lead branch onto the main
   HEAD inside its worktree and fast-forwarding the main checkout, so batch
   history is linear with no merge commits, and harvests evidence with
-  `plugin/scripts/batch_harvest.py`. A post-merge integration task then runs
+  `plugin/scripts/batch_harvest.py`. An integration task then runs
   the full verification and the verified install. The task MCP tools accept an
   optional `workspace`, which must be a validated, registered linked worktree
   of the controlled repository. Task paths and focus markers resolve there,

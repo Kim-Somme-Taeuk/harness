@@ -104,7 +104,15 @@ freshness_updated: 2026-09-27T16:48:34Z
 - Every lead after the first gets new commit ids. Those rebased commits are
   not the exact tree that lead's reviewers and QA saw; the integration task's
   full suite, review, and QA run on the combined result, as they did for merge
-  commits before. The report lists each lead's fast-forwarded tip commit.
+  commits before. The lead's returned `commit` is its pre-rebase tip, so the
+  coordinator records the main HEAD after each fast-forward, and the report
+  lists both.
+- The coordinator checks for a merge commit in prose only: the check must run
+  before the rebase, after which the merge is gone and every later guard
+  passes, and no script owns that step yet. A coordinator helper script for
+  step d is a planned follow-up.
+- In batch surfaces, "merge" and "post-merge" name this fast-forward
+  (`git merge --ff-only`); no batch step creates a merge commit.
 
 ## MCP `workspace` argument
 

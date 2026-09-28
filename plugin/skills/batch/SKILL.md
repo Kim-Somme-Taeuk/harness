@@ -108,7 +108,10 @@ For every lead with `verdict: "closed"`, **in order**, from the main checkout:
    and fast-forward the main checkout:
    `git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"`, then
    `git merge --ff-only <branch>`. For the first lead of a wave the rebase is
-   a no-op; each later lead lands on top of the ones before it.
+   a no-op; each later lead lands on top of the ones before it, with new
+   commit ids. Record `git rev-parse HEAD` after the fast-forward as that
+   lead's integrated tip: the `commit` the lead returned is its pre-rebase
+   tip.
 2. If the rebase exits non-zero, first list conflicted paths with
    `git -C <W> diff --name-only --diff-filter=U`, then run
    `git -C <W> rebase --abort`. The abort puts the lead's branch and worktree
@@ -182,8 +185,12 @@ unlock → remove gap never has it).
 
 ## g) Report
 
-Give the user a table: task slug → branch → verdict → fast-forwarded tip commit (or
-"kept, unmerged" for blocked/failed leads). Add a row for every request the
+Give the user a table: task slug → branch → verdict → the lead's returned
+`commit` → integrated tip from step d.1. Instead of a tip, write "kept,
+unmerged" for blocked/failed leads and, with the reason, for closed leads kept
+in step d (merge commit, rebase failure, removal refusal); write "not
+integrated" for closed leads left when integration stopped at an `--ff-only`
+refusal. Add a row for every request the
 preflight kept out of the wave: "excluded (ordinary task, done or pending)",
 "deferred to a later wave", or "outside the root, not batchable". End with
 the integration task's verdict.

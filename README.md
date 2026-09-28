@@ -169,7 +169,7 @@ All under `plugin/scripts/`. Stdlib only.
 | `req_scaffold.py` | Create or update durable REQ scaffolds before observable source work | `doc/<area>/REQ__*.md` |
 | `install_verified.py` | Stateless trusted post-QA delivery wrapper; compares canonical payloads from an isolated verified snapshot and refreshes only stale runtimes | stdout / exit status |
 | `batch_preflight.py` | `harness:batch` intake/preflight: read-only repo-shape report — control-root shape, submodules, ignored nested repos, a post-checkout hook whose text mentions `submodule`, per-scope class, cleanliness of the main checkout plus every populated submodule and nested repo, and scope overlap between requests; exits 0 only when those checks allow the wave | stdout (JSON) |
-| `batch_harvest.py` | `harness:batch` coordinator step: copies a merged lead worktree's gitignored task evidence and learnings into the main checkout before `git worktree remove`; refuses unregistered/unmerged worktrees, links, non-regular files, and archive collisions | `doc/harness/archive/batch/`, `doc/harness/learnings.jsonl` |
+| `batch_harvest.py` | `harness:batch` coordinator step: copies an integrated (rebased and fast-forwarded) lead worktree's gitignored task evidence and learnings into the main checkout before `git worktree remove`; refuses unregistered, not-yet-integrated, or detached-HEAD (mid-rebase) worktrees, links, non-regular files, and archive collisions | `doc/harness/archive/batch/`, `doc/harness/learnings.jsonl` |
 | `install_smoke.py` | Drives an installed runtime tree once — imports every registered hook module and checks a bound subagent produces a receipt row; run by `install.py` after each sync and on the default run's SYNCHRONIZED skip path | stdout / exit status |
 | `runbook_memory.py` | Capture approved runbooks and pending setup-command candidates | `doc/harness/runbooks.yaml` |
 | `review-log` | Append one bounded formal-review final from stdin to the task-local content-addressed detail store | task `REVIEWS.jsonl` |
@@ -255,7 +255,7 @@ absolute path of a registered linked worktree whose task the call targets
 |-------|-------------|
 | `/harness:setup` | Bootstrap harness in target project |
 | `/harness:run` | Codex public entry for any repository-mutating workflow |
-| `/harness:batch` | Claude: run several independent tasks in parallel from one session, one worktree lead each, then merge and verify once |
+| `/harness:batch` | Claude: run several independent tasks in parallel from one session, one worktree lead each, then rebase and fast-forward each lead and verify once |
 
 Normal usage is `/harness:setup` once per repository. On Codex, `$harness:run`
 is implicitly selected for plain repository mutation and may also be invoked
