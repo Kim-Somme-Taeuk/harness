@@ -4,30 +4,65 @@ summary: 하네스 전체 동작 안내 — 과제 수명주기, MCP 제어면, 
 updated: 2026-09-28
 freshness: current
 invalidated_by_paths:
-  - plugin/scripts/
-  - plugin/mcp/
-  - plugin/hooks/
-  - plugin/skills/
-  - plugin/agents/
-  - plugin/CLAUDE.md
-  - plugin-codex/
-  - install.py
-  - CONTRACTS.md
-  - doc/harness/manifest.yaml
+  - .claude-plugin/marketplace.json
   - .claude/settings.json
-  - pyproject.toml
+  - .codex-plugin/marketplace.json
   - .github/workflows/
-  - README.md
-  - CONTRIBUTING.md
-  - CLAUDE.md
   - AGENTS.md
-  - doc/harness/patterns/
-  - doc/harness/runtime-matrix.md
+  - CLAUDE.md
+  - CONTRACTS.md
+  - CONTRIBUTING.md
+  - doc/common/GUIDE__mcp-tool-naming.md
+  - doc/common/GUIDE__runbook-memory.md
+  - doc/common/REQ__process__receipt-watcher-fail-closed.md
+  - doc/common/REQ__process__subagent-lifecycle-cleanup.md
+  - doc/common/REQ__process__subagent-receipt-binding.md
+  - doc/designs/minimal-implementer-and-code-review-gate.md
+  - doc/harness/ADR__remove-hygiene-subsystem.md
+  - doc/harness/AUTO_ROUTING.md
+  - doc/harness/IMPORT_LIST.md
+  - doc/harness/REQ__bytecode-cache-cannot-disable-receipts.md
+  - doc/harness/REQ__contract-enforcement-claims-are-executable.md
+  - doc/harness/REQ__gate-does-not-demand-impossible-evidence.md
+  - doc/harness/REQ__guards-are-verified-where-they-run.md
+  - doc/harness/REQ__harness-announces-lost-receipt-capability.md
+  - doc/harness/REQ__installed-tree-modes-are-installer-owned.md
+  - doc/harness/REQ__lens-verdict-contract-ownership.md
+  - doc/harness/REQ__lens-verdicts-bind-when-the-lens-complied.md
+  - doc/harness/REQ__mutation-scope-follows-the-diff.md
+  - doc/harness/REQ__parallel-tasks-via-worktree-leads.md
+  - doc/harness/REQ__qa-notes-carry-their-own-invalidation.md
+  - doc/harness/REQ__receipt-capability-diagnosis.md
+  - doc/harness/REQ__receipt-subsystem-failures-are-observable.md
+  - doc/harness/REQ__req-capture-with-or-without-task.md
+  - doc/harness/REQ__runtime-normative-text-has-one-source.md
+  - doc/harness/REQ__runtime-surfaces-name-the-actual-blocker.md
+  - doc/harness/REQ__selective-review-detail.md
+  - doc/harness/REQ__session-start-hooks-no-op-outside-harness.md
+  - doc/harness/REQ__subagent-completion-receipt-transcript-shape.md
+  - doc/harness/REQ__subagent-lifecycle-receipt-boundaries.md
   - doc/harness/REQ__subagent-receipt-session-binding.md
+  - doc/harness/REQ__task-blocked-is-the-park-record.md
+  - doc/harness/REQ__test-suite-determinism-under-xdist.md
+  - doc/harness/REQ__unbound-verdict-names-the-spawn-shape.md
+  - doc/harness/REQ__unreadable-worker-state-is-not-recordable.md
+  - doc/harness/REQ__verdict-binding-survives-output-framing.md
+  - doc/harness/REQ__versioned-project-file-migrations.md
+  - doc/harness/SPEC.md
+  - doc/harness/apply-patch-matrix.md
+  - doc/harness/codex-payload-deltas.md
+  - doc/harness/codex-troubleshooting.md
+  - doc/harness/manifest.yaml
+  - doc/harness/patterns/
+  - doc/harness/qa/QA_KNOWLEDGE.yaml
   - doc/harness/runbooks.yaml
+  - doc/harness/runtime-matrix.md
+  - doc/harness/runtime-services.md
+  - install.py
+  - plugin-codex/
+  - plugin/
+  - pyproject.toml
   - tests/
-  - .claude-plugin/
-  - .codex-plugin/
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -681,7 +716,7 @@ payload가 64 KiB를 넘으면 이 절의 어떤 규칙도 적용되지 않는�
 | # | 조건 | 결과 | rule id | 이유 |
 |---|---|---|---|---|
 | 0 | payload 없음(64 KiB 초과로 잘린 경우 포함) | 허용 | — | fail-safe |
-| 0 | `HARNESS_SKIP_PREWRITE=1` | 허용, learnings에 `gate-bypass` 기록 | — | 명시적 탈출구. 1회용이 아니다(§5.8) |
+| 0 | `HARNESS_SKIP_PREWRITE=1` | 허용, learnings에 `gate-bypass` 기록 | — | 명시적 탈출구. 문서는 1회용이라고 하지만 현재 코드는 설정되어 있는 동안 계속 적용한다(§5.8) |
 | 1 | harness root 해석 오류(manifest가 symlink, 경로에 symlink, 일반 파일 아님, 읽기 불가) | 거부 | `invalid-harness-workspace` (owner `harness:setup`) | 잘못된 조상 트리 위에서는 판단할 수 없다 |
 | 2 | 일반 파일 `doc/harness/manifest.yaml`이 없음 | 허용 | — | harness 저장소가 아니다 |
 | 3 | 대상이 Claude transcript(`…/projects/**/subagents/agent-*.jsonl`)나 Codex rollout(`…/sessions/**/rollout-*.jsonl`) | 거부 | `C-05-protected-artifact` (owner `claude-runtime`) | 영수증 출처 증거를 보호한다 |
@@ -794,7 +829,7 @@ escape: HARNESS_SKIP_PREWRITE=1 <retry>
 ### 5.8 탈출구와 한계
 
 - **탈출구**:
-  - `HARNESS_SKIP_PREWRITE=1`: 기록이 남는다. gate는 호출될 때마다 이 환경 변수를 읽고 지우지 않는다. 그래서 훅 프로세스 환경에 설정되어 있는 동안은 모든 Write/Edit가 우회되고 매번 `gate-bypass`가 기록된다(§13.2의 대량 `gate-bypass` 행과 일치). `plugin/CLAUDE.md:289`와 gate docstring(`prewrite_gate.py:15`)의 "one-shot"은 틀렸다(`prewrite_gate.py:833-836`).
+  - `HARNESS_SKIP_PREWRITE=1`: 기록이 남는다. gate는 호출될 때마다 이 환경 변수를 읽고 지우지 않는다. 그래서 훅 프로세스 환경에 설정되어 있는 동안은 모든 Write/Edit가 우회되고 매번 `gate-bypass`가 기록된다(§13.2의 대량 `gate-bypass` 행과 일치). `plugin/CLAUDE.md:289`와 gate docstring(`prewrite_gate.py:15`)은 "one-shot"이라고 설명하지만, 현재 코드는 이 변수를 지우지 않는다(`prewrite_gate.py:833-836`). 이 어긋남은 §17.2에 관찰로 기록했고, 정리는 wave 2 항목 X가 맡는다.
   - `HARNESS_DISABLE_SCOPE_LOCK=1`(§5.6).
   - MAINTENANCE 마커.
   - `execution_mode: micro`(PLAN.md만 면제).
@@ -916,7 +951,7 @@ append는 `record_subagent_receipt`가 맡는다(`_lib.py:4145-4287`).
    - 모두 없으면 `no-canonical-start-attachment`로 거부.
 
    run cutoff보다 앞선 attachment는 `start-precedes-task-run`으로 거부된다. 두 attachment 모양은 모두 제3자 플러그인(oh-my-claudecode)의 SubagentStart 출력에서 나온다. harness start 훅은 아무것도 출력하지 않는다. 그래서 그런 플러그인이 없는 보통 설치에서는 harness `started` 행을 통한 `hook_start_type`이 정상 경로다. hook `started` 행이 없고(stop만 오는 런타임) attachment도 없으면 항상 `no-canonical-start-attachment`로 거부된다(ADR `:195-206`).
-6. **최종 텍스트는 비교하지 않는다.** 런타임이 transcript의 최종 텍스트를 거의 같은 순간에 flush하기 때문에 일부러 생략했다. verdict는 payload의 `last_assistant_message`에서 읽는다(`subagent_lifecycle.py:412-422`, ADR `:208-212`). CONTRACTS C-14 산문은 final text 일치를 요구하지만, 코드와 ADR이 우선한다.
+6. **최종 텍스트는 비교하지 않는다.** 런타임이 transcript의 최종 텍스트를 거의 같은 순간에 flush하기 때문에 일부러 생략했다. verdict는 payload의 `last_assistant_message`에서 읽는다(`subagent_lifecycle.py:412-422`, ADR `:208-212`). CONTRACTS C-14 산문은 stop-only 쌍에 final text 일치를 요구한다. 반면 ADR(`:208-212`)과 현재 코드는 이 값을 비교하지 않는다. 이 어긋남은 §17.2에 관찰로 기록했고, 정리는 wave 2 항목 X가 맡는다.
 7. **기록**(트랜잭션 안, `subagent_lifecycle.py:698-766`).
    - started만 있음 → savepoint 안에서 completion append.
    - started와 completion이 이미 있음 → 정규화 결과가 같으면 `duplicate_stop`, 다르면 `completion-already-recorded`. **재개된 에이전트는 첫 completion을 바꿀 수 없다.**
@@ -952,7 +987,7 @@ append는 `record_subagent_receipt`가 맡는다(`_lib.py:4145-4287`).
   - **completion을 받지 못한 `started` 행은 만료되지 않는다.** 이런 행이 생기는 경우는 세 가지다: Claude stop이 출처 검증에서 거부됐거나, `receipt_pending`을 돌려줬거나(자동 재시도 없음), Codex lifecycle이 완료 전에 무효화됐다(terminal 행을 쓰지 않음).
   - `_rerun_in_flight`에는 만료 시간이 없다. 30분 `DEFAULT_STALE_SECS`는 `active_records`에만 적용된다.
   - 그래서 그 lens는 계속 "진행 중"으로 보이고, 앞선 PASS/FAIL을 모두 가린다. 기계적으로는 그 lens를 새로 스폰해 완료시켜야 가려진 상태가 풀린다. 다만 새 스폰은 수정 뒤 재검증처럼 **다른 이유로 재실행이 필요할 때만** 정당하다. 영수증을 얻으려고 다시 돌리는 것은 Missing receipt policy가 금지한다(`plugin/skills/run/SKILL.md:9-30`).
-  - review-before-QA 순서 규칙 때문에, review 행이 이렇게 걸리면 QA도 다시 돌려야 한다(`_lib.py:4313-4322, 4332, 4589`, `subagent_lifecycle.py:85, 762-766`, `codex_lifecycle_watcher.py:1096-1101, 1268, 1276`).
+  - review-before-QA 순서 규칙 때문에, review를 정당한 이유로 새로 스폰하면 QA도 다시 돌려야 한다(`_lib.py:4313-4322, 4332, 4589`, `subagent_lifecycle.py:85, 762-766`, `codex_lifecycle_watcher.py:1096-1101, 1268, 1276`).
 - 유효한 completion의 조건:
   - 같은 (source, task_run_id, runtime_id, agent_id, agent_type, lens)를 가진 `started` 행이 더 앞에 있다.
   - 그 identity의 completion이 **정확히 하나**다. 두 개면 둘 다 무효가 된다(`unpaired`). Codex watcher는 이 규칙을 일부러 이용해 lifecycle을 무효화한다.
@@ -2204,7 +2239,7 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 
 ### 17.2 코드와 문서가 어긋나는 곳(작성 시점)
 
-이 표는 2026-09-28 시점에 관찰한 사실이고 규범이 아니다. 규범은 여전히 각 문서이며, 어긋남을 바로잡는 일은 Goal `GOAL__harness-batch-v2-2026-09-27-8b8d6619`의 wave 2 항목 X(prewrite gate 보강과 규범 문서 정정)가 맡는다.
+이 표와 §5.8, §7.9에 적은 어긋남은 모두 2026-09-28 시점에 관찰한 사실이고 규범이 아니다. 규범은 여전히 각 문서이며, 어긋남을 바로잡는 일은 Goal `GOAL__harness-batch-v2-2026-09-27-8b8d6619`의 wave 2 항목 X(prewrite gate 보강과 규범 문서 정정)가 맡는다. Goal과 과제 기록은 gitignore 대상이라 이 checkout에만 있다.
 
 | 문서 | 문서의 주장 | 코드의 실제 |
 |---|---|---|
