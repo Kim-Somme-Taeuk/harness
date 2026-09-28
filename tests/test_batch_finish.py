@@ -15,9 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugin/scripts/batch_finish.py"
 SPEC = importlib.util.spec_from_file_location("batch_finish", SCRIPT)
@@ -31,6 +28,20 @@ IGNORES = (
     ".claude/worktrees/\n"
 )
 LOCK_REASON = "claude agent agent-x (pid 12345)"
+
+
+def pytest_generate_tests(metafunc):
+    """Keep parametrization without importing pytest at module load time."""
+    cases = {
+        "location": ["lead", "main"],
+        "relock_fails": [False, True],
+        "failure": ["timeout", "oserror"],
+        "boundary": ["after-rebase", "before-merge", "merge-timeout"],
+        "checkout": ["detached", "sibling"],
+    }
+    for name, values in cases.items():
+        if name in metafunc.fixturenames:
+            metafunc.parametrize(name, values)
 
 
 def _isolate(monkeypatch, tmp_path: Path) -> None:
@@ -697,7 +708,6 @@ def test_ambient_git_environment_cannot_redirect_it(tmp_path, monkeypatch):
     assert result["status"] == "integrated", result
 
 
-@pytest.mark.parametrize("location", ["lead", "main"])
 def test_hidden_untracked_files_refuse_before_integration(tmp_path, monkeypatch, location):
     main = _main(tmp_path, monkeypatch)
     lead = Lead(main, "hidden")
@@ -794,8 +804,6 @@ def test_failed_merge_reconciliation_reports_unknown_and_preserves_evidence(tmp_
     assert _lock_reason(main, lead.worktree) == LOCK_REASON
 
 
-@pytest.mark.parametrize("failure", ["timeout", "oserror"])
-@pytest.mark.parametrize("relock_fails", [False, True])
 def test_exceptional_removal_restores_lock_and_preserves_failure(
     tmp_path, monkeypatch, failure, relock_fails,
 ):
@@ -833,8 +841,6 @@ def test_exceptional_removal_restores_lock_and_preserves_failure(
         assert _lock_reason(main, lead.worktree) == LOCK_REASON
 
 
-@pytest.mark.parametrize("checkout", ["detached", "sibling"])
-@pytest.mark.parametrize("boundary", ["after-rebase", "before-merge", "merge-timeout"])
 def test_main_checkout_identity_change_preserves_original_ref_and_lead(
     tmp_path, monkeypatch, checkout, boundary,
 ):

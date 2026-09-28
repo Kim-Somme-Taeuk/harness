@@ -14,9 +14,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugin/scripts/batch_preflight.py"
 SPEC = importlib.util.spec_from_file_location("batch_preflight", SCRIPT)
@@ -109,7 +106,11 @@ def _tree_digest(root: Path) -> dict:
 # ── Control-root shape ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("location", ["main", "nested", "submodule"])
+def pytest_generate_tests(metafunc):
+    if "location" in metafunc.fixturenames:
+        metafunc.parametrize("location", ["main", "nested", "submodule"])
+
+
 def test_hidden_untracked_files_refuse_in_every_repository(monkeypatch, tmp_path, location):
     _isolate(monkeypatch, tmp_path)
     if location == "nested":
