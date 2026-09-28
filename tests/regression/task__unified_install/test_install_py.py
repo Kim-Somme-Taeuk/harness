@@ -1205,7 +1205,8 @@ def test_codex_install_with_fake_cli_recovers_duplicate_mcp_config(tmp_path, mon
     ]
 
 
-def test_real_codex_install_with_fake_cli_enables_plugin_hooks_and_cache(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reload_ok", [True, False])
+def test_real_codex_install_with_fake_cli_enables_plugin_hooks_and_cache(tmp_path, monkeypatch, reload_ok):
     module = _load_install_module()
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -1224,9 +1225,25 @@ def test_real_codex_install_with_fake_cli_enables_plugin_hooks_and_cache(tmp_pat
     monkeypatch.setenv("CODEX_LOG", str(log))
     monkeypatch.setattr(module, "CODEX_INSTALL_ROOT", codex_install_root)
 
-    result = module.install_codex(dry_run=False, force=True, config_path=str(config_path))
+    reload_calls = []
 
-    assert result.ok is True, result.summary
+    def reload_after_installed_state(target):
+        reload_calls.append(target)
+        installed = tomllib.loads(config_path.read_text())
+        assert installed["plugins"]["harness@harness"]["enabled"] is True
+        assert installed["hooks"]["state"]["harness@harness:hooks.json:post_tool_use:0:0"]["trusted_hash"]
+        assert f"plugin marketplace add {codex_install_root}" in log.read_text().splitlines()
+        return reload_ok, "native daemon refresh result"
+
+    monkeypatch.setattr(module, "_reload_codex_runtime", reload_after_installed_state)
+
+    result = module.install_codex(dry_run=False, force=True, config_path=str(config_path))
+    assert reload_calls == [str(config_path)]
+
+    assert result.ok is reload_ok, result.summary
+    if not reload_ok:
+        assert "native daemon refresh result" in result.summary
+        return
     lines = log.read_text().splitlines()
     assert "--version" in lines
     assert "features enable plugin_hooks" in lines

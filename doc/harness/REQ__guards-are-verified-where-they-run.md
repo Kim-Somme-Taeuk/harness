@@ -14,6 +14,7 @@ invalidated_by_paths:
   - tests/test_contract_lint.py
   - plugin/skills/develop/verification-gate.md
   - plugin/scripts/mutation_probe.py
+freshness_updated: 2026-09-28T11:32:40Z
 ---
 
 # REQ — a guard is verified where it runs, and its coverage claim is checked
@@ -118,8 +119,10 @@ reporting a pass.
 
 The suite tests the source tree; hooks execute from the installed tree. When
 they diverge the suite is green and the runtime is dead — no receipt, no
-`task_close`, and no signal of any kind. This is the only check that inspects
-what actually runs.
+`task_close`, and no signal of any kind. This check inspects installed Python
+execution, not delivery of native events from an already-running Codex session.
+That additional boundary requires the refresh and native-delivery verification
+in [Native Codex hook binding](REQ__codex-native-hook-binding.md).
 
 Two properties of the probe are not incidental:
 

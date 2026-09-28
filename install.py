@@ -36,6 +36,7 @@ Per-runtime steps:
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as _dt
 import hashlib
 import json
@@ -43,10 +44,13 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1381,6 +1385,152 @@ def install_codex_hook_trust_state(
     }
 
 
+def _reload_codex_daemon_hooks(socket_path: str, *, timeout: float = 10.0) -> None:
+    """Refresh loaded hooks through Codex's native local config API.
+
+    Updating the cache and trust hashes alone leaves existing sessions holding
+    their previous hook snapshot. Empty edits reload that snapshot without
+    changing configuration or creating any receipt/session authority.
+    """
+    endpoint = Path(socket_path)
+    for parent in {endpoint.absolute().parent, endpoint.resolve().parent}:
+        owner = parent.stat()
+        if owner.st_uid != os.getuid() or owner.st_mode & 0o022:
+            raise ValueError("Codex daemon endpoint directory is not private to its owner")
+    endpoint = endpoint.resolve(strict=True)
+    info = endpoint.stat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError("Codex daemon endpoint must be a user-owned Unix socket")
+    deadline = time.monotonic() + timeout
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        def remaining() -> None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("Codex hook reload timed out")
+            conn.settimeout(left)
+
+        def send(data: bytes) -> None:
+            remaining()
+            conn.sendall(data)
+
+        def read(size: int) -> bytes:
+            chunks = bytearray()
+            while len(chunks) < size:
+                remaining()
+                part = conn.recv(size - len(chunks))
+                if not part:
+                    raise ValueError("Codex daemon closed before confirming hook reload")
+                chunks.extend(part)
+            return bytes(chunks)
+
+        remaining()
+        conn.connect(str(endpoint))
+        if hasattr(socket, "SO_PEERCRED"):
+            credentials = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            if struct.unpack("3i", credentials)[1] != os.getuid():
+                raise ValueError("Codex daemon peer has a different owner")
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        send((
+            "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n\r\n"
+        ).encode("ascii"))
+        header = bytearray()
+        while not header.endswith(b"\r\n\r\n"):
+            if len(header) >= 16384:
+                raise ValueError("Codex daemon handshake exceeds limit")
+            header.extend(read(1))
+        lines = header.decode("ascii").split("\r\n")
+        fields = dict(line.lower().split(":", 1) for line in lines[1:] if ":" in line)
+        accept = base64.b64encode(hashlib.sha1(
+            (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+        ).digest()).decode("ascii")
+        # Header names are case-insensitive; the accept token is not.
+        accept_header = next((line.split(":", 1)[1].strip() for line in lines[1:]
+                              if line.lower().startswith("sec-websocket-accept:")), "")
+        if (lines[0].split()[:2] != ["HTTP/1.1", "101"]
+                or fields.get("upgrade", "").strip() != "websocket"
+                or "upgrade" not in [token.strip() for token in fields.get("connection", "").split(",")]
+                or accept_header != accept):
+            raise ValueError("Codex daemon rejected WebSocket handshake")
+
+        def frame(payload: bytes, opcode: int = 1) -> None:
+            mask = os.urandom(4)
+            length = len(payload)
+            prefix = bytes([0x80 | opcode, 0x80 | length]) if length < 126 else (
+                bytes([0x80 | opcode, 0xFE]) + struct.pack("!H", length)
+            )
+            send(prefix + mask + bytes(value ^ mask[i % 4] for i, value in enumerate(payload)))
+
+        def message(value: dict) -> None:
+            frame(json.dumps(value, separators=(",", ":")).encode("utf-8"))
+
+        def response(request_id: int) -> dict:
+            for _ in range(64):
+                first, second = read(2)
+                opcode, length = first & 15, second & 127
+                if first & 0x70 or not first & 0x80 or second & 0x80:
+                    raise ValueError("Unsupported Codex daemon WebSocket frame")
+                if length == 126:
+                    length = struct.unpack("!H", read(2))[0]
+                elif length == 127:
+                    length = struct.unpack("!Q", read(8))[0]
+                if length > 1024 * 1024 or (opcode >= 8 and length > 125):
+                    raise ValueError("Codex daemon frame exceeds limit")
+                payload = read(length)
+                if opcode == 9:
+                    frame(payload, 10)
+                    continue
+                if opcode == 8:
+                    raise ValueError("Codex daemon closed before confirming hook reload")
+                if opcode != 1:
+                    raise ValueError("Unsupported Codex daemon WebSocket opcode")
+                result = json.loads(payload)
+                if not isinstance(result, dict):
+                    raise ValueError("Malformed Codex daemon RPC response")
+                if result.get("id") != request_id:
+                    continue
+                if result.get("error") is not None or not isinstance(result.get("result"), dict):
+                    raise ValueError("Codex daemon rejected hook reload RPC")
+                return result["result"]
+            raise ValueError("Codex daemon did not confirm hook reload within message limit")
+
+        message({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "harness_installer", "version": "1"},
+            "capabilities": {"experimentalApi": True},
+        }})
+        response(1)
+        message({"method": "initialized"})
+        message({"id": 2, "method": "config/batchWrite", "params": {
+            "edits": [], "reloadUserConfig": True,
+        }})
+        if response(2).get("status") != "ok":
+            raise ValueError("Codex daemon did not confirm successful hook reload")
+
+
+def _reload_codex_runtime(config_path: str | None) -> tuple[bool, str]:
+    target = Path(config_path or DEFAULT_CODEX_CONFIG_PATH).resolve()
+    runtime_home = Path(os.environ.get("CODEX_HOME") or DEFAULT_CODEX_CONFIG_PATH.parent)
+    if target != (runtime_home / "config.toml").resolve():
+        return True, "custom Codex config installed; use a new session with that config"
+    try:
+        rc, out, _ = _run(["codex", "app-server", "daemon", "version"], False)
+        if rc:
+            control_socket = runtime_home / "app-server-control" / "app-server-control.sock"
+            if not os.path.lexists(control_socket):
+                return True, "no local Codex daemon endpoint; hooks will load in the next session"
+            return False, "Codex payload installed, but daemon discovery failed; loaded hooks were not refreshed"
+        daemon = json.loads(out)
+        if not isinstance(daemon, dict):
+            raise ValueError("invalid daemon discovery result")
+        if daemon.get("status") != "running" or not isinstance(daemon.get("socketPath"), str):
+            raise ValueError("unknown daemon discovery status or endpoint")
+        _reload_codex_daemon_hooks(daemon["socketPath"])
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return False, f"Codex payload installed, but loaded hooks were not refreshed: {exc}"
+    return True, "running Codex sessions reloaded installed hook configuration"
+
+
 def _codex_mcp_config(shared_plugin_root: Path) -> dict:
     plugin_root = shared_plugin_root.resolve()
     return {
@@ -1713,6 +1863,7 @@ def install_codex(*, dry_run: bool, force: bool,
         steps.append(f"would install Codex plugin cache entry {CODEX_PLUGIN_ID}")
         steps.append("would install Codex plugin-local hooks.json")
         steps.append("would refresh Codex hook trust state for harness plugin hooks")
+        steps.append("would reload installed hooks in running local Codex sessions")
     else:
         cached_plugin_root = install_codex_plugin_cache(codex_plugin_source_root, codex_home)
         steps.append(f"installed Codex plugin cache entry {CODEX_PLUGIN_ID} at {cached_plugin_root}")
@@ -1791,6 +1942,12 @@ def install_codex(*, dry_run: bool, force: bool,
                              f"codex plugin marketplace add failed: {err.strip() or out.strip()}",
                              steps, backup_path=result["backup_path"])
     steps.append("codex plugin marketplace registered")
+    reload_ok, reload_message = _reload_codex_runtime(config_path)
+    steps.append(reload_message)
+    if not reload_ok:
+        return InstallResult("codex", False, reload_message +
+                             "; after fixing the daemon, retry: python3 install.py --codex-only --force", steps,
+                             backup_path=result["backup_path"])
     return InstallResult("codex", True, "Codex install complete", steps,
                          backup_path=result["backup_path"])
 
