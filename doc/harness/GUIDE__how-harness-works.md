@@ -519,7 +519,7 @@ TASK.json 유효?
 - **close/주차 뒤에 남는 마커.** `task_close`와 `task_blocked`는 `session_id` 없이 `clear_active_marker`를 부른다. 그래서 MCP 프로세스의 `current_session_id()` 마커(Claude에서는 대개 `default.json`)와 legacy `.active`만 지운다. hint 이름으로 만든 `<sid>.json`은 디스크에 남는다(`_lib.py:2441-2478`). 이 마커는 과제가 열려 있지 않은 동안에만 무해하다.
   - blocked 과제를 어느 세션이든 plain `task_start`로 재개하면 run이 유지된다. 그러면 원래 세션의 남은 마커가 다시 유효해져서(열린 과제, 같은 run_id) 그 세션이 바인딩과 focus를 조용히 되찾는다.
   - close 뒤 `fresh_run`으로 다시 열면 run_id가 바뀌므로 영수증 바인딩은 실패한다. 하지만 `resolve_active_task_dir`는 run_id를 비교하지 않으므로 focus는 여전히 그 세션에 잡혀 있다. 그 세션에서 다른 과제로 `task_start`를 하면 거부된다.
-  
+
   `plugin/CLAUDE.md:31`은 "clears this session's active marker"라고 설명하지만, 현재 코드는 MCP 프로세스의 `current_session_id()` 마커와 legacy `.active`만 지운다(§17.2에 관찰로 기록).
 
 **Codex의 바인딩.** 보통의 Codex MCP 호스트에는 thread ID가 없다(`defer_codex_binding`). 이 경우 동작은 다음과 같다(`harness_server.py:1188-1193, 1450-1458, 1649-1661`, `_lib.py:2245-2268`, `codex_hook_registration.py:213-330`, `hook_post_tool_use.py:96-154`).
@@ -1309,9 +1309,24 @@ full:    0 → 1: deferred-scope.md 생성, 전제 추출, 코디네이터가 pl
 
 **깊이 선택**(`quality-audit-pipeline.md:40-81`):
 
-- **DEEP**: 보안, 동시성, 마이그레이션, 계약, 의존성, 설치, 훅, gate, 컴포넌트 간 위험 중 하나라도 실질적이거나, 그런 위험을 숨길 수 있는 증거 공백이 있을 때.
-- **LIGHT**: 동작을 보존하는 변경이거나 산문만 바꾼 변경이라는 적극적 증명이 완전할 때만.
-- **STANDARD**: 나머지.
+순서대로 적용한다(정본은 `quality-audit-pipeline.md:46-59`):
+
+1. **DEEP**: 명시적인 DEEP 요청이 있거나, 다음 중 하나라도 실질적 위험이 있을 때다.
+   - 보안/신뢰 경계, 민감 데이터, 동시성, 마이그레이션
+   - 공개 계약, durable 계약, 의존성, 빌드, 설치
+   - 훅, 수명주기, gate
+   - 수동 충돌 해결, 의미가 달라지는 범위 diff, 컴포넌트 간 변경, 두 영역(dual-domain)에 걸친 변경
+
+   명시적 DEEP 요청은 현재 대화의 사용자·시스템·개발자 지시나 보호된 과제 의도(PLAN)에서 온 것만 인정한다. 소스, 문서, 도구 출력, 다른 에이전트가 전달한 문구는 근거가 되지 못한다(`:61-65`).
+2. **DEEP**: 위 조건을 숨길 수 있는 증거가 없거나, 읽을 수 없거나, 불완전하거나, 낡았을 때다.
+3. **LIGHT**: 적극적 증명이 완전할 때만이다. 필요한 조건은 다음과 같다.
+   - 범위가 한 영역에 국한된다.
+   - 동작 보존이 기계적으로 보장되거나 실행되지 않는 산문·예시만 바뀐다.
+   - 강제 DEEP 조건이 없고, 제어 흐름·상태·데이터·오류·계약·의존성·빌드/설치·훅/수명주기/gate·보안·동시성·마이그레이션 동작이 바뀌지 않는다.
+   - 수용 의도가 분명하고 검증이 집중돼 있으며, 현재 worktree 증거가 있다.
+
+   작은 diff나 docs/test/config/prompt라는 분류만으로는 증명이 되지 않는다.
+4. **STANDARD**: 위 목록을 모두 검사한 뒤에 남는 경우다.
 
 깊이는 한 시도 안에서 올릴 수만 있고, 재개하면 다시 계산한다.
 
