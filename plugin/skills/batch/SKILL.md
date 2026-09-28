@@ -220,8 +220,13 @@ of a tip, write "kept, unmerged" for blocked/failed leads and, with the
 commit, dirty worktree, rebase failure); write "integrated, worktree kept"
 with the tip and the `reason` for a `kept` result that carries an
 `integrated_tip` (harvest or removal refusal), or "integrated, branch kept"
-when its `cleanup.removed` is true (`git branch -d` refusal); write "not integrated" for
-closed leads left when integration stopped at `ff-refused` or an error. Note every lead
+when its `cleanup.removed` is true (`git branch -d` refusal). A confirmed
+`integrated_tip` takes precedence over status, including `error` or
+`ff-refused`: report that integration succeeded and include the failure and
+remaining cleanup. For a failed merge attempt with a null tip, inspect
+`reason`: report "integration unknown" when reconciliation could not finish,
+and "not integrated" only when absence was confirmed. Closed leads whose
+integration was never attempted are "not integrated". Note every lead
 whose result has `trailer_present: false`: its commits carry no
 `Harness-Task` trailer. Add a row for every request the
 preflight kept out of the wave: "excluded (ordinary task, done or pending)",

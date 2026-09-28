@@ -368,6 +368,7 @@ def status_entries(repo_dir: str) -> list:
         raise PreflightError(f"git resolves {repo_dir} to another work tree ({top})")
     listing = _git_text(
         repo_dir, "status", "--porcelain", "--ignore-submodules=none",
+        "--untracked-files=all",
         must_read_everything=True,
     )
     return [line for line in listing.splitlines() if line]

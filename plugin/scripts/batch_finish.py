@@ -92,7 +92,9 @@ def _git(cwd: str, *args: str) -> subprocess.CompletedProcess:
     env = _trusted_git_env()
     env.update({key: os.environ[key] for key in IDENTITY_ENV if key in os.environ})
     env["LC_ALL"] = "C"
-    command = ["git", "-c", "core.fsmonitor=false", *args]
+    # Native worktree removal runs its own status check; protect late-arriving
+    # untracked files even when repository config normally hides them.
+    command = ["git", "-c", "core.fsmonitor=false", "-c", "status.showUntrackedFiles=all", *args]
     try:
         return subprocess.run(
             command, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
@@ -135,6 +137,7 @@ def _rebase_in_progress(worktree: str) -> bool:
 def _status_lines(checkout: str) -> list:
     listing = _git_out(
         checkout, "--no-optional-locks", "status", "--porcelain", "--ignore-submodules=none",
+        "--untracked-files=all",
     )
     return [line for line in listing.splitlines() if line]
 
@@ -275,6 +278,29 @@ def _rebase(repo: str, worktree: str, main_head: str, result: dict) -> None:
     raise Outcome("kept", f"the rebase onto {main_head} failed: {_detail(rebased)}{note}")
 
 
+def _removal_failure_note(repo: str, worktree: str, lock, cleanup: dict) -> str:
+    """Restore a retained worktree's lock without hiding the removal failure."""
+    try:
+        listing = _git_out(repo, "worktree", "list", "--porcelain", "-z")
+        registered = any(
+            field.startswith("worktree ")
+            and os.path.realpath(field[len("worktree "):]) == worktree
+            for field in listing.split("\0")
+        )
+        if not registered:
+            cleanup["removed"] = not os.path.lexists(worktree)
+            return "; worktree is no longer registered; branch kept"
+        if cleanup["unlocked"]:
+            relock = ["worktree", "lock"] + (["--reason", lock] if lock else []) + [worktree]
+            locked = _git(repo, *relock)
+            cleanup["relocked"] = locked.returncode == 0
+            if not cleanup["relocked"]:
+                return f"; it could not be locked again and is now unlocked: {_detail(locked)}"
+    except (Exception, KeyboardInterrupt) as exc:
+        return f"; could not confirm removal or restore the original lock: {type(exc).__name__}: {exc}"
+    return ""
+
+
 def _cleanup(repo: str, worktree: str, branch: str, result: dict) -> None:
     cleanup = result["cleanup"]
     lock = _worktree_lock(repo, worktree)
@@ -283,14 +309,14 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict) -> None:
         if unlocked.returncode != 0:
             raise Outcome("kept", f"`git worktree unlock` failed: {_detail(unlocked)}")
         cleanup["unlocked"] = True
-    removed = _git(repo, "worktree", "remove", worktree)
+    try:
+        removed = _git(repo, "worktree", "remove", worktree)
+    except (Exception, KeyboardInterrupt) as exc:
+        note = _removal_failure_note(repo, worktree, lock, cleanup)
+        raise FinishError(f"{type(exc).__name__}: {exc}{note}") from exc
     if removed.returncode != 0:
         reason = f"`git worktree remove` refused, worktree kept: {_detail(removed)}"
-        if cleanup["unlocked"]:
-            relock = ["worktree", "lock"] + (["--reason", lock] if lock else []) + [worktree]
-            cleanup["relocked"] = _git(repo, *relock).returncode == 0
-            if not cleanup["relocked"]:
-                reason += "; it could not be locked again and is now unlocked"
+        reason += _removal_failure_note(repo, worktree, lock, cleanup)
         raise Outcome("kept", reason)
     cleanup["removed"] = True
     deleted = _git(repo, "branch", "-d", branch)
@@ -314,13 +340,25 @@ def finish(repo_root: str, args) -> dict:
         main_head = _check(repo, worktree, args, result)
         _rebase(repo, worktree, main_head, result)
         result["branch_tip"] = _resolve_commit(repo, ref)
-        merged = _git(repo, "merge", "--ff-only", ref)
-        if merged.returncode != 0:
-            raise Outcome("ff-refused", f"`git merge --ff-only {ref}` refused: {_detail(merged)}")
-        head = _git_out(repo, "rev-parse", "--verify", "HEAD").strip()
-        result["integrated_tip"] = head
-        if head != result["branch_tip"]:
-            raise FinishError(f"main HEAD {head} is not the branch tip after the fast-forward")
+        try:
+            merged = _git(repo, "merge", "--ff-only", ref)
+            if merged.returncode != 0:
+                raise Outcome("ff-refused", f"`git merge --ff-only {ref}` refused: {_detail(merged)}")
+            head = _git_out(repo, "rev-parse", "--verify", "HEAD").strip()
+            if head != result["branch_tip"]:
+                raise FinishError(f"main HEAD {head} is not the branch tip after the fast-forward")
+            result["integrated_tip"] = result["branch_tip"]
+        except (Exception, KeyboardInterrupt) as exc:
+            reason = str(exc) or type(exc).__name__
+            try:
+                integrated = _git(repo, "merge-base", "--is-ancestor", result["branch_tip"], "HEAD")
+                if integrated.returncode == 0:
+                    result["integrated_tip"] = result["branch_tip"]
+                elif integrated.returncode != 1:
+                    raise FinishError(_detail(integrated))
+            except (Exception, KeyboardInterrupt) as reconcile_error:
+                reason += f"; integration state unknown: {type(reconcile_error).__name__}: {reconcile_error}"
+            raise Outcome(exc.status if isinstance(exc, Outcome) else "error", reason) from exc
         try:
             result["harvest"] = batch_harvest.harvest(repo, worktree, args.task_id)
         except Exception as exc:  # any harvest failure is local to this lead

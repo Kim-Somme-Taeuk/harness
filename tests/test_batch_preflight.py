@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugin/scripts/batch_preflight.py"
@@ -105,6 +107,31 @@ def _tree_digest(root: Path) -> dict:
 
 
 # ── Control-root shape ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("location", ["main", "nested", "submodule"])
+def test_hidden_untracked_files_refuse_in_every_repository(monkeypatch, tmp_path, location):
+    _isolate(monkeypatch, tmp_path)
+    if location == "nested":
+        main = _with_nested(tmp_path)
+        target, kind, rel = main / "repos/svc", "nested-repo", "repos/svc"
+    elif location == "submodule":
+        main = _with_submodule(tmp_path)
+        target, kind, rel = main / "libs/sub", "submodule", "libs/sub"
+        _git("config", "submodule.libs/sub.ignore", "all", cwd=main)
+    else:
+        main = _repo(tmp_path / "main")
+        target, kind, rel = main, "control-root", "."
+    _git("config", "status.showUntrackedFiles", "no", cwd=target)
+    (target / "untracked.txt").write_text("irreplaceable\n", encoding="utf-8")
+    assert _git("status", "--porcelain", cwd=target) == ""
+    before = _tree_digest(tmp_path)
+
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+
+    assert report["verdict"] == "refuse", report
+    assert (rel, kind) in {(item["repo"], item["kind"]) for item in report["dirty"]}
+    assert _tree_digest(tmp_path) == before
 
 
 def test_plain_repo_with_disjoint_scopes_is_ok(monkeypatch, tmp_path):

@@ -14,7 +14,7 @@ invalidated_by_paths:
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-28T08:01:12Z
+freshness_updated: 2026-09-28T08:17:42Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -155,7 +155,11 @@ freshness_updated: 2026-09-28T08:01:12Z
   resolve in the integration task), `ff-refused` 5 (the main checkout is
   dirty, detached, or refused the fast-forward: stop), `error` 1 (an
   unexpected failure: stop). Whatever the status, a non-null
-  `integrated_tip` means the commits are on the main branch. Usage errors
+  `integrated_tip` means the commits are on the main branch. A failed or
+  interrupted merge attempt reconciles the lead tip against main history
+  without continuing harvest or cleanup. If that check cannot complete,
+  `reason` explicitly reports integration as unknown; a null tip alone is
+  not evidence that integration did not happen. Usage errors
   exit 2 without JSON and change nothing: `--commit` not 7-64 hex
   characters, `--branch` starting with `-` or holding whitespace or any of
   ``~^:?*[\``, `--task-id` not matching `TASK__[A-Za-z0-9._-]+`, a
@@ -174,9 +178,14 @@ freshness_updated: 2026-09-28T08:01:12Z
   Resume does not relate the tip to
   the returned commit, and a rebase drops a commit that becomes empty, so
   the coordinator checks the resolved branch before resuming.
-- When `git worktree remove` refuses after the script released the agent
-  lock, it locks the worktree again with the original reason, so a kept
-  worktree stays protected from `git worktree prune`.
+- Cleanliness checks explicitly include untracked files, irrespective of
+  `status.showUntrackedFiles`. Native worktree removal also overrides that
+  setting, so an untracked file introduced after the check still refuses
+  removal. Ignored task evidence is harvested before removal as above.
+- When `git worktree remove` refuses or raises after the script released the
+  agent lock, it attempts to restore the original lock reason on a retained
+  registered worktree. The original failure and any failed restoration are
+  reported; restoration is best effort, not a guarantee against pruning.
 - `trailer_present` is true when every commit between the main HEAD and the
   lead tip carries `Harness-Task: <task_id>`, false when one does not, and
   null when that range is empty or was not read. It is reported, not
@@ -422,10 +431,9 @@ Stop-gap rules (current):
   configured clean filters, as any status there does. Nested repos in the
   user's project are trusted like the main checkout; refusing filter configs
   would falsely refuse git-lfs repos.
-- Known limit: the clean check is literally `git status --porcelain`, so
-  `status.showUntrackedFiles=no` in the main checkout, a submodule, or a
-  nested repo hides that repo's untracked files and the preflight does not
-  refuse for them.
+- Preflight cleanliness checks explicitly include untracked files in the
+  main checkout, submodules and nested repos, overriding
+  `status.showUntrackedFiles=no`.
 - Known limit: the preflight checks repository shape, scopes, and
   cleanliness, not HEAD state or earlier waves. A main checkout on a detached
   HEAD or in the middle of a rebase, merge, cherry-pick, revert, or bisect
@@ -572,7 +580,14 @@ stop-gap above applies.
   `--resume` rerun finishes it once fixed; a crash after the fast-forward
   is `error` that still carries `integrated_tip`; unlock runs only for a
   locked worktree; a removal refusal after unlock relocks with the original
-  reason, and a failed relock says the worktree is unlocked; a `branch -d`
+  reason, and a returned relock refusal says the worktree is unlocked;
+  exceptional relock failures preserve both causes and report inability to
+  confirm restoration. Hidden untracked files in the lead, main checkout,
+  or introduced after harvest survive despite `status.showUntrackedFiles=no`.
+  A real post-merge hook timeout retains the integrated tip without cleanup;
+  unavailable reconciliation reports unknown integration. Removal exceptions
+  restore the original lock when possible; a removal completed before an
+  exception records removal and retains the branch. A `branch -d`
   refusal is `kept` after removal and names the manual `git branch -d`;
   `--resume` integrates a lead resolved by
   hand while the plain call keeps it; an identity only in the environment

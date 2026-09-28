@@ -8,6 +8,12 @@ invalid-byte payloads and Codex child failures. It also aligns contracts, CI and
 the Harness guide with current behavior. The complete recovered diff requires
 fresh review and QA; original lead receipts are not carried.
 
+The completion helper also protects untracked files when Git is configured to
+hide them, reconciles actual integration after a merge timeout, and attempts to
+restore the worktree lock after exceptional removal failures. Preflight uses
+the same explicit untracked-file check. Unknown integration and failed lock
+restoration remain visible in the result instead of implying successful cleanup.
+
 ## Known ceiling
 
 - Killing the entire hook, fallback failure, or memory exhaustion can still allow

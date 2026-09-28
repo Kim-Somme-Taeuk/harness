@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugin/scripts/batch_finish.py"
@@ -693,3 +695,163 @@ def test_ambient_git_environment_cannot_redirect_it(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
     result = lead.finish()
     assert result["status"] == "integrated", result
+
+
+@pytest.mark.parametrize("location", ["lead", "main"])
+def test_hidden_untracked_files_refuse_before_integration(tmp_path, monkeypatch, location):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "hidden")
+    lead.commit_files({"change.txt": "committed\n"})
+    original = _head(main)
+    _git("config", "status.showUntrackedFiles", "no", cwd=main)
+    target = (lead.worktree if location == "lead" else main) / "untracked.txt"
+    _write(target, "irreplaceable\n")
+    assert _git("status", "--porcelain", cwd=target.parent) == ""
+
+    result = lead.finish()
+
+    assert result["status"] == ("kept" if location == "lead" else "ff-refused"), result
+    _assert_untouched(lead, original)
+    assert target.read_text() == "irreplaceable\n"
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+
+
+def test_hidden_untracked_file_created_after_harvest_survives_removal(tmp_path, monkeypatch):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "late-hidden")
+    lead.commit_files({"change.txt": "committed\n"})
+    _git("config", "status.showUntrackedFiles", "no", cwd=main)
+    real_harvest = mod.batch_harvest.harvest
+    target = lead.worktree / "late-untracked.txt"
+
+    def harvest_then_write(*args):
+        result = real_harvest(*args)
+        _write(target, "irreplaceable\n")
+        return result
+
+    monkeypatch.setattr(mod.batch_harvest, "harvest", harvest_then_write)
+    result = lead.finish()
+    assert result["status"] == "kept", result
+    assert result["integrated_tip"] == _head(main) == lead.commit
+    assert target.read_text() == "irreplaceable\n"
+    assert not result["cleanup"]["removed"]
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+    assert _tip(main, lead.branch) == lead.commit
+
+
+def test_real_post_merge_hook_timeout_reports_integrated_tip_without_cleanup(tmp_path, monkeypatch):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "hook-timeout")
+    lead.commit_files({"change.txt": "committed\n"})
+    hook = main / ".git/hooks/post-merge"
+    _write(hook, "#!/bin/sh\nexec sleep 0.5\n")
+    hook.chmod(0o755)
+    real_run = subprocess.run
+
+    def shorten_merge_timeout(command, *args, **kwargs):
+        if "merge" in command and "--ff-only" in command:
+            kwargs["timeout"] = 0.2
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", shorten_merge_timeout)
+    result = lead.finish()
+    assert _head(main) == lead.commit  # real Git advanced HEAD before the timeout
+    assert result["status"] != "integrated", result
+    assert result["integrated_tip"] == lead.commit, result
+    assert "tim" in result["reason"].lower()
+    assert not (main / "doc/harness/archive/batch" / lead.task_id).exists()
+    assert not any(result["cleanup"].values())
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+
+
+def test_failed_merge_reconciliation_reports_unknown_and_preserves_evidence(tmp_path, monkeypatch):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "unknown")
+    lead.commit_files({"change.txt": "committed\n"})
+    real_run = subprocess.run
+    interrupted = False
+
+    def lose_git_after_merge(command, *args, **kwargs):
+        nonlocal interrupted
+        if "merge" in command and "--ff-only" in command:
+            completed = real_run(command, *args, **kwargs)
+            assert completed.returncode == 0
+            interrupted = True
+            raise subprocess.TimeoutExpired(command, 1)
+        if interrupted:
+            raise OSError("reconciliation unavailable")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", lose_git_after_merge)
+    result = lead.finish()
+    monkeypatch.setattr(subprocess, "run", real_run)
+    assert _head(main) == lead.commit
+    assert result["integrated_tip"] is None
+    assert "unknown" in result["reason"].lower(), result
+    assert "reconciliation unavailable" in result["reason"]
+    assert not any(result["cleanup"].values())
+    assert not (main / "doc/harness/archive/batch" / lead.task_id).exists()
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+
+
+@pytest.mark.parametrize("failure", ["timeout", "oserror"])
+@pytest.mark.parametrize("relock_fails", [False, True])
+def test_exceptional_removal_restores_lock_and_preserves_failure(
+    tmp_path, monkeypatch, failure, relock_fails,
+):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "remove-error")
+    lead.commit_files({"change.txt": "committed\n"})
+    real_run = subprocess.run
+
+    def remove_raises(command, *args, **kwargs):
+        if "worktree" in command and "remove" in command:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, 1)
+            raise OSError("removal unavailable")
+        if relock_fails and "worktree" in command and "lock" in command:
+            raise OSError("relock unavailable")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", remove_raises)
+    result = lead.finish()
+    assert result["status"] != "integrated", result
+    assert result["integrated_tip"] == _head(main) == lead.commit
+    assert ("tim" in result["reason"].lower() if failure == "timeout"
+            else "removal unavailable" in result["reason"]), result
+    assert result["cleanup"]["unlocked"]
+    assert result["cleanup"]["relocked"] is not relock_fails
+    assert not result["cleanup"]["removed"]
+    assert not result["cleanup"]["branch_deleted"]
+    assert lead.worktree.is_dir()
+    assert _tip(main, lead.branch) == lead.commit
+    if relock_fails:
+        assert "relock unavailable" in result["reason"]
+        assert "could not" in result["reason"] and "lock" in result["reason"]
+        assert _lock_reason(main, lead.worktree) is None
+    else:
+        assert _lock_reason(main, lead.worktree) == LOCK_REASON
+
+
+def test_removal_completed_before_exception_is_reported_without_deleting_branch(tmp_path, monkeypatch):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "removed-error")
+    lead.commit_files({"change.txt": "committed\n"})
+    real_run = subprocess.run
+
+    def remove_then_timeout(command, *args, **kwargs):
+        completed = real_run(command, *args, **kwargs)
+        if "worktree" in command and "remove" in command:
+            assert completed.returncode == 0
+            raise subprocess.TimeoutExpired(command, 1)
+        return completed
+
+    monkeypatch.setattr(subprocess, "run", remove_then_timeout)
+    result = lead.finish()
+    assert result["status"] != "integrated", result
+    assert result["integrated_tip"] == _head(main) == lead.commit
+    assert not lead.worktree.exists()
+    assert result["cleanup"]["removed"]
+    assert not result["cleanup"]["relocked"]
+    assert not result["cleanup"]["branch_deleted"]
+    assert _tip(main, lead.branch) == lead.commit
