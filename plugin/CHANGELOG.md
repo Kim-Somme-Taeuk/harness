@@ -44,7 +44,7 @@ All notable changes to the harness Claude Code plugin.
   See `doc/harness/patterns/ADR__within-task-parallel-width.md`.
 - **Batch finish helper** — `batch_finish.py` checks a closed lead, rebases and
   fast-forwards it, harvests evidence, and reports partial integration or cleanup
-  failures without forcing removal. Leads use a one-hour prompt cache and a
+  failures without forcing removal. Leads request a one-hour prompt cache and a
   `Harness-Task` commit trailer. Preflight checks the actual worktree ignore path.
 - **Batch integration review scope** — Claude may carry a closed lead's proven
   patch-equivalent range; the reviewer verifies every carry and sweeps the residual.

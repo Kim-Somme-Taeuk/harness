@@ -1651,7 +1651,7 @@ host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit�
 ### 10.6 알려진 한계
 
 - b.4의 이유: worktree가 제거된 뒤 늦게 도착한 lens SubagentStop은 cwd를 main으로 해석한다. main에 열린 과제가 있으면 그 과제에 기록될 수 있다.
-- helper는 잠긴 worktree만 unlock하고 remove 실패 시 원래 이유로 relock을 시도하며 실패도 보고한다. 실행 중인 lead는 unlock하지 않는다(`batch_finish.py`의 `_cleanup`).
+- helper는 잠긴 worktree만 unlock하고 remove 실패 시 원래 이유로 relock을 시도하며 실패도 보고한다. 실행 중인지 직접 판별하지 않으므로 코디네이터는 lead가 반환한 뒤에만 helper를 호출해야 한다(`batch_finish.py`의 `_cleanup`, REQ § Known limits).
 - preflight의 `worktrees_ignore`는 symlink를 푼 뒤 git이 보는 경로를 검사한다. 저장소 밖으로 나가는 경로는 통과하며, 안쪽 경로가 ignore되지 않았으면 refuse한다(`batch_preflight.py`의 `worktrees_ignore`).
 - preflight가 잡지 못하는 것: `status.showUntrackedFiles=no`가 숨긴 변경, detached HEAD, rebase/merge 진행 중 상태, 남겨 둔 blocked worktree와 새 scope의 겹침. finish helper는 main detached HEAD와 lead의 진행 중 rebase를 별도로 거부한다.
 - submodule(git 2.43): 한번 초기화하면 plain remove가 계속 거부된다. `--force`는 모듈 저장소를 지운다. `deinit`은 공유 `.git/config`를 다시 쓴다. merge는 submodule checkout을 갱신하지 않는다. 완전 지원은 미뤄졌다.
