@@ -1848,6 +1848,7 @@ def test_watch_drains_oversized_non_evidence_record_and_reads_next_line(
         "session_id": root_id, "id": root_id, "cwd": str(repo),
         "thread_source": "user",
     }}).encode()
+    monkeypatch.setattr(mod, "MAX_LINE_BYTES", 1024)
     oversized = json.dumps({
         "type": "event_msg",
         "payload": {"type": "item_completed", "stdout": "x" * (mod.MAX_LINE_BYTES + 1)},
@@ -1860,11 +1861,23 @@ def test_watch_drains_oversized_non_evidence_record_and_reads_next_line(
     # Neither may become a manager worker error: task_context treats that
     # channel as a proven receipt failure and would suppress the first review.
     errors = []
+    stop = mod.threading.Event()
+    parsed = []
+    original_load = mod._load_json_line
+
+    def observe_next_line(raw):
+        if raw == b"not-json\n":
+            parsed.append(raw)
+            stop.set()
+        return original_load(raw)
+
+    monkeypatch.setattr(mod, "_load_json_line", observe_next_line)
     assert mod.watch(
                 str(repo), root_id, str(rollout), len(session_meta) + 1,
-                stop_event=mod.threading.Event(), idle_seconds=0.05,
+                stop_event=stop, idle_seconds=1.0,
                 on_error=errors.append,
     ) == 0
+    assert parsed == [b"not-json\n"]
     assert errors == []
 
 
@@ -2571,3 +2584,306 @@ def test_watch_keeps_failed_invalidation_sticky_after_independent_receipt(
     )
     assert not any(item.get("verdict") == "PENDING" for item in receipts)
     assert errors[-1].endswith("persistent pending receipt failure")
+
+
+def _bound_lifecycle_fixture(tmp_path, monkeypatch):
+    mod = _load()
+    codex_home = tmp_path / '.codex'
+    monkeypatch.setenv('CODEX_HOME', str(codex_home))
+    repo = tmp_path / 'repo'
+    (repo / '.git').mkdir(parents=True)
+    root_id = '019f825b-f25f-70c3-8ee8-071f79fa1c42'
+    child_id = '019f82a6-ce64-75a3-b01d-92f7b0b4fe6f'
+    agent_path = '/root/code_review_binding'
+    rollout = _rollout_path(codex_home, root_id)
+    _write_jsonl(rollout, [{'type': 'session_meta', 'payload': {
+        'session_id': root_id, 'id': root_id, 'cwd': str(repo), 'thread_source': 'user',
+    }}])
+    task_id, run_id = _write_exact_session_binding(repo, root_id)
+    assert mod.ensure(str(repo), root_id, task_id=task_id, run_id=run_id)
+    registration = json.loads(mod._state_path(str(repo), root_id).read_text())
+    final = 'VERDICT: PASS\nFINDING_COUNTS: FIX_NOW=0 INVESTIGATE=0 OPTIONAL=0'
+    _write_jsonl(_rollout_path(codex_home, child_id),
+                 _child_events(root_id, child_id, agent_path, str(repo), final))
+    with rollout.open('a', encoding='utf-8') as handle:
+        for event in [*_spawn_events(root_id, child_id, 'code_review_binding', agent_path),
+                      _delivery(agent_path, final)]:
+            handle.write(json.dumps(event) + '\n')
+    monkeypatch.setattr(mod, 'POLL_SECONDS', 0.005)
+    return mod, repo, root_id, agent_path, registration
+
+
+def _binding_read_stage():
+    # Identify existing lifecycle entry points, allowing a shared binding reader
+    # to be inserted between the entry point and the injected filesystem fault.
+    frame = sys._getframe(1)
+    while frame:
+        if frame.f_code.co_name in {'feed', '_maybe_start', '_maybe_complete', 'watch'}:
+            return frame.f_code.co_name
+        frame = frame.f_back
+    return ''
+
+
+def _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, stage, occurrence, empty_reads=1):
+    mod, repo, root_id, agent_path, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    original_binding = mod._active_task_binding_for_session
+    receipts = []
+    reads = 0
+    injected = False
+    last_read_available = True
+    uncertain_writes = []
+    manager = mod.WatcherManager(str(repo), scan_seconds=0.05)
+
+    def binding(*args):
+        nonlocal reads, injected, last_read_available
+        if _binding_read_stage() == stage:
+            reads += 1
+            if occurrence <= reads < occurrence + empty_reads:
+                injected = True
+                last_read_available = False
+                return {}
+        result = original_binding(*args)
+        last_read_available = bool(result)
+        return result
+
+    def record(task_dir, item):
+        if not last_read_available:
+            uncertain_writes.append(dict(item))
+        assert last_read_available, 'uncertain binding must not authorize a receipt'
+        assert Path(task_dir).name == registration['task_id']
+        receipts.append(dict(item))
+        if item['event'] == 'completed':
+            manager.stop_event.set()
+        return item
+
+    with mock.patch.object(mod, '_active_task_binding_for_session', side_effect=binding), \
+         mock.patch.object(mod, 'receipt_snapshot', side_effect=lambda _td: _snapshot(receipts)), \
+         mock.patch.object(mod, 'record_subagent_receipt', side_effect=record):
+        manager.start()
+        try:
+            manager.thread.join(timeout=1.5)
+        finally:
+            manager.stop()
+        assert injected, (stage, occurrence, reads)
+        assert uncertain_writes == []
+        assert [(r['event'], r.get('verdict', '')) for r in receipts] == [
+            ('started', ''), ('completed', 'PASS'),
+        ]
+        assert all(r['task_run_id'] == registration['run_id'] for r in receipts)
+        assert all(r['agent_id'] == agent_path for r in receipts)
+        assert all(r['source'] == 'codex_session_watcher:collaboration' for r in receipts)
+        assert receipts[0]['runtime_id'] == receipts[1]['runtime_id']
+        assert manager.worker_error(root_id) == ''
+        # Replaying exactly the persisted checkpoint must recover the same pair
+        # without appending either lifecycle record a second time.
+        with mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('duplicate receipt')) as replay_record:
+            assert mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
+                             task_id=registration['task_id'], run_id=registration['run_id'],
+                             idle_seconds=0.03, stop_event=mod.threading.Event(), recovering=True) == 0
+            replay_record.assert_not_called()
+        assert len(receipts) == 2
+
+
+def test_manager_recovers_one_empty_outer_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, 'watch', 1)
+
+
+def test_manager_recovers_one_empty_spawn_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, 'feed', 1)
+
+
+def test_manager_recovers_one_empty_start_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_start', 1)
+
+
+def test_manager_recovers_one_empty_start_transaction_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_start', 2)
+
+
+def test_manager_recovers_one_empty_start_publication_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_start', 3)
+
+
+def test_manager_recovers_one_empty_completion_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_complete', 1)
+
+
+def test_manager_recovers_one_empty_completion_publication_binding(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_complete', 2)
+
+
+def test_bound_watch_sustained_empty_binding_fails_boundedly_without_receipts(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    errors = []
+    started = time.monotonic()
+    with mock.patch.object(mod, '_active_task_binding_for_session', return_value={}) as binding, \
+         mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('uncertain receipt')):
+        result = mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
+                           task_id=registration['task_id'], run_id=registration['run_id'],
+                           idle_seconds=0.1, on_error=errors.append)
+    assert result != 0
+    assert time.monotonic() - started < 1.0
+    assert 1 <= binding.call_count <= 30
+    assert errors and any('binding' in e.lower() and 'unavailable' in e.lower() for e in errors)
+    assert all('corrupt' not in e.lower() for e in errors)
+
+
+def test_bound_watch_unknown_preserves_stop_and_inherited_idle_deadline(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    with mock.patch.object(mod, '_active_task_binding_for_session', return_value={}) as binding, \
+         mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('uncertain receipt')):
+        stop = mod.threading.Event()
+        stop.set()
+        started = time.monotonic()
+        mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
+                  task_id=registration['task_id'], run_id=registration['run_id'], stop_event=stop)
+        assert time.monotonic() - started < 0.5
+        os.utime(registration['rollout'], (time.time() - 10, time.time() - 10))
+        mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
+                  task_id=registration['task_id'], run_id=registration['run_id'], idle_seconds=0.1)
+        assert binding.call_count == 0
+
+
+def test_bound_watch_validated_different_task_or_run_retires_normally(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    task = repo / 'doc/harness/tasks' / registration['task_id']
+    for different in ({'task_dir': str(task), 'run_id': PRIOR_RUN_ID},
+                      {'task_dir': str(task.with_name('TASK__different')), 'run_id': RUN_ID}):
+        with mock.patch.object(mod, '_active_task_binding_for_session', return_value=different), \
+             mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('wrong generation')):
+            assert mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
+                             task_id=registration['task_id'], run_id=registration['run_id'], idle_seconds=0.1) == 0
+
+
+def test_task_control_path_replacement_rejects_binding_then_recovers(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    import _lib
+    task = repo / 'doc/harness/tasks' / registration['task_id']
+    control = task / 'TASK.json'
+    original_open = _lib.os.open
+    replaced = False
+
+    def replace_between_stat_and_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if os.fspath(path) == str(control) and not replaced:
+            replaced = True
+            replacement = control.with_suffix('.replacement')
+            replacement.write_bytes(control.read_bytes())
+            replacement.replace(control)
+        return original_open(path, flags, *args, **kwargs)
+
+    with mock.patch.object(_lib.os, 'open', side_effect=replace_between_stat_and_open):
+        assert mod._active_task_binding_for_session(str(repo), root_id) == {}
+    assert replaced
+    assert mod._active_task_binding_for_session(str(repo), root_id) == _active_binding(task)
+
+
+def test_manager_revalidates_before_recovering_unknown_worker(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    original_binding = mod._active_task_binding_for_session
+    unknown = True
+    receipts = []
+    manager = mod.WatcherManager(str(repo), scan_seconds=0.05)
+
+    def binding(*args):
+        if unknown and _binding_read_stage():
+            return {}
+        return original_binding(*args)
+
+    def record(_td, item):
+        assert not unknown
+        receipts.append(dict(item))
+        if item['event'] == 'completed':
+            manager.stop_event.set()
+        return item
+
+    marker = repo / 'doc/harness/tasks/.active_sessions' / f'{root_id}.json'
+    original_marker = marker.read_bytes()
+    with mock.patch.object(mod, '_active_task_binding_for_session', side_effect=binding), \
+         mock.patch.object(mod, 'receipt_snapshot', side_effect=lambda _td: _snapshot(receipts)), \
+         mock.patch.object(mod, 'record_subagent_receipt', side_effect=record):
+        try:
+            assert manager.scan_once() == 1
+            worker = manager.workers[root_id]
+            worker.join(timeout=1)
+            assert not worker.is_alive(), 'sustained uncertainty must release the lease boundedly'
+            assert manager.worker_results[root_id] != 0
+            diagnostic = manager.worker_error(root_id)
+            assert diagnostic
+            assert receipts == []
+            # Recovery must independently validate persisted authority, even
+            # after its previous worker failed rather than retired normally.
+            marker.unlink()
+            unknown = False
+            assert manager.scan_once() == 0
+            assert manager.worker_error(root_id) == diagnostic
+            marker.write_bytes(original_marker)
+            assert manager.scan_once() == 1
+            manager.workers[root_id].join(timeout=1)
+            assert [r['event'] for r in receipts] == ['started', 'completed']
+            assert manager.worker_error(root_id) == ''
+            assert all(r['task_run_id'] == registration['run_id'] for r in receipts)
+        finally:
+            manager.stop()
+
+
+def test_conflict_fence_new_registration_does_not_replay_ambiguous_lifecycle(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    # Fixture lifecycle is already appended after the old immutable offset.
+    # A known conflict invalidates that registration before recovery can use it.
+    marker = repo / 'doc/harness/tasks/.active_sessions' / f'{root_id}.json'
+    marker.unlink()
+    assert mod.invalidate_registration(str(repo), root_id)
+    manager = mod.WatcherManager(str(repo))
+    assert manager.scan_once() == 0
+    _write_exact_session_binding(repo, root_id)
+    assert mod.ensure(str(repo), root_id, task_id=registration['task_id'], run_id=registration['run_id'])
+    rebound = json.loads(mod._state_path(str(repo), root_id).read_text())
+    assert rebound['offset'] > registration['offset']
+    assert rebound['offset'] == Path(registration['rollout']).stat().st_size
+    with mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('ambiguous replay')) as record:
+        assert mod.watch(str(repo), root_id, rebound['rollout'], rebound['offset'],
+                         task_id=rebound['task_id'], run_id=rebound['run_id'], idle_seconds=0.03) == 0
+        record.assert_not_called()
+
+
+def test_manager_replays_spawn_after_exhausted_binding_reads(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, 'feed', 1, empty_reads=3)
+
+
+def test_manager_replays_start_publication_after_exhausted_binding_reads(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_start', 3, empty_reads=3)
+
+
+def test_manager_replays_completion_publication_after_exhausted_binding_reads(tmp_path, monkeypatch):
+    _assert_manager_recovers_empty_binding(tmp_path, monkeypatch, '_maybe_complete', 2, empty_reads=3)
+
+
+def test_manager_sustained_unknown_keeps_scan_cadence_and_stops(tmp_path, monkeypatch):
+    mod, repo, root_id, _, _ = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    original_binding = mod._active_task_binding_for_session
+    observed = mod.threading.Event()
+    worker_threads = set()
+    manager = mod.WatcherManager(str(repo), scan_seconds=0.05)
+
+    def binding(*args):
+        if _binding_read_stage():
+            worker_threads.add(mod.threading.current_thread())
+            observed.set()
+            return {}
+        return original_binding(*args)
+
+    with mock.patch.object(mod, '_active_task_binding_for_session', side_effect=binding), \
+         mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('uncertain receipt')):
+        manager.start()
+        try:
+            assert observed.wait(timeout=1)
+            # Real failed watch workers must wait for the manager scan cadence;
+            # failure must not turn into an unbounded immediate restart loop.
+            mod.threading.Event().wait(0.16)
+        finally:
+            manager.stop()
+    assert 1 <= len(worker_threads) <= 5
+    assert not manager.is_running()
+    assert all(not worker.is_alive() for worker in worker_threads)
+    assert manager.worker_error(root_id)

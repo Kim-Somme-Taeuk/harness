@@ -63,6 +63,7 @@ IDLE_SECONDS = 8 * 60 * 60
 REGISTRATION_TTL_SECONDS = IDLE_SECONDS
 MAX_WATCHER_THREADS = 16
 MAX_RECORD_OBSERVATION_ATTEMPTS = 3
+MAX_BINDING_READ_ATTEMPTS = 3
 RUNTIME_SUBDIR = os.path.join("harness", "codex-watchers")
 REGISTRATION_VERSION = 12
 REGISTRATION_OWNER = "codex_root_hook"
@@ -801,6 +802,21 @@ def _active_task_binding_for_session(repo_root: str, root_id: str) -> dict[str, 
     }
 
 
+class _BindingUnavailable(RuntimeError):
+    """An unknown binding must retry the worker, never discard a record."""
+
+
+def _require_task_binding(repo_root: str, root_id: str) -> dict[str, str]:
+    # Re-read from trusted storage without caching authority or sleeping while
+    # a caller holds the publication transaction. Persistent uncertainty exits
+    # to the manager, which independently validates the registration on retry.
+    for _ in range(MAX_BINDING_READ_ATTEMPTS):
+        binding = _active_task_binding_for_session(repo_root, root_id)
+        if binding.get("task_dir") and binding.get("run_id"):
+            return binding
+    raise _BindingUnavailable("binding unavailable")
+
+
 def _event_precedes_run(event: dict[str, Any], run_id: str) -> bool:
     if not run_id:
         return False
@@ -1163,7 +1179,7 @@ class Watcher:
         if item.get("invalid") or item.get("started"):
             return
         task_dir = str(item.get("task_dir") or "")
-        binding = _active_task_binding_for_session(self.repo_root, self.root_id)
+        binding = _require_task_binding(self.repo_root, self.root_id)
         active_task = binding.get("task_dir")
         lens = _infer_receipt_lens(item["task_name"])
         if (
@@ -1178,7 +1194,7 @@ class Watcher:
         runtime_id = _codex_runtime_id(self.root_id, call_id, item["child_id"])
         source = self._receipt_source(item)
         with active_session_transaction(self.repo_root):
-            binding = _active_task_binding_for_session(self.repo_root, self.root_id)
+            binding = _require_task_binding(self.repo_root, self.root_id)
             if (
                 binding.get("task_dir") != task_dir
                 or binding.get("run_id") != item.get("task_run_id")
@@ -1216,7 +1232,7 @@ class Watcher:
             self._invalidate(item, "child evidence was invalid at start capture")
             return
         with active_session_transaction(self.repo_root):
-            binding = _active_task_binding_for_session(self.repo_root, self.root_id)
+            binding = _require_task_binding(self.repo_root, self.root_id)
             if (
                 binding.get("task_dir") != task_dir
                 or binding.get("run_id") != item.get("task_run_id")
@@ -1258,7 +1274,7 @@ class Watcher:
         root_final = str(item.get("root_final") or "")
         if not root_final or item.get("completed") or item.get("invalid"):
             return
-        binding = _active_task_binding_for_session(self.repo_root, self.root_id)
+        binding = _require_task_binding(self.repo_root, self.root_id)
         current_task = binding.get("task_dir")
         if (
             current_task != item.get("task_dir")
@@ -1289,7 +1305,7 @@ class Watcher:
             return
         lens = _infer_receipt_lens(item["task_name"])
         with active_session_transaction(self.repo_root):
-            binding = _active_task_binding_for_session(self.repo_root, self.root_id)
+            binding = _require_task_binding(self.repo_root, self.root_id)
             if (
                 binding.get("task_dir") != item.get("task_dir")
                 or binding.get("run_id") != item.get("task_run_id")
@@ -1334,14 +1350,8 @@ class Watcher:
         if spawn:
             call_id, task_name = spawn
             item = self.calls.setdefault(call_id, {})
-            binding = _active_task_binding_for_session(self.repo_root, self.root_id)
+            binding = _require_task_binding(self.repo_root, self.root_id)
             active_task = binding.get("task_dir")
-            if (
-                not active_task
-                or not binding.get("run_id")
-            ):
-                item["invalid"] = True
-                return
             if _event_precedes_run(event, binding.get("run_id", "")):
                 item["invalid"] = True
                 return
@@ -1505,6 +1515,8 @@ def watch(
                 watcher.receipt_progress,
                 watcher.replay_recovery_progress,
             ) = state
+            if isinstance(exc, _BindingUnavailable):
+                raise
             observation_failed = True
             detail = " ".join(str(exc).split())[:240]
             notify(f"{type(exc).__name__}: {detail}".rstrip())
@@ -1524,7 +1536,7 @@ def watch(
         handle.seek(max(0, offset))
         while not stop_event.is_set() and time.monotonic() - last_data < idle_seconds:
             if task_id or run_id:
-                binding = _active_task_binding_for_session(repo_root, thread_id)
+                binding = _require_task_binding(repo_root, thread_id)
                 if (
                     os.path.basename(str(binding.get("task_dir") or "")) != task_id
                     or binding.get("run_id") != run_id
@@ -1598,6 +1610,9 @@ def watch(
                 continue
             failed_position = None
             failed_attempts = 0
+    except _BindingUnavailable:
+        notify("binding unavailable")
+        return 5
     finally:
         handle.close()
     return 0
@@ -1665,7 +1680,10 @@ class WatcherManager:
                 recovering=recovering,
             )
             if result != 0:
-                note_error(f"watcher exited with status {result}")
+                note_error(
+                    "binding unavailable" if result == 5
+                    else f"watcher exited with status {result}"
+                )
         except Exception as exc:
             result = 4
             note_error(f"{type(exc).__name__}: {' '.join(str(exc).split())[:240]}".rstrip())

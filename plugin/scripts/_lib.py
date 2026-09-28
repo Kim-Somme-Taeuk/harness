@@ -4882,12 +4882,22 @@ def emit_compact_context(task_dir, snapshot=None):
         else:
             missing_for_close.append("completed QA verdict PASS")
 
+    remedied_fail_guidance = (
+        " Only if the finding has already been remedied and subsequent required "
+        "review PASS followed by QA PASS actually arrived, with no unresolved "
+        "actual FAIL or BLOCKED_ENV, may missing remedial receipts take the "
+        "missing-attestation path. Label unreceipted finals NON-ATTESTING; they "
+        "do not change receipt-derived FAIL or authorize task_close. "
+        f"{TRUST_BOUNDARY} {attestation_endgame()}"
+    )
     if not has_plan and not micro_loop:
         next_action = "Create PLAN.md via plan skill before source writes."
     elif review_verdict == "FAIL":
         next_action = (
             "A required review receipt reports FAIL. Remediate the finding and "
-            "run a fresh review because the implementation changed; do not start QA yet."
+            "run a fresh review because the implementation changed; do not start QA "
+            "until actual required review PASS."
+            + remedied_fail_guidance
         )
     elif review_verdict == "BLOCKED_ENV":
         next_action = (
@@ -4908,6 +4918,7 @@ def emit_compact_context(task_dir, snapshot=None):
         next_action = (
             "A required QA receipt reports FAIL. Remediate the finding, then restore "
             "fresh ordered review and QA evidence because the implementation changed."
+            + remedied_fail_guidance
         )
     elif runtime_verdict == "BLOCKED_ENV":
         next_action = (
