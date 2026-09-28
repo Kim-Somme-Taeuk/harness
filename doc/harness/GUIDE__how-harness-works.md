@@ -2292,6 +2292,6 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 | `CONTRIBUTING.md:71` | `/harness:run <slug>`로 실행 | Claude에서 run은 `user-invocable: false` |
 | `.github/workflows/tests.yml:18-34` | Python 3.11 + pytest | pyproject는 ≥3.12, addopts는 xdist 필요 |
 | README 에이전트 표 | ac-worker, documentation-review 누락, "좁은 tool 표면" | 둘 다 존재하고 스폰된다. task-lead는 전부 상속 |
-| root `CLAUDE.md` | "hygiene scheduling" | 서브시스템 제거됨 |
+| root `CLAUDE.md` | "hygiene scheduling" | 어느 기능을 가리키는지 적혀 있지 않다. 제거된 문서 보관·계약 드리프트 서브시스템인지, 유지된 `promote_learnings` 점검(`plugin/CLAUDE.md:291`의 post-close hygiene audit)인지 불분명하다(§13.8, `ADR__remove-hygiene-subsystem.md:72-84`) |
 
 어긋남을 발견하면 규칙을 몰래 건너뛰지 말고 **규칙(문서나 코드)을 고치는 과제**를 연다(`CONTRACTS.md` § 0).
