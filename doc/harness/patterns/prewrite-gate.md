@@ -160,9 +160,10 @@ Known limits:
   control root and is denied by `symlink-outside-control`, even for an
   ordinary source file, before the cross-checkout branch runs. A session
   working in such a worktree writes under its own root and is unaffected;
-  otherwise use the worktree's real path. (For `harness:batch`, batch
-  preflight refuses that layout; see the known limit in
-  `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`.)
+  otherwise use the worktree's real path. For `harness:batch`, preflight
+  accepts external targets as `outside-repo`; an internal target is checked
+  for ignore coverage at the path Git sees. This does not bypass the direct
+  write gate above. See `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`.
 
 ## Workflow-control-surface
 
