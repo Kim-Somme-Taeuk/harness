@@ -2092,7 +2092,12 @@ class HarnessMcpServerTests(unittest.TestCase):
                 )
 
             self.assertNotIn("isError", result)
-            self.assertEqual(snapshot.call_count, 1)
+            # Readiness diagnostics may inspect other live-checkout tasks.
+            # The resume contract is one snapshot for this task, not globally.
+            resumed_reads = [
+                call for call in snapshot.call_args_list if call.args == (task_dir,)
+            ]
+            self.assertEqual(len(resumed_reads), 1)
 
     def test_task_start_fresh_run_rotates_generation_and_discards_old_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
