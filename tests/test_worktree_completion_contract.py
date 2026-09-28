@@ -76,7 +76,7 @@ def test_batch_loads_policy_before_helper_and_recovery_does_not_forge_closed():
 
 def test_normal_route_is_linear_and_preserves_source_evidence():
     phase = _shared("Normal integration and disposal")
-    assert phase.index("git -c rebase.updateRefs=false rebase --no-autostash <destination-tip>") < phase.index("git merge --ff-only <source-branch>") < phase.index("git worktree remove <path>") < phase.index("git branch -d <branch>")
+    assert phase.index("git -c rebase.updateRefs=false rebase --no-autostash <destination-tip>") < phase.index("git merge --ff-only refs/heads/<source-branch>") < phase.index("git worktree remove <path>") < phase.index("git branch -d <branch>")
     assert "Never create a merge commit or fall back to one" in phase
     assert "never stash, force-push" in phase
     assert "Never use `--force`, forced branch deletion, `git reset --hard`, or `git clean`" in phase

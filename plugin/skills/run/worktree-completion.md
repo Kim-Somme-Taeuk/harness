@@ -42,7 +42,7 @@ This is coordinator procedure, not a Git-state gate in `task_close`.
    never a lossy rebase that silently drops its changes.
 2. Rebase the source branch onto the recorded destination tip with
    `git -c rebase.updateRefs=false rebase --no-autostash <destination-tip>`
-   in the source worktree, then use `git merge --ff-only <source-branch>`
+   in the source worktree, then use `git merge --ff-only refs/heads/<source-branch>`
    in the destination checkout. Never create a merge
    commit or fall back to one. On conflict or refusal, preserve the work,
    resolve under the integration task and retry; never stash, force-push or
