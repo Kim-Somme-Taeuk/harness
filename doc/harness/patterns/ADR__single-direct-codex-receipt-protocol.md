@@ -92,16 +92,19 @@ session. An eligible new generation checkpoints the rollout at the new current
 offset. A worker exits when its bound generation changes, allowing the manager
 to start the refreshed generation without replaying earlier task work.
 
-An unavailable binding read is not a validated generation change. The worker
-rechecks trusted storage within a bounded budget, without observing or
-publishing lifecycle evidence while the binding is unknown. Exhausted reads
-produce a retryable worker failure, including at spawn and completion
-publication boundaries; they do not permanently invalidate that lifecycle.
+An unavailable binding read is not a validated generation change. The first
+unavailable read produces a retryable worker failure without an inline retry,
+including at spawn and completion publication boundaries; it does not
+permanently invalidate that lifecycle or grant authority during uncertainty.
 The manager can retry only after independently validating the persisted
 registration. This reuses the existing immutable-offset recovery, not a new
 receipt authority. Known conflict invalidation and fresh-offset rebinding
 remain mandatory; normal successful retirement still suppresses the same
 registration generation within that manager.
+The running worker pins that immutable registration generation and revalidates
+it at lifecycle publication boundaries under the session transaction. A
+replacement retires the old worker even if the task/run pair is unchanged;
+missing or unsafe registration is unavailable authority, never a match.
 
 Alternate activity spellings, indirect tool adapters, status output,
 prompt-marker identity, synthetic events, diagnostics, and synchronous

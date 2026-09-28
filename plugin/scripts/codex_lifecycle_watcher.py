@@ -63,7 +63,6 @@ IDLE_SECONDS = 8 * 60 * 60
 REGISTRATION_TTL_SECONDS = IDLE_SECONDS
 MAX_WATCHER_THREADS = 16
 MAX_RECORD_OBSERVATION_ATTEMPTS = 3
-MAX_BINDING_READ_ATTEMPTS = 3
 RUNTIME_SUBDIR = os.path.join("harness", "codex-watchers")
 REGISTRATION_VERSION = 12
 REGISTRATION_OWNER = "codex_root_hook"
@@ -806,15 +805,53 @@ class _BindingUnavailable(RuntimeError):
     """An unknown binding must retry the worker, never discard a record."""
 
 
-def _require_task_binding(repo_root: str, root_id: str) -> dict[str, str]:
-    # Re-read from trusted storage without caching authority or sleeping while
-    # a caller holds the publication transaction. Persistent uncertainty exits
-    # to the manager, which independently validates the registration on retry.
-    for _ in range(MAX_BINDING_READ_ATTEMPTS):
-        binding = _active_task_binding_for_session(repo_root, root_id)
-        if binding.get("task_dir") and binding.get("run_id"):
-            return binding
-    raise _BindingUnavailable("binding unavailable")
+class _RegistrationChanged(RuntimeError):
+    """A fresh registration owns the tail; the old worker must retire."""
+
+
+def _current_registration_generation(
+    repo_root: str, root_id: str, session_cwd: str,
+) -> RegistrationGeneration:
+    runtime = _trusted_runtime_dir(repo_root)
+    state = _read_owned_json(_state_path(repo_root, root_id), runtime) if runtime else {}
+    if not (
+        state.get("version") == REGISTRATION_VERSION
+        and state.get("owner") == REGISTRATION_OWNER
+        and state.get("repo_root") == repo_root
+        and state.get("thread_id") == root_id
+        and state.get("session_cwd") == session_cwd
+        and isinstance(state.get("rollout"), str)
+        and isinstance(state.get("offset"), int)
+        and not isinstance(state.get("offset"), bool)
+        and state["offset"] >= 0
+        and _finite_timestamp(state.get("registered_at"))
+        and isinstance(state.get("task_id"), str)
+        and TASK_ID_RE.fullmatch(state["task_id"])
+        and isinstance(state.get("run_id"), str)
+        and state["run_id"]
+    ):
+        raise _BindingUnavailable("binding unavailable")
+    return _registration_generation(state)
+
+
+def _require_task_binding(
+    repo_root: str,
+    root_id: str,
+    expected_generation: RegistrationGeneration | None = None,
+    session_cwd: str | None = None,
+) -> dict[str, str]:
+    # Never bridge an unknown interval: a conflict can revoke the old offset
+    # and rebind the same task/run. Only the manager may restart after that gap.
+    binding = _active_task_binding_for_session(repo_root, root_id)
+    if not binding.get("task_dir") or not binding.get("run_id"):
+        raise _BindingUnavailable("binding unavailable")
+    if expected_generation is not None:
+        current = _current_registration_generation(
+            repo_root, root_id, session_cwd or repo_root,
+        )
+        if current != expected_generation:
+            raise _RegistrationChanged("registration changed")
+    return binding
 
 
 def _event_precedes_run(event: dict[str, Any], run_id: str) -> bool:
@@ -1087,6 +1124,7 @@ class Watcher:
         self.calls: dict[str, dict[str, Any]] = {}
         self.by_agent: dict[str, dict[str, Any]] = {}
         self.receipt_progress = 0
+        self.expected_generation: RegistrationGeneration | None = None
         # State reconstructed from exact, already-persisted receipts during a
         # restart. This proves replay recovery without pretending a new write
         # occurred or weakening duplicate-terminal checks.
@@ -1129,32 +1167,36 @@ class Watcher:
             summary += "\nFINDING_COUNTS: FIX_NOW=1 INVESTIGATE=0 OPTIONAL=0"
         if completion_summary is None:
             summary += f"\nRuntime watcher invalidated: {reason}"
-        pending_exists = any(
-            receipt.get("runtime_id") == item.get("runtime_id")
-            and receipt.get("event") == "completed"
-            and receipt.get("source") == self._receipt_source(item)
-            and receipt.get("agent_id") == self._receipt_agent_id(item)
-            and receipt.get("lens") == lens
-            and receipt.get("task_run_id") == item.get("task_run_id")
-            and receipt.get("agent_type") == item.get("task_name")
-            and receipt.get("verdict") == "PENDING"
-            for receipt in receipt_snapshot(item["task_dir"]).entries
-        )
-        if not pending_exists:
-            record_subagent_receipt(item["task_dir"], {
-            "source": self._receipt_source(item),
-            "event": "completed",
-            "agent_id": self._receipt_agent_id(item),
-            "agent_type": item.get("task_name", ""),
-            "lens": lens,
-            "task_run_id": item.get("task_run_id", ""),
-            "verdict": "PENDING",
-            "summary": summary,
-            # A second terminal for the exact identity invalidates the
-            # lifecycle under the normal duplicate-terminal fail-closed rule.
-            "runtime_id": item.get("runtime_id", ""),
-            })
-            self.receipt_progress += 1
+        with active_session_transaction(self.repo_root):
+            _require_task_binding(
+                self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+            )
+            pending_exists = any(
+                receipt.get("runtime_id") == item.get("runtime_id")
+                and receipt.get("event") == "completed"
+                and receipt.get("source") == self._receipt_source(item)
+                and receipt.get("agent_id") == self._receipt_agent_id(item)
+                and receipt.get("lens") == lens
+                and receipt.get("task_run_id") == item.get("task_run_id")
+                and receipt.get("agent_type") == item.get("task_name")
+                and receipt.get("verdict") == "PENDING"
+                for receipt in receipt_snapshot(item["task_dir"]).entries
+            )
+            if not pending_exists:
+                record_subagent_receipt(item["task_dir"], {
+                    "source": self._receipt_source(item),
+                    "event": "completed",
+                    "agent_id": self._receipt_agent_id(item),
+                    "agent_type": item.get("task_name", ""),
+                    "lens": lens,
+                    "task_run_id": item.get("task_run_id", ""),
+                    "verdict": "PENDING",
+                    "summary": summary,
+                    # A second terminal for the exact identity invalidates the
+                    # lifecycle under the normal duplicate-terminal fail-closed rule.
+                    "runtime_id": item.get("runtime_id", ""),
+                })
+                self.receipt_progress += 1
         # Publish the fail-closed terminal before suppressing later attempts.
         # The watch loop rolls in-memory state back and replays this record if
         # either the snapshot or append fails transiently.
@@ -1179,7 +1221,9 @@ class Watcher:
         if item.get("invalid") or item.get("started"):
             return
         task_dir = str(item.get("task_dir") or "")
-        binding = _require_task_binding(self.repo_root, self.root_id)
+        binding = _require_task_binding(
+            self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+        )
         active_task = binding.get("task_dir")
         lens = _infer_receipt_lens(item["task_name"])
         if (
@@ -1194,7 +1238,9 @@ class Watcher:
         runtime_id = _codex_runtime_id(self.root_id, call_id, item["child_id"])
         source = self._receipt_source(item)
         with active_session_transaction(self.repo_root):
-            binding = _require_task_binding(self.repo_root, self.root_id)
+            binding = _require_task_binding(
+                self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+            )
             if (
                 binding.get("task_dir") != task_dir
                 or binding.get("run_id") != item.get("task_run_id")
@@ -1232,7 +1278,9 @@ class Watcher:
             self._invalidate(item, "child evidence was invalid at start capture")
             return
         with active_session_transaction(self.repo_root):
-            binding = _require_task_binding(self.repo_root, self.root_id)
+            binding = _require_task_binding(
+                self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+            )
             if (
                 binding.get("task_dir") != task_dir
                 or binding.get("run_id") != item.get("task_run_id")
@@ -1274,7 +1322,9 @@ class Watcher:
         root_final = str(item.get("root_final") or "")
         if not root_final or item.get("completed") or item.get("invalid"):
             return
-        binding = _require_task_binding(self.repo_root, self.root_id)
+        binding = _require_task_binding(
+            self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+        )
         current_task = binding.get("task_dir")
         if (
             current_task != item.get("task_dir")
@@ -1305,12 +1355,16 @@ class Watcher:
             return
         lens = _infer_receipt_lens(item["task_name"])
         with active_session_transaction(self.repo_root):
-            binding = _require_task_binding(self.repo_root, self.root_id)
+            binding = _require_task_binding(
+                self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+            )
             if (
                 binding.get("task_dir") != item.get("task_dir")
                 or binding.get("run_id") != item.get("task_run_id")
             ):
-                self._invalidate(item, "active task changed before completion publication")
+                # No terminal was published for this item, so invalidation
+                # only marks memory; do not acquire a nested transaction.
+                item["invalid"] = True
                 return
             exact_existing = _exact_receipt(
                 item["task_dir"],
@@ -1350,7 +1404,9 @@ class Watcher:
         if spawn:
             call_id, task_name = spawn
             item = self.calls.setdefault(call_id, {})
-            binding = _require_task_binding(self.repo_root, self.root_id)
+            binding = _require_task_binding(
+                self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+            )
             active_task = binding.get("task_dir")
             if _event_precedes_run(event, binding.get("run_id", "")):
                 item["invalid"] = True
@@ -1455,6 +1511,7 @@ def watch(
     idle_seconds: float = IDLE_SECONDS,
     on_error: Any | None = None,
     recovering: bool = False,
+    expected_generation: RegistrationGeneration | None = None,
 ) -> int:
     """Tail one registered root rollout inside an MCP-owned thread."""
     repo_root = os.path.realpath(repo_root)
@@ -1515,7 +1572,7 @@ def watch(
                 watcher.receipt_progress,
                 watcher.replay_recovery_progress,
             ) = state
-            if isinstance(exc, _BindingUnavailable):
+            if isinstance(exc, (_BindingUnavailable, _RegistrationChanged)):
                 raise
             observation_failed = True
             detail = " ".join(str(exc).split())[:240]
@@ -1533,10 +1590,24 @@ def watch(
             notify("")
         return True
     try:
+        if task_id or run_id:
+            if expected_generation is None:
+                expected_generation = _current_registration_generation(
+                    repo_root, thread_id, session_cwd,
+                )
+            if (
+                expected_generation[0] != rollout
+                or expected_generation[1] != offset
+                or expected_generation[3:] != (task_id, run_id)
+            ):
+                raise _BindingUnavailable("binding unavailable")
+        watcher.expected_generation = expected_generation
         handle.seek(max(0, offset))
         while not stop_event.is_set() and time.monotonic() - last_data < idle_seconds:
             if task_id or run_id:
-                binding = _require_task_binding(repo_root, thread_id)
+                binding = _require_task_binding(
+                    repo_root, thread_id, expected_generation, session_cwd,
+                )
                 if (
                     os.path.basename(str(binding.get("task_dir") or "")) != task_id
                     or binding.get("run_id") != run_id
@@ -1610,6 +1681,8 @@ def watch(
                 continue
             failed_position = None
             failed_attempts = 0
+    except _RegistrationChanged:
+        return 0
     except _BindingUnavailable:
         notify("binding unavailable")
         return 5
@@ -1678,6 +1751,7 @@ class WatcherManager:
                 stop_event=self.stop_event,
                 on_error=note_error,
                 recovering=recovering,
+                expected_generation=_registration_generation(registration),
             )
             if result != 0:
                 note_error(

@@ -16,11 +16,15 @@ the previous worker normally.
 
 - Outer watch checks and spawn/start/completion publication checks distinguish
   unavailable binding from a positively established different generation.
-- During uncertainty, no lifecycle is observed or receipt appended. Bounded
-  rechecks may recover the same binding; otherwise the worker fails retryably.
+- During uncertainty, no lifecycle is observed or receipt appended. The first
+  unavailable binding makes the worker fail retryably, without an inline retry.
   The manager must independently validate the persisted registration before
   restarting from its immutable offset. Idle limits, stop requests and leases
   still bound work.
+- A worker pins its immutable registration generation and checks it again at
+  lifecycle publication boundaries under the session transaction. Replacement
+  retires the old worker even when the task/run pair stayed the same. A missing
+  or unsafe registration cannot grant authority or become a successful read.
 - Exact lifecycle correlation, protected receipt ownership, deduplication and
   duplicate-terminal rejection remain unchanged. Conflict fencing invalidates
   the old registration; authorized rebinding starts at a new current offset.

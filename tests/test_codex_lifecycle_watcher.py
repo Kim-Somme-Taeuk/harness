@@ -2887,3 +2887,234 @@ def test_manager_sustained_unknown_keeps_scan_cadence_and_stops(tmp_path, monkey
     assert not manager.is_running()
     assert all(not worker.is_alive() for worker in worker_threads)
     assert manager.worker_error(root_id)
+
+
+def _assert_live_worker_respects_registration_fence(tmp_path, monkeypatch, stage, empty_read):
+    mod, repo, root_id, old_agent, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    original_binding = mod._active_task_binding_for_session
+    original_child_status = mod._child_status
+    original_watch = mod.watch
+    marker = repo / 'doc/harness/tasks/.active_sessions' / f'{root_id}.json'
+    marker_bytes = marker.read_bytes()
+    receipts = []
+    fenced_at = None
+    restored = False
+    mutating = False
+    armed = stage == 'watch'
+    manager = mod.WatcherManager(str(repo))
+
+    def restore_registration():
+        nonlocal restored, mutating
+        mutating = True
+        try:
+            marker.write_bytes(marker_bytes)
+            assert mod.ensure(str(repo), root_id, task_id=registration['task_id'],
+                              run_id=registration['run_id'])
+            restored = True
+        finally:
+            mutating = False
+
+    def binding(*args):
+        nonlocal fenced_at, mutating
+        if mutating:
+            return original_binding(*args)
+        if fenced_at is not None and not restored:
+            restore_registration()
+        if armed and fenced_at is None and _binding_read_stage() == stage:
+            fenced_at = len(receipts)
+            mutating = True
+            try:
+                if empty_read:
+                    marker.unlink()
+                assert mod.invalidate_registration(str(repo), root_id)
+            finally:
+                mutating = False
+            if empty_read:
+                return {}
+            # Same exact task and run, but a positively replaced registration.
+            restore_registration()
+        return original_binding(*args)
+
+    def child_status(*args, **kwargs):
+        nonlocal armed
+        result = original_child_status(*args, **kwargs)
+        if _binding_read_stage() == stage:
+            armed = True
+        return result
+
+    def bounded_watch(*args, **kwargs):
+        return original_watch(*args, **kwargs, idle_seconds=0.08)
+
+    with mock.patch.object(mod, '_active_task_binding_for_session', side_effect=binding), \
+         mock.patch.object(mod, '_child_status', side_effect=child_status), \
+         mock.patch.object(mod, 'watch', side_effect=bounded_watch), \
+         mock.patch.object(mod, 'receipt_snapshot', side_effect=lambda _td: _snapshot(receipts)), \
+         mock.patch.object(mod, 'record_subagent_receipt',
+                           side_effect=lambda _td, item: receipts.append(dict(item)) or item):
+        try:
+            assert manager.scan_once() == 1
+            manager.workers[root_id].join(timeout=1)
+            assert not manager.workers[root_id].is_alive()
+            assert fenced_at is not None, 'the old live worker must reach the injected fence'
+            # No started, completed, or invalidation/PENDING receipt may cross
+            # the fence, even when exact task/run authority becomes readable.
+            assert len(receipts) == fenced_at
+            assert [r['event'] for r in receipts] == (
+                ['started'] if stage == '_maybe_complete' else []
+            )
+            if not restored:
+                restore_registration()
+            rebound = json.loads(mod._state_path(str(repo), root_id).read_text())
+            assert rebound['offset'] > registration['offset']
+            assert rebound['offset'] == Path(registration['rollout']).stat().st_size
+
+            fresh_child = '019f82a6-ce64-75a3-b01d-92f7b0b4fe70'
+            fresh_agent = '/root/code_review_after_fence'
+            final = 'VERDICT: PASS\nFINDING_COUNTS: FIX_NOW=0 INVESTIGATE=0 OPTIONAL=0'
+            codex_home = Path(os.environ['CODEX_HOME'])
+            _write_jsonl(_rollout_path(codex_home, fresh_child),
+                         _child_events(root_id, fresh_child, fresh_agent, str(repo), final))
+            with Path(registration['rollout']).open('a', encoding='utf-8') as handle:
+                for event in [*_spawn_events(root_id, fresh_child, 'code_review_after_fence',
+                                             fresh_agent, 'call_after_fence_123456'),
+                              _delivery(fresh_agent, final)]:
+                    handle.write(json.dumps(event) + '\n')
+            assert manager.scan_once() == 1
+            manager.workers[root_id].join(timeout=1)
+            assert not manager.workers[root_id].is_alive()
+            fresh_receipts = receipts[fenced_at:]
+            assert [(r['agent_id'], r['event'], r.get('verdict', '')) for r in fresh_receipts] == [
+                (fresh_agent, 'started', ''), (fresh_agent, 'completed', 'PASS'),
+            ]
+            assert all(r['task_run_id'] == registration['run_id'] for r in fresh_receipts)
+            assert all(r['agent_id'] != old_agent for r in fresh_receipts)
+        finally:
+            manager.stop()
+
+
+def test_live_worker_empty_outer_binding_cannot_bridge_registration_fence(tmp_path, monkeypatch):
+    _assert_live_worker_respects_registration_fence(tmp_path, monkeypatch, 'watch', True)
+
+
+def test_live_worker_empty_start_publication_cannot_bridge_registration_fence(tmp_path, monkeypatch):
+    _assert_live_worker_respects_registration_fence(tmp_path, monkeypatch, '_maybe_start', True)
+
+
+def test_live_worker_empty_completion_publication_cannot_bridge_registration_fence(tmp_path, monkeypatch):
+    _assert_live_worker_respects_registration_fence(tmp_path, monkeypatch, '_maybe_complete', True)
+
+
+def test_live_worker_same_binding_replacement_fences_start_publication(tmp_path, monkeypatch):
+    _assert_live_worker_respects_registration_fence(tmp_path, monkeypatch, '_maybe_start', False)
+
+
+def test_live_worker_same_binding_replacement_fences_completion_publication(tmp_path, monkeypatch):
+    _assert_live_worker_respects_registration_fence(tmp_path, monkeypatch, '_maybe_complete', False)
+
+
+def test_positive_run_switch_at_completion_publication_terminates_without_append(tmp_path, monkeypatch):
+    mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
+    original_binding = mod._active_task_binding_for_session
+    original_child_status = mod._child_status
+    armed = False
+    switched = False
+    receipts = []
+    manager = mod.WatcherManager(str(repo))
+
+    def child_status(*args, **kwargs):
+        nonlocal armed
+        result = original_child_status(*args, **kwargs)
+        if _binding_read_stage() == '_maybe_complete':
+            armed = True
+        return result
+
+    def binding(*args):
+        nonlocal switched
+        if armed and not switched and _binding_read_stage() == '_maybe_complete':
+            switched = True
+            task = repo / 'doc/harness/tasks' / registration['task_id']
+            _write_task_control(task, run_id=PRIOR_RUN_ID)
+            marker = repo / 'doc/harness/tasks/.active_sessions' / f'{root_id}.json'
+            data = json.loads(marker.read_text())
+            data['run_id'] = PRIOR_RUN_ID
+            marker.write_text(json.dumps(data) + '\n')
+        return original_binding(*args)
+
+    with mock.patch.object(mod, '_active_task_binding_for_session', side_effect=binding), \
+         mock.patch.object(mod, '_child_status', side_effect=child_status), \
+         mock.patch.object(mod, 'receipt_snapshot', side_effect=lambda _td: _snapshot(receipts)), \
+         mock.patch.object(mod, 'record_subagent_receipt',
+                           side_effect=lambda _td, item: receipts.append(dict(item)) or item):
+        try:
+            assert manager.scan_once() == 1
+            manager.workers[root_id].join(timeout=1)
+            assert switched
+            assert not manager.workers[root_id].is_alive(), 'publication must not acquire a nested lock'
+            assert manager.worker_results[root_id] == 0
+            assert [r['event'] for r in receipts] == ['started']
+        finally:
+            manager.stop()
+
+
+def test_live_worker_rejects_untrusted_registration_before_completion(tmp_path, monkeypatch):
+    cases = [
+        ('missing', None), ('unsafe_mode', None), ('owner', 'untrusted'),
+        ('version', -1), ('repo_root', '/different-root'),
+        ('thread_id', '019f82a6-ce64-75a3-b01d-92f7b0b4fe70'),
+        ('session_cwd', '/different-workspace'),
+    ]
+    for field, value in cases:
+        mod, repo, root_id, _, _ = _bound_lifecycle_fixture(tmp_path / field, monkeypatch)
+        original_child_status = mod._child_status
+        state_path = mod._state_path(str(repo), root_id)
+        receipts = []
+        changed = False
+        manager = mod.WatcherManager(str(repo))
+
+        def child_status(*args, **kwargs):
+            nonlocal changed
+            result = original_child_status(*args, **kwargs)
+            if not changed and _binding_read_stage() == '_maybe_complete':
+                changed = True
+                if field == 'missing':
+                    state_path.unlink()
+                elif field == 'unsafe_mode':
+                    state_path.chmod(0o666)
+                else:
+                    state = json.loads(state_path.read_text())
+                    state[field] = value
+                    state_path.write_text(json.dumps(state) + '\n')
+            return result
+
+        with mock.patch.object(mod, '_child_status', side_effect=child_status), \
+             mock.patch.object(mod, 'receipt_snapshot', side_effect=lambda _td: _snapshot(receipts)), \
+             mock.patch.object(mod, 'record_subagent_receipt',
+                               side_effect=lambda _td, item: receipts.append(dict(item)) or item):
+            try:
+                assert manager.scan_once() == 1
+                manager.workers[root_id].join(timeout=1)
+                assert changed, field
+                assert not manager.workers[root_id].is_alive(), field
+                assert manager.worker_results[root_id] != 0, field
+                assert [r['event'] for r in receipts] == ['started'], field
+            finally:
+                manager.stop()
+
+
+def test_direct_bound_watch_rejects_missing_or_mismatched_initial_registration(tmp_path, monkeypatch):
+    for field, value in [('missing', None), ('offset', 0),
+                         ('task_id', 'TASK__different'), ('run_id', PRIOR_RUN_ID)]:
+        mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path / field, monkeypatch)
+        state_path = mod._state_path(str(repo), root_id)
+        if field == 'missing':
+            state_path.unlink()
+        else:
+            state = json.loads(state_path.read_text())
+            state[field] = value
+            state_path.write_text(json.dumps(state) + '\n')
+        with mock.patch.object(mod, 'record_subagent_receipt') as record:
+            result = mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
+                               task_id=registration['task_id'], run_id=registration['run_id'],
+                               idle_seconds=0.03)
+        assert result != 0, field
+        record.assert_not_called()
