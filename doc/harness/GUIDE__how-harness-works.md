@@ -67,7 +67,7 @@ invalidated_by_paths:
   - doc/CLAUDE.md
   - doc/harness/critics/
   - doc/harness/review-overlays/
-freshness_updated: 2026-09-28T08:17:42Z
+freshness_updated: 2026-09-28T08:31:36Z
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -1558,6 +1558,7 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
       conflict(4) → rebase abort 후 wave 중단, (e)에서 해결 / ff-refused(5) → 중단·보고
       error(1) → 중단·보고 / usage(2) → 보고 (lead 반환값 오류면 그 lead만 kept)
       integrated_tip 이 있으면 이미 main 통합됨. cleanup.removed 로 worktree 와 branch 잔여 구분
+      최초 main symbolic ref 를 고정하고 rebase 뒤 checkout 변경을 거부. 통합 증명은 현재 HEAD 아닌 최초 branch ref 기준
       실패 후 통합 확인도 실패하면 reason 에 미확인으로 보고. null tip 만으로 미통합 판정하지 않음
       blocked/failed lead: worktree 와 branch 를 그대로 둔다
 (e) TASK__batch-integrate-<slug> 를 main 에서 harness:run 으로:
@@ -1657,7 +1658,7 @@ host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit�
 - preflight와 finish helper의 clean 검사는 `status.showUntrackedFiles=no`와 관계없이 미추적 파일을 포함한다. helper의 native worktree remove도 이 설정을 덮어써서 검사 이후 생긴 미추적 파일을 보호한다. preflight는 detached HEAD, rebase/merge 진행 중 상태, 남겨 둔 blocked worktree와 새 scope의 겹침은 잡지 못한다. finish helper는 main detached HEAD와 lead의 진행 중 rebase를 별도로 거부한다.
 - submodule(git 2.43): 한번 초기화하면 plain remove가 계속 거부된다. `--force`는 모듈 저장소를 지운다. `deinit`은 공유 `.git/config`를 다시 쓴다. merge는 submodule checkout을 갱신하지 않는다. 완전 지원은 미뤄졌다.
 - `batch_harvest.py` 단독 호출은 `HarvestError`만 잡지만 helper는 모든 harvest 예외를 `kept`로 보고하고 worktree를 남긴다. learnings append가 archive rename 뒤에 있어 append 실패 시 archive는 이미 존재할 수 있다. 통합 후 정리 실패는 `integrated_tip`과 `cleanup`으로 구별하고 원인을 고친 뒤 `--resume`한다. branch만 남았으면 `git branch -d`로 마친다.
-- merge 시도가 실패하거나 timeout으로 끝나면 main 이력에서 lead tip의 통합 여부를 확인하고 harvest·정리는 진행하지 않는다. 상태가 `error`여도 확인된 `integrated_tip`이 있으면 통합된 것이다. 확인 자체가 실패하면 `reason`에 통합 여부 미확인을 명시한다. null tip만으로 미통합이라고 보고하지 않는다.
+- helper는 시작 시 main의 symbolic ref를 기록하고 rebase 뒤 checkout이 detached되거나 다른 branch로 바뀌면 거부한다. 성공 확인과 merge 실패·timeout 뒤 통합 확인 모두 최초 branch ref를 기준으로 하며, 현재 HEAD에만 반영된 tip을 통합됐다고 보고하거나 그 근거로 lead를 정리하지 않는다. 실패 경로에서는 harvest·정리를 진행하지 않는다. 상태가 `error`여도 확인된 `integrated_tip`이 있으면 통합된 것이다. 확인 자체가 실패하면 `reason`에 통합 여부 미확인을 명시한다. null tip만으로 미통합이라고 보고하지 않는다.
 - 공유 파일: wave 1에서 lead의 `forbidden_paths`는 CHANGELOG와 batch REQ를 제외했고, lead에 따라 CONTRACTS.md/CLAUDE.md/README도 제외했다. lead마다 목록이 달랐다. 통합 과제가 쓴 것은 `plugin/CHANGELOG.md`와 batch REQ다. 이 파일들은 모두 소스 확장자가 아니므로 `forbidden_paths`에 넣어도 gate가 강제하지 않는다(§5.6). 계획상의 관행일 뿐이다.
 - 측정값(wave 1): 9p main에서 preflight 7.59초/7.91초. 병합 후 full suite 1651 passed(`-n 8`, 53.7~57.9초). lead prompt-cache write의 89%가 5분 cache 만료 때문이었다. 현재 task-lead는 한 시간 cache를 요청한다.
 

@@ -833,6 +833,77 @@ def test_exceptional_removal_restores_lock_and_preserves_failure(
         assert _lock_reason(main, lead.worktree) == LOCK_REASON
 
 
+@pytest.mark.parametrize("checkout", ["detached", "sibling"])
+@pytest.mark.parametrize("boundary", ["after-rebase", "before-merge", "merge-timeout"])
+def test_main_checkout_identity_change_preserves_original_ref_and_lead(
+    tmp_path, monkeypatch, checkout, boundary,
+):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "identity")
+    lead.commit_files({"change.txt": "lead work\n"})
+    original_main = _commit_on_main(main, "main-only.txt", "main work\n")
+    _git("branch", "sibling", original_main, cwd=main)
+    real_git = mod._git
+    injected = False
+
+    def change_checkout():
+        nonlocal injected
+        injected = True
+        if checkout == "detached":
+            _git("checkout", "-q", "--detach", cwd=main)
+        else:
+            _git("checkout", "-q", "sibling", cwd=main)
+
+    def interleave(cwd, *args):
+        is_merge = args[:2] == ("merge", "--ff-only")
+        if is_merge and boundary != "after-rebase":
+            change_checkout()
+        completed = real_git(cwd, *args)
+        if "rebase" in args and "--no-autostash" in args and boundary == "after-rebase":
+            assert completed.returncode == 0
+            change_checkout()
+        if is_merge and boundary == "merge-timeout":
+            assert completed.returncode == 0
+            raise subprocess.TimeoutExpired(["git", *args], 1)
+        return completed
+
+    monkeypatch.setattr(mod, "_git", interleave)
+    result = lead.finish()
+    assert injected
+    assert result["status"] == ("error" if boundary == "merge-timeout" else "ff-refused"), result
+    assert result["integrated_tip"] is None, result
+    assert _tip(main, "main") == original_main
+    assert lead.worktree.is_dir()
+    assert _tip(main, lead.branch) == _head(lead.worktree) != lead.commit
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+    assert not (main / "doc/harness/archive/batch" / lead.task_id).exists()
+    assert not any(result["cleanup"].values()), result
+
+
+def test_post_merge_hook_switching_checkout_preserves_lead_and_original_ref_evidence(
+    tmp_path, monkeypatch,
+):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "hook-checkout")
+    lead.commit_files({"change.txt": "lead work\n"})
+    original_main = _head(main)
+    _git("branch", "sibling", original_main, cwd=main)
+    hook = main / ".git/hooks/post-merge"
+    _write(hook, "#!/bin/sh\ngit checkout -q sibling\n")
+    hook.chmod(0o755)
+
+    result = lead.finish()
+    assert result["status"] == "ff-refused", result
+    assert _git("symbolic-ref", "HEAD", cwd=main) == "refs/heads/sibling"
+    assert _head(main) == original_main
+    assert result["integrated_tip"] == _tip(main, "main") == lead.commit
+    assert lead.worktree.is_dir()
+    assert _tip(main, lead.branch) == lead.commit
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+    assert not (main / "doc/harness/archive/batch" / lead.task_id).exists()
+    assert not any(result["cleanup"].values()), result
+
+
 def test_removal_completed_before_exception_is_reported_without_deleting_branch(tmp_path, monkeypatch):
     main = _main(tmp_path, monkeypatch)
     lead = Lead(main, "removed-error")

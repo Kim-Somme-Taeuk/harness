@@ -13,6 +13,9 @@ hide them, reconciles actual integration after a merge timeout, and attempts to
 restore the worktree lock after exceptional removal failures. Preflight uses
 the same explicit untracked-file check. Unknown integration and failed lock
 restoration remain visible in the result instead of implying successful cleanup.
+Integration evidence is tied to the original main branch, so detaching or
+switching the checkout during integration cannot authorize lead deletion based
+only on the new HEAD.
 
 ## Known ceiling
 

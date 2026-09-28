@@ -150,9 +150,11 @@ for one lead.
      script aborted it. Stop integrating further leads from this wave and
      carry the conflict into the integration task (step e). Do not resolve
      conflicts here.
-   - `ff-refused` (exit 5): the main checkout is not clean or not on a
-     branch, or `git merge --ff-only` refused because the main checkout
-     moved. Stop integrating and report it before step e. When `branch_tip`
+   - `ff-refused` (exit 5): the main checkout is not clean, is detached or
+     changed branch identity, or `git merge --ff-only` refused because it
+     moved. Stop integrating and report it before step e. Check
+     `integrated_tip`: the original main branch may already hold the lead
+     when a post-merge hook switches checkout. When `branch_tip`
      differs from `returned_commit`, the branch was already rebased: finish
      that lead later with `--resume`.
    - Any other exit (1: unexpected error, 2: usage): stop integrating and

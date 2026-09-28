@@ -14,7 +14,7 @@ invalidated_by_paths:
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-28T08:17:42Z
+freshness_updated: 2026-09-28T08:31:36Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -153,10 +153,14 @@ freshness_updated: 2026-09-28T08:17:42Z
   only the branch was kept). It exits with the status: `integrated` 0,
   `kept` 3 (this lead stays, the wave goes on), `conflict` 4 (stop,
   resolve in the integration task), `ff-refused` 5 (the main checkout is
-  dirty, detached, or refused the fast-forward: stop), `error` 1 (an
+  dirty, detached, changed branch identity, or refused the fast-forward: stop), `error` 1 (an
   unexpected failure: stop). Whatever the status, a non-null
-  `integrated_tip` means the commits are on the main branch. A failed or
-  interrupted merge attempt reconciles the lead tip against main history
+  `integrated_tip` means the commits are on the original main branch. The
+  precheck captures its symbolic ref; checkout identity changes after rebase
+  refuse integration and preserve the lead. Before harvest or cleanup, success
+  must be verified against that captured branch, not merely whichever HEAD is
+  currently checked out. A failed or interrupted merge attempt reconciles
+  the lead tip against the same captured branch's history
   without continuing harvest or cleanup. If that check cannot complete,
   `reason` explicitly reports integration as unknown; a null tip alone is
   not evidence that integration did not happen. Usage errors
@@ -208,6 +212,9 @@ freshness_updated: 2026-09-28T08:17:42Z
 - Known limit: `ff-refused` also covers a main checkout that is not clean
   or not on a branch before anything changed, because the coordinator's
   action is the same: stop integrating and report.
+- Checkout identity changes during integration also return `ff-refused`.
+  If the original branch already received the lead before a hook changed
+  checkout, `integrated_tip` still confirms that fact and cleanup stays stopped.
 - In batch surfaces, "merge" and "post-merge" name this fast-forward
   (`git merge --ff-only`); no batch step creates a merge commit.
 

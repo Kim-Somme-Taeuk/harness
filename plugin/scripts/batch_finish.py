@@ -18,6 +18,8 @@ repository as it found it: the worktree is a registered linked worktree of
 the branch tip (with `--resume`: it still resolves); the branch holds no merge
 commit after the main HEAD (a rebase would drop that merge's own change); the
 lead worktree is clean; the main checkout is clean and on a branch.
+It captures that main branch's symbolic ref and checks it again after rebase
+and merge; integration success and failure reconciliation use that original ref.
 
 `--resume` is for integration-task step e.1: the coordinator reran the rebase,
 resolved each stopped commit, and finished it with
@@ -33,11 +35,11 @@ Prints one JSON object and exits with its status:
                  the next closed lead.
   conflict    4  the rebase stopped on `conflicted_paths` and was aborted.
                  Stop integrating; resolve it in the integration task.
-  ff-refused  5  the main checkout is not clean, not on a branch, or
-                 `git merge --ff-only` refused. Stop integrating.
+  ff-refused  5  the main checkout is dirty, detached, changed branch identity,
+                 or `git merge --ff-only` refused. Stop integrating.
   error       1  unexpected failure. Stop integrating and report it.
 Whatever the status, a non-null `integrated_tip` means the lead's commits are
-on the main branch. Usage errors exit 2 without a JSON object.
+on the original main branch. Usage errors exit 2 without a JSON object.
 
 Never passes `--force`, never stashes, never creates a merge commit. It
 releases Claude Code's agent lock on the worktree, so never run it for a lead
@@ -188,8 +190,8 @@ def _result(args, worktree: str) -> dict:
     }
 
 
-def _check(repo: str, worktree: str, args, result: dict) -> str:
-    """Run every pre-rebase check; return the main HEAD they were made against."""
+def _check(repo: str, worktree: str, args, result: dict) -> tuple[str, str]:
+    """Run pre-rebase checks; return the original main ref and its commit."""
     try:
         resolved = resolve_registered_worktree(repo, worktree)
     except GitBindingError as exc:
@@ -221,7 +223,13 @@ def _check(repo: str, worktree: str, args, result: dict) -> str:
             f"the returned commit {returned} is not the tip of {args.branch} ({tip}); "
             "rerun with --resume once that tip is the lead's resolved work",
         )
-    main_head = _git_out(repo, "rev-parse", "--verify", "HEAD").strip()
+    main_ref = _git(repo, "symbolic-ref", "-q", "HEAD")
+    if main_ref.returncode != 0:
+        # A fast-forward would move only the detached HEAD, and `branch -d`
+        # would then delete the one branch that holds the lead's work.
+        raise Outcome("ff-refused", "the main checkout is on a detached HEAD; nothing was changed")
+    main_ref = main_ref.stdout.strip()
+    main_head = _git_out(repo, "rev-parse", "--verify", main_ref).strip()
     result["trailer_present"] = _trailer_present(repo, main_head, ref, args.task_id)
     merges = _git_out(repo, "rev-list", "--merges", f"{main_head}..{ref}").split()
     if merges:
@@ -233,17 +241,22 @@ def _check(repo: str, worktree: str, args, result: dict) -> str:
     dirty = _status_lines(worktree)
     if dirty:
         raise Outcome("kept", f"the lead worktree is not clean ({len(dirty)} status entries)")
-    if _git(repo, "symbolic-ref", "-q", "HEAD").returncode != 0:
-        # A fast-forward would move only the detached HEAD, and `branch -d`
-        # would then delete the one branch that holds the lead's work.
-        raise Outcome("ff-refused", "the main checkout is on a detached HEAD; nothing was changed")
     dirty = _status_lines(repo)
     if dirty:
         raise Outcome(
             "ff-refused",
             f"the main checkout is not clean ({len(dirty)} status entries); nothing was changed",
         )
-    return main_head
+    return main_ref, main_head
+
+
+def _check_main_ref(repo: str, main_ref: str) -> None:
+    current = _git(repo, "symbolic-ref", "-q", "HEAD")
+    if current.returncode != 0 or current.stdout.strip() != main_ref:
+        raise Outcome(
+            "ff-refused",
+            f"the main checkout is no longer on {main_ref}; lead worktree and branch kept",
+        )
 
 
 def _abort_note(worktree: str) -> str:
@@ -337,21 +350,23 @@ def finish(repo_root: str, args) -> dict:
     result = _result(args, worktree)
     ref = f"refs/heads/{args.branch}"
     try:
-        main_head = _check(repo, worktree, args, result)
+        main_ref, main_head = _check(repo, worktree, args, result)
         _rebase(repo, worktree, main_head, result)
         result["branch_tip"] = _resolve_commit(repo, ref)
         try:
+            _check_main_ref(repo, main_ref)
             merged = _git(repo, "merge", "--ff-only", ref)
             if merged.returncode != 0:
                 raise Outcome("ff-refused", f"`git merge --ff-only {ref}` refused: {_detail(merged)}")
-            head = _git_out(repo, "rev-parse", "--verify", "HEAD").strip()
+            _check_main_ref(repo, main_ref)
+            head = _git_out(repo, "rev-parse", "--verify", main_ref).strip()
             if head != result["branch_tip"]:
-                raise FinishError(f"main HEAD {head} is not the branch tip after the fast-forward")
+                raise FinishError(f"main branch {main_ref} at {head} is not the branch tip after the fast-forward")
             result["integrated_tip"] = result["branch_tip"]
         except (Exception, KeyboardInterrupt) as exc:
             reason = str(exc) or type(exc).__name__
             try:
-                integrated = _git(repo, "merge-base", "--is-ancestor", result["branch_tip"], "HEAD")
+                integrated = _git(repo, "merge-base", "--is-ancestor", result["branch_tip"], main_ref)
                 if integrated.returncode == 0:
                     result["integrated_tip"] = result["branch_tip"]
                 elif integrated.returncode != 1:
