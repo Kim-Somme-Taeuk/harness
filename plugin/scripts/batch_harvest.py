@@ -14,8 +14,9 @@ Refuses (non-zero exit, nothing written) unless:
   - `<worktree>` is a registered linked worktree of `--repo` (a regular,
     non-symlink `.git` gitfile whose `gitdir:` target sits directly under
     `<repo>/.git/worktrees/`, with a matching `gitdir` back-pointer); and
-  - the worktree's HEAD is on a branch (a rebase stopped midway detaches it
-    at the main HEAD, which would otherwise pass the next check); and
+  - the worktree's HEAD is on a branch (a rebase stopped midway detaches it;
+    stopped at its first commit, it sits at the main HEAD itself, which would
+    otherwise pass the next check); and
   - the worktree's current HEAD commit is an ancestor of the main checkout's
     HEAD (i.e. already integrated: rebased and fast-forwarded).
 

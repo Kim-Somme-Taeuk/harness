@@ -72,8 +72,9 @@ freshness_updated: 2026-09-27T16:48:34Z
   fast-forward the two are equal. After a completed rebase without the
   fast-forward, or after a cherry-pick into main, the worktree HEAD is off
   the main history and harvest refuses. A rebase that stopped midway
-  (conflict, signing failure) detaches the worktree HEAD at the main HEAD,
-  which passes the ancestor check, so harvest also refuses a detached HEAD.
+  (conflict, signing failure) leaves the worktree HEAD detached; stopped at
+  its first commit, that HEAD is the main HEAD itself, which passes the
+  ancestor check, so harvest also refuses any detached HEAD.
   The lead's evidence is never archived for commits that did not land.
 - A lead branch must hold no merge commit. A lead may not merge, but nothing
   else enforces it, and a rebase linearizes a merge and silently drops any
