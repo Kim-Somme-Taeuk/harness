@@ -16,3 +16,4 @@ updated: 2026-03-30
 - [GUIDE document taxonomy](GUIDE__document-taxonomy.md) — durable project knowledge uses typed documents under `doc/<area>/`
 - [REQ process subagent-receipt-binding](REQ__process__subagent-receipt-binding.md) — every hook-observed subagent stop records exactly one completion receipt; provenance checks must match the transcript shape the runtime actually emits (2026-08-27)
 - [GUIDE mcp tool-naming](GUIDE__mcp-tool-naming.md) — Claude plugin uses `mcp__plugin_harness_harness__`, Codex uses bare names, `mcp__harness__` is legacy/banned in `plugin/`; dev sessions exposing bare names see qa-* relay (expected, not a bug)
+- [GUIDE harness how-it-works](../harness/GUIDE__how-harness-works.md) — 하네스 전체 동작 안내(한국어): 과제 수명주기, MCP, 훅·prewrite gate, 영수증·마감 게이트, 스킬 단계, 에이전트, Goal, batch, 설치·setup, 계약, 메모리
