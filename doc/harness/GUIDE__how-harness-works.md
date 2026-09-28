@@ -255,7 +255,7 @@ PASS에 끝내 도달하지 못하면 `task_blocked`로 과제를 **주차(park)
 |---|---|---|
 | `plugin/.claude-plugin/plugin.json` | `2.3.0` | 설치된 사본은 `2.3.0+h<sha8>`(§2.3) |
 | `plugin-codex/.codex-plugin/plugin.json` | `2.3.0+codex.20260924180000` | 손으로 관리. Codex cache 디렉터리 이름 |
-| root `.codex-plugin/marketplace.json` | `2.3.0-codex` | `:14` |
+| root `.codex-plugin/marketplace.json` | `2.3.0-codex` | `:13` |
 | 설치기가 생성하는 Codex marketplace | `2.3.0` | `install.py:1047-1062` |
 | MCP `serverInfo.version` | `2.0.0` | `harness_server.py:26-27` |
 
@@ -1388,7 +1388,7 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 - `qa_codifier.py`는 사실상 실행되지 않는다(§8.2).
 - `parallel-fanout.md:222, 225`는 이 플러그인에 없는 외부 에이전트(`oh-my-claudecode:executor`, `:debugger`)로 라우팅한다. 존재하지 않는 "§ Model Routing"과 `/tmp/omc-research` 경로도 참조한다. `develop/SKILL.md:87`은 없는 "4 Agent D"를 참조한다. `lens="<lens>"`는 Claude Agent의 실제 파라미터가 아니다.
 - plan은 `subagent_type 'explore'`를 쓰는데 Claude Code 기본 에이전트 이름은 `Explore`다. 대소문자가 달라도 동작하는지 확인이 필요하다. `plan-ceo-review/SKILL.md:122-127`의 자체 리뷰어 요구는 "리뷰어 정확히 1명" 불변식과 충돌한다.
-- root `CLAUDE.md`와 `plugin/CLAUDE.md:291`에 hygiene 관련 문구가 남아 있다. 서브시스템은 이미 제거됐다(§13.8).
+- root `CLAUDE.md`의 "hygiene scheduling" 문구와 `plugin/CLAUDE.md:291`의 `HARNESS_DISABLE_HYGIENE`가 있다. 제거된 것은 문서 보관·계약 드리프트를 다루던 hygiene 서브시스템이다. `promote_learnings.py`의 stale-file/contradiction 점검(출력 `[hygiene] …`)은 유지되고, `HARNESS_DISABLE_HYGIENE`는 그 점검의 스위치로 문서화돼 있지만 이를 읽는 코드는 없다(§13.8, `doc/harness/ADR__remove-hygiene-subsystem.md:72-84`).
 - `self-improvement.md:205-207`의 "If it returns 'queued'"는 앞에 해당 명령이 없다. `intake.md:25`는 정의되지 않은 변수를 출력한다.
 
 ---
@@ -1938,12 +1938,12 @@ root CLAUDE.md의 `## Memory` 규칙:
 - `--paths`나 `--from-git N` 없이는 아무것도 하지 않는다. 어떤 훅에도 연결되어 있지 않다. `stale`로는 바꾸지 않는다. docstring의 "기본 --from-git", "SessionStart에서 안전" 설명은 현재 코드와 다르다.
 - develop Phase 5가 `--paths`로 호출한다.
 
-**이 문서도 이 규칙을 따른다.** frontmatter의 `invalidated_by_paths`(디렉터리 단위) 아래 파일이 바뀌면 이 문서는 `suspect`가 된다.
+**이 문서도 이 규칙을 따른다.** frontmatter의 `invalidated_by_paths`에 적힌 파일(또는 디렉터리 접두사 아래 파일)이 바뀌면 이 문서는 `suspect`가 된다.
 
 ### 13.8 health, hygiene
 
 - `health.py`는 manifest `health_components`(`{name, command, weight}`)를 쓰고, 없으면 `test_command`로 대체한다. 각 컴포넌트를 repo root에서 셸로 실행하고 timeout은 300초다. 점수는 `10 × 통과 weight / 전체 weight`다. 선언된 것이 없으면 NOTE를 출력하고 exit 1. `--dry-run`은 아무 효과 없는 별칭이고, `health-history.jsonl`은 쓰지 않는다(`health.py:6, 31-118`).
-- hygiene 서브시스템은 제거됐다(`doc/harness/ADR__remove-hygiene-subsystem.md`, 2026-08-24 채택). root CLAUDE.md의 "hygiene scheduling"과 `plugin/CLAUDE.md:291`의 `HARNESS_DISABLE_HYGIENE`는 남은 흔적이고, 이 변수를 읽는 스크립트는 없다.
+- 문서 보관·계약 드리프트를 다루던 hygiene 서브시스템은 제거됐다(`doc/harness/ADR__remove-hygiene-subsystem.md`, 2026-08-24 채택). 이름이 같은 `promote_learnings.py`의 stale-file/contradiction 점검(`[hygiene] …` 출력)과 `doc/harness/patterns/auto-maintenance.md`는 **유지**된다. `HARNESS_DISABLE_HYGIENE`(`plugin/CLAUDE.md:291`, `patterns/auto-maintenance.md:76`)는 그 유지된 점검의 스위치로 문서화돼 있지만 이 변수를 읽는 코드는 없다(ADR `:72-84`가 기존 공백으로 기록). root CLAUDE.md의 "hygiene scheduling" 문구는 어느 기능을 가리키는지 적혀 있지 않다(§17.2).
 
 ### 13.9 runtime services
 
