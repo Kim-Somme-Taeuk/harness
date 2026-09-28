@@ -1,7 +1,7 @@
 ---
 tags: [harness, lifecycle, worktree, batch, mcp, contracts]
 summary: 한 Claude 세션이 과제마다 격리 worktree 리드 서브에이전트를 띄워 여러 harness 과제를 병렬로 진행한다. MCP task 도구는 검증된 workspace 인자로 worktree 안의 과제를 다루고, 세션 식별은 본 체크아웃에 남는다. 병합 후 통합 과제가 전체 검증과 설치를 맡는다.
-updated: 2026-09-27
+updated: 2026-09-28
 freshness: current
 invalidated_by_paths:
   - plugin/mcp/harness_server.py
@@ -27,6 +27,10 @@ freshness_updated: 2026-09-27T16:48:34Z
   host, where it is inspected with GitKraken. The user explicitly chose
   **not** to use relative-path worktrees and accepted "work in a worktree,
   then merge", with the host looking at branches and commits only.
+- (2026-09-28) Lead work lands on the main branch by **rebase and
+  fast-forward**, not by merge commits: "batch작업 worktree로 분할하고
+  합칠때 그냥 rebase fast-forward로 해줘". The main branch history stays
+  linear.
 
 ## Requirement
 
@@ -41,18 +45,65 @@ freshness_updated: 2026-09-27T16:48:34Z
 - A lead runs the normal lifecycle (`task_start` → plan → develop → review/QA
   → `task_close`) inside its worktree and commits on its branch. It never asks
   the user; undelegated material decisions go back to the coordinator.
-- The coordinator merges lead branches into the main checkout one at a time,
-  harvests each lead's task evidence, then removes the worktree and branch.
-  After all merges it opens one integration task in the main checkout that runs
+- The coordinator integrates lead branches into the main checkout one at a
+  time. For each closed lead it rebases the lead branch onto the main
+  checkout's current HEAD inside the lead's worktree
+  (`git -C <W> rebase --no-autostash <main HEAD>`), fast-forwards the main
+  checkout (`git merge --ff-only <branch>`), harvests the lead's task
+  evidence, then removes the worktree and branch. No merge commit is
+  created. After every lead is integrated it opens one integration task in the
+  main checkout that runs
   the full suite, review, QA, and — in the harness source repo — the verified
   install. Leads never run `install_verified.py`.
-- The coordinator procedure (intake, preflight, spawn, merge/conflict path,
+- The coordinator procedure (intake, preflight, spawn, rebase/conflict path,
   harvest, integration) is owned by `plugin/skills/batch/SKILL.md`; the lead's
   rules and its JSON return shape by `plugin/agents/task-lead.md`.
 - While a wave runs, no harness task may be open in the main checkout for the
   same session. A late lens stop from a lead whose worktree was already
   removed resolves its `cwd` up to the main checkout, and it must find no open
   task there to bind to.
+
+## Integration by rebase and fast-forward
+
+- The rebase runs inside the lead's worktree because the lead branch is
+  checked out there; git refuses to rebase it from the main checkout.
+- `batch_harvest.py` accepts a lead only when the worktree HEAD is on a
+  branch and is an ancestor of the main HEAD. After the rebase and
+  fast-forward the two are equal. After a completed rebase without the
+  fast-forward, or after a cherry-pick into main, the worktree HEAD is off
+  the main history and harvest refuses. A rebase that stopped midway
+  (conflict, signing failure) detaches the worktree HEAD at the main HEAD,
+  which passes the ancestor check, so harvest also refuses a detached HEAD.
+  The lead's evidence is never archived for commits that did not land.
+- A lead branch must hold no merge commit. A lead may not merge, but nothing
+  else enforces it, and a rebase linearizes a merge and silently drops any
+  change made in the merge commit itself; every later guard then passes. The
+  coordinator checks `git rev-list --merges <main HEAD>..<branch>` first and
+  keeps such a lead unintegrated.
+- The rebase targets the main HEAD sha, not a branch name, because the main
+  checkout's branch name differs between projects. `--no-autostash` makes a
+  dirty lead worktree stop the rebase instead of being stashed and replayed.
+- A failed rebase is aborted at once (`git -C <W> rebase --abort` restores
+  the lead's exact tip and a clean tree, and only prints "No rebase in
+  progress?" when the rebase never started). A conflict and a dirty-worktree
+  refusal both exit 1, so the coordinator tells them apart by the conflicted
+  paths (`git -C <W> diff --name-only --diff-filter=U`) listed before the
+  abort. A conflict stops the wave and is carried into the integration task,
+  which reruns the rebase, resolves in the worktree, and continues with
+  `GIT_EDITOR=true git -C <W> rebase --continue` once per stopped commit;
+  without an editor, `--continue` fails. Any other failure (dirty worktree,
+  an untracked file the rebase would overwrite, a hook or signing failure)
+  keeps only that lead, because leads are independent, and the wave
+  continues. An `--ff-only` refusal means the main checkout moved; the
+  coordinator stops and reports it.
+- Known limit: a rebase treats ignored files as expendable. If the main
+  history tracks a file at a path that is ignored task evidence in a lead
+  worktree (only possible by force-adding it), the rebase overwrites that
+  evidence silently before harvest copies it.
+- Every lead after the first gets new commit ids. Those rebased commits are
+  not the exact tree that lead's reviewers and QA saw; the integration task's
+  full suite, review, and QA run on the combined result, as they did for merge
+  commits before. The report lists each lead's fast-forwarded tip commit.
 
 ## MCP `workspace` argument
 
@@ -301,7 +352,8 @@ Verified hazards (git 2.43, reproduced in the 2026-09-27 investigation):
   multiple checkouts of a superproject."
 
 Full submodule support is a later task (Goal child G): lead init on a named
-branch, coordinator local fetch → merge → immediate `submodule update`, and a
+branch, coordinator local fetch → rebase and fast-forward → immediate
+`submodule update`, and a
 guarded single `--force` removal in `batch_harvest.py`. Until it lands, the
 stop-gap above applies.
 
@@ -387,7 +439,14 @@ stop-gap above applies.
   start and stop receipts from `cwd=<worktree>` land in the worktree task.
 - `tests/test_mcp_tool_name_contracts.py`: the six task tools declare optional
   `workspace`; goal tools do not.
-- `tests/test_batch_harvest.py`: copy, append, idempotence; refusal for an
+- `tests/test_batch_harvest.py`: copy, append, idempotence; two locked leads
+  rebased and fast-forwarded in order, harvest refused after the rebase and
+  before the fast-forward, then accepted, unlock/remove/`branch -d`, and a
+  history with no merge commit; a conflicting rebase aborted back to the
+  lead's exact tip with main unchanged; a rebase stopped at a conflict
+  refused as a detached HEAD, then resolved with
+  `GIT_EDITOR=true rebase --continue`, fast-forwarded, harvested, and
+  removed; refusal for an
   unregistered or unmerged worktree, links/FIFOs, and an archive collision; an
   ambient `GIT_DIR` cannot redirect the merged check; a non-canonical
   `--worktree` path is canonicalized and accepted.
@@ -414,6 +473,8 @@ stop-gap above applies.
   clauses, and this repository's `baseRef`/ignore settings; the preflight
   script in intake/preflight and the off-limits spawn line; the lead's
   submodule and nested-repo prohibitions; this document's worktree-location
-  and multi-repo sections.
+  and multi-repo sections; the batch SKILL's rebase and fast-forward
+  integration commands, merge-commit precheck, and conflict test, and the
+  absence of `--no-ff` and `git merge --abort` there.
 - Live probe: a real worktree subagent starts a task with `workspace` and its
   nested reviewer's start/stop receipts appear in the worktree task.

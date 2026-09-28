@@ -14,8 +14,10 @@ Refuses (non-zero exit, nothing written) unless:
   - `<worktree>` is a registered linked worktree of `--repo` (a regular,
     non-symlink `.git` gitfile whose `gitdir:` target sits directly under
     `<repo>/.git/worktrees/`, with a matching `gitdir` back-pointer); and
+  - the worktree's HEAD is on a branch (a rebase stopped midway detaches it
+    at the main HEAD, which would otherwise pass the next check); and
   - the worktree's current HEAD commit is an ancestor of the main checkout's
-    HEAD (i.e. already merged).
+    HEAD (i.e. already integrated: rebased and fast-forwarded).
 
 Idempotent: re-running after a successful harvest is a no-op for the archive
 copy (byte-identical tree) and appends zero learnings rows. An existing archive
@@ -80,6 +82,15 @@ def _worktree_head_sha(worktree: str) -> str:
 
 
 def _verify_merged(repo_root: str, worktree: str) -> None:
+    on_branch = subprocess.run(
+        ["git", "-C", worktree, "symbolic-ref", "-q", "HEAD"],
+        capture_output=True, text=True, check=False, env=_trusted_git_env(),
+    )
+    if on_branch.returncode != 0:
+        raise HarvestError(
+            "worktree HEAD is detached (a rebase may be in progress); "
+            "finish or abort it before harvesting"
+        )
     sha = _worktree_head_sha(worktree)
     result = subprocess.run(
         ["git", "merge-base", "--is-ancestor", sha, "HEAD"],

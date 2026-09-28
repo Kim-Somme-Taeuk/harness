@@ -1,13 +1,14 @@
 ---
 name: batch
-description: Coordinator procedure for running several independent harness tasks in parallel from one session, one harness:task-lead per linked git worktree, merged and verified afterward.
+description: Coordinator procedure for running several independent harness tasks in parallel from one session, one harness:task-lead per linked git worktree, rebased, fast-forwarded, and verified afterward.
 argument-hint: <N requests, each with a slug and declared path scope>
 user-invocable: true
 allowed-tools: Read, Glob, Grep, Bash, Agent, Skill
 ---
 
 Run N independent harness tasks in parallel, one `harness:task-lead` subagent
-per task in its own linked git worktree, then merge, harvest, and verify.
+per task in its own linked git worktree, then rebase and fast-forward,
+harvest, and verify.
 
 See `doc/harness/REQ__parallel-tasks-via-worktree-leads.md` for the full model
 and rationale.
@@ -22,7 +23,8 @@ into a later wave instead of running them in the same parallel batch.
 Slugs must be distinct within the batch, and none may already name a task in
 the main checkout (`doc/harness/tasks/TASK__<slug>`) or an archived lead
 (`doc/harness/archive/batch/TASK__<slug>`). Harvest refuses an archive
-collision, but only after the merge, so reject a reused slug here instead.
+collision, but only after the fast-forward, so reject a reused slug here
+instead.
 
 The preflight script (step b.1) classifies every declared scope path. Only a
 `tracked-area` scope may run in a lead. A request with a scope
@@ -86,22 +88,46 @@ the cap only when the user explicitly asks for more in this conversation — a
 9p/drvfs mount, a `.venv` built per worktree, and `pytest -n auto` per lead
 oversubscribe CPU and IO past that point (see the REQ doc).
 
-## d) Collect results and merge
+## d) Collect results, rebase, and fast-forward
 
 Each lead returns a fenced JSON block: `{"task_id","worktree","branch","commit","verdict","blocked_reason"}`.
 
-For every lead with `verdict: "closed"`, **in order**, in the main checkout:
+Leads are integrated by rebase and fast-forward, never by a merge commit, so
+the main branch history stays linear. A lead's branch is checked out in its
+own worktree, so the rebase runs there, and afterwards `batch_harvest.py`
+finds that worktree's HEAD on the main history.
 
-1. `git merge --no-ff <branch>`
-2. On conflict: `git merge --abort` immediately, stop merging further leads
-   from this wave, and carry the conflict into the integration task (step e).
-   Do not resolve conflicts here.
-3. On a clean merge: run
+For every lead with `verdict: "closed"`, **in order**, from the main checkout:
+
+1. The lead branch must hold no merge commit, because a rebase would drop
+   whatever that merge commit itself changed:
+   `git rev-list --merges "$(git rev-parse HEAD)..<branch>"` must print
+   nothing. Otherwise keep the worktree, report the lead as kept like a
+   blocked lead, and go on to the next closed lead. Then rebase the lead
+   branch onto the main checkout's current HEAD inside the lead's worktree,
+   and fast-forward the main checkout:
+   `git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"`, then
+   `git merge --ff-only <branch>`. For the first lead of a wave the rebase is
+   a no-op; each later lead lands on top of the ones before it.
+2. If the rebase exits non-zero, first list conflicted paths with
+   `git -C <W> diff --name-only --diff-filter=U`, then run
+   `git -C <W> rebase --abort`. The abort puts the lead's branch and worktree
+   back exactly as the lead left them; when the rebase never started it only
+   prints "No rebase in progress?". With conflicted paths: stop integrating
+   further leads from this wave and carry the conflict into the integration
+   task (step e). Do not resolve conflicts here. Without conflicted paths (a
+   dirty lead worktree, an untracked file the rebase would overwrite, a hook
+   or signing failure): keep that worktree, report the lead as kept like a
+   blocked lead, and go on to the next closed lead. If `git merge --ff-only`
+   refuses, the main checkout moved: stop integrating and report it before
+   step e. Never stash, pass `--force`, or fall back to a merge commit.
+3. After the fast-forward: run
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_harvest.py --worktree <W> --task-id <id>`
    to copy the lead's gitignored task evidence and learnings into the main
-   checkout before the worktree is gone. A non-zero exit (unmerged branch,
-   symlinked or non-regular evidence, an archive that already holds different
-   evidence for the same task id) stops removal of that worktree.
+   checkout before the worktree is gone. A non-zero exit (a lead HEAD not yet
+   on the main history, symlinked or non-regular evidence, an archive that
+   already holds different evidence for the same task id) stops removal of
+   that worktree.
 4. The lead has returned, but Claude Code keeps its agent lock on the
    worktree, so release it first: `git worktree unlock <W>`. Then
    `git worktree remove <W>` and `git branch -d <branch>`. Never pass
@@ -118,18 +144,22 @@ coordinator or the user resolves it directly in that worktree later.
 
 ## e) Integration task
 
-When step d ends — every closed lead merged, or merging stopped at a conflict
-carried from step d.2 — open
+When step d ends — every closed lead fast-forwarded or kept, or integration
+stopped at a conflict carried from step d.2 — open
 `TASK__batch-integrate-<slug>` in the **main checkout** through the normal
 `harness:run` lifecycle (`task_start` → plan → develop → QA → close). Under
 that task:
 
-1. Resolve any conflicts carried from step d.2: `git merge --no-ff <branch>`
-   again under this task, resolve, commit, then harvest and remove that
-   lead's worktree exactly as in steps d.3–d.4. Then continue steps d.1–d.4
-   in order for every remaining closed lead of the wave, resolving any further
-   conflicts under this same task, so every closed lead is merged before the
-   full suite runs.
+1. Resolve any conflicts carried from step d.2 under this task: rerun the
+   step d.1 rebase in that lead's worktree, resolve each stopped commit in
+   the worktree's files, `git -C <W> add <paths>`, and
+   `GIT_EDITOR=true git -C <W> rebase --continue` (without an editor,
+   `--continue` fails); repeat for each commit the rebase stops at. Then
+   `git merge --ff-only <branch>`, and harvest and
+   remove that lead's worktree exactly as in steps d.3–d.4. Then continue
+   steps d.1–d.4 in order for every remaining closed lead of the wave,
+   resolving any further conflicts under this same task, so every closed lead
+   not kept in step d is on the main branch before the full suite runs.
 2. Run the full suite (e.g. `uv run pytest tests/ -q`).
 3. Run `review-code` and `qa-cli`.
 4. In this plugin source repo, before `task_close`, run
@@ -152,7 +182,7 @@ unlock → remove gap never has it).
 
 ## g) Report
 
-Give the user a table: task slug → branch → verdict → merge commit (or
+Give the user a table: task slug → branch → verdict → fast-forwarded tip commit (or
 "kept, unmerged" for blocked/failed leads). Add a row for every request the
 preflight kept out of the wave: "excluded (ordinary task, done or pending)",
 "deferred to a later wave", or "outside the root, not batchable". End with

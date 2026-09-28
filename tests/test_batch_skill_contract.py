@@ -90,7 +90,8 @@ def test_batch_skill_names_every_coordinator_step():
         (
             "one assistant message",
             "3 concurrent leads",
-            "git merge --no-ff",
+            "git merge --ff-only",
+            "rebase --no-autostash",
             "batch_harvest.py",
             "git worktree remove",
             "never",
@@ -110,12 +111,36 @@ def test_batch_skill_covers_conflict_and_blocked_lead_handling():
     _assert_all(
         body,
         (
-            "git merge --abort",
+            "rebase --abort",
+            "GIT_EDITOR=true",
+            "rebase --continue",
             "carry",
             "integration task",
             "blocked",
             "failed",
             "kept",
+        ),
+        BATCH_SKILL,
+    )
+
+
+def test_batch_skill_integrates_leads_without_merge_commits():
+    body = _text(BATCH_SKILL)
+    assert "--no-ff" not in body, BATCH_SKILL
+    assert "git merge --abort" not in body, BATCH_SKILL
+    assert "never by a merge commit" in body, BATCH_SKILL
+    assert "fall back to a merge commit" in body, BATCH_SKILL
+    _assert_all(
+        body,
+        (
+            # The branch is checked out in the lead worktree: rebase runs there.
+            'git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"',
+            # A rebase drops a merge commit's own change; refuse such a lead.
+            'git rev-list --merges "$(git rev-parse HEAD)..<branch>"',
+            # A conflict and a dirty refusal share exit 1; paths tell them apart.
+            "git -C <W> diff --name-only --diff-filter=U",
+            "git -C <W> rebase --abort",
+            "go on to the next closed lead",
         ),
         BATCH_SKILL,
     )
@@ -147,7 +172,7 @@ def test_root_claude_md_states_batch_focus_and_install_clauses():
     ) in body
 
 
-def test_batch_skill_runs_harvest_from_plugin_root_unlocks_and_merges_every_closed_lead():
+def test_batch_skill_runs_harvest_from_plugin_root_unlocks_and_integrates_every_closed_lead():
     body = _text(BATCH_SKILL)
     norm = _normalized(body)
     # User projects have no plugin/scripts/; the installed payload does.
@@ -183,11 +208,11 @@ def test_this_repo_branches_leads_from_head_and_ignores_worktrees():
     assert ignored.returncode == 0
 
 
-def test_batch_skill_rejects_reused_slugs_before_merging():
+def test_batch_skill_rejects_reused_slugs_before_integrating():
     norm = _normalized(_text(BATCH_SKILL))
     assert _normalized("Slugs must be distinct within the batch") in norm
     assert "doc/harness/archive/batch/task__<slug>" in norm
-    assert _normalized("merging stopped at a conflict carried from step d.2") in norm
+    assert _normalized("integration stopped at a conflict carried from step d.2") in norm
 
 
 def test_batch_skill_gates_spawning_on_the_repo_shape_preflight():

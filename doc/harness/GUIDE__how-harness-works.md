@@ -245,7 +245,7 @@ invalidated_by_paths:
 근거: `plugin-codex/skills/run/SKILL.md:6-20`, `install.py:990-1045, 1093-1094`, `plugin/.claude-plugin/plugin.json:3`, `plugin-codex/.codex-plugin/plugin.json:3`, `plugin-codex/.codex-version:20`, `.claude-plugin/marketplace.json:10-12`, `tests/test_codex_public_run_skill.py:105-106`.
 
 - **`plugin-codex/`만으로는 Codex payload가 완성되지 않는다.** 설치기는 여기에 `plugin/scripts`, `plugin/mcp`, `plugin/skills`의 공용 보조 문서(경로 치환), setup 보조 파일, 생성한 hooks.json/.mcp.json을 합친다. 따라서 `plugin/skills/develop/*.md` 같은 공용 보조 문서를 고치면 Codex 동작도 바뀐다(§2.2).
-- **`.claude/settings.json`의 현재 상태**: main-thread agent로 `harness:harness`를 지정한다. 그러나 이 에이전트는 삭제됐다(`plugin/CHANGELOG.md:98`, `plugin/CLAUDE.md:9-10`). 허용 목록에는 존재하지 않는 `Skill(harness:maintain)`이 있다. agent teams 실험 플래그가 켜져 있고, worktree base ref는 `head`다(`.claude/settings.json:3, 8-9, 13-18`). 이 상태가 C-07/C-08에 주는 영향은 §12.2에 있다.
+- **`.claude/settings.json`의 현재 상태**: main-thread agent로 `harness:harness`를 지정한다. 그러나 이 에이전트는 삭제됐다(`plugin/CHANGELOG.md:100`, `plugin/CLAUDE.md:9-10`). 허용 목록에는 존재하지 않는 `Skill(harness:maintain)`이 있다. agent teams 실험 플래그가 켜져 있고, worktree base ref는 `head`다(`.claude/settings.json:3, 8-9, 13-18`). 이 상태가 C-07/C-08에 주는 영향은 §12.2에 있다.
 
 `doc/harness/tasks/`, `learnings.jsonl`, `archive/` 등 운영 파일은 gitignore 대상이다(§11.6). 과제 증거는 커밋되지 않는다. 오래 남겨야 할 교훈은 REQ/GUIDE/ADR/pattern 문서나 테스트로 승격해야 한다(§13).
 
@@ -1548,20 +1548,27 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 (c) 한 wave 의 lead 전부를 ONE message 로 스폰 (기본 최대 3, name= 금지)
       Agent(subagent_type:"harness:task-lead",
             prompt: 요청 / slug / scope / off-limits / coordinator HEAD / pytest worker cap: 4)
-(d) closed lead 마다 순서대로 (main 에서):
-      git merge --no-ff <branch>
-        ├ 충돌 → git merge --abort, 이 wave 병합 중단, 충돌은 통합 과제로
-        └ 깨끗 → batch_harvest.py (0 이 아니면 이 worktree 는 제거하지 않고 보고) → git worktree unlock <W> → git worktree remove <W> (submodule 때문에 거부되면 남겨 두고 blocked 처럼 보고)
+(d) closed lead 마다 순서대로 (main 에서, merge 커밋 없이 rebase + fast-forward):
+      git rev-list --merges "$(git rev-parse HEAD)..<branch>" 가 비어 있어야 함
+        (lead 브랜치의 merge 커밋은 rebase 가 그 커밋 자체의 변경을 버리므로 → 있으면 worktree 남기고 blocked 처럼 보고, 다음 lead 로)
+      git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"   (lead 브랜치는 W 에 체크아웃돼 있으므로 W 안에서)
+      git merge --ff-only <branch>
+        ├ rebase 실패 → git -C <W> diff --name-only --diff-filter=U 로 충돌 경로 확인 → git -C <W> rebase --abort (lead 가 남긴 그대로 복원)
+        │   ├ 충돌 경로 있음 → 이 wave 통합 중단, 충돌은 통합 과제로
+        │   └ 충돌 없음(dirty W, 덮어쓸 untracked 파일, 훅·서명 실패) → worktree 남기고 blocked 처럼 보고, 다음 lead 로
+        ├ --ff-only 거부 → main 이 움직였음: 통합 중단, (e) 전에 보고 (stash·--force·merge 커밋 금지)
+        └ fast-forward 완료 → batch_harvest.py (0 이 아니면 이 worktree 는 제거하지 않고 보고) → git worktree unlock <W> → git worktree remove <W> (submodule 때문에 거부되면 남겨 두고 blocked 처럼 보고)
                  → git branch -d <branch>     (--force 절대 금지)
       blocked/failed lead: worktree 와 branch 를 그대로 둔다
 (e) TASK__batch-integrate-<slug> 를 main 에서 harness:run 으로:
-      남은 충돌 해결·병합 → full suite → review-code + qa-cli
+      남은 충돌 해결: W 에서 rebase 다시 → 해결 → git -C <W> add → GIT_EDITOR=true git -C <W> rebase --continue (멈추는 커밋마다 반복)
+        → git merge --ff-only → harvest·제거, 이어서 남은 lead 도 (d) 순서대로 (남겨 둔 lead 는 제외) → full suite → review-code + qa-cli
       → (harness 플러그인 소스 저장소일 때만) install_verified.py (batch 에서 유일하게 실행되는 곳, lead 는 생략) → close
 (f) 사용자에게 branch/commit 으로만 확인하라고 안내
-(g) 보고 표: slug, branch, verdict, merge commit 또는 'kept, unmerged', 제외/미룸/outside-root, 통합 결과
+(g) 보고 표: slug, branch, verdict, fast-forward 된 tip commit 또는 'kept, unmerged', 제외/미룸/outside-root, 통합 결과
 ```
 
-근거: `batch/SKILL.md:15-151`.
+근거: `batch/SKILL.md:16-189`, REQ `:48-57, 66-106`.
 
 `name=`을 금지하는 이유는 영수증 문제만이 아니다. 이 저장소처럼 agent teams 실험 플래그가 켜져 있으면(§2.1) 이름을 준 스폰이 `isolation: worktree` 없는 teammate가 된다.
 
@@ -1589,8 +1596,8 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 - **깨끗함**: main, 채워진 submodule 전부, nested repo 전부에서 `git status --porcelain --ignore-submodules=none`이 비어 있어야 한다.
 - **post-checkout 훅**: submodule이 있는 저장소에서 기본 또는 유효(`core.hooksPath`) post-checkout 훅에 `submodule`이 들어 있으면 refuse한다. 그런 훅은 모든 lead worktree에서 submodule을 초기화하기 때문이다.
 - **`off_limits`**: submodule 경로와 nested repo의 합집합. ignored nested repo는 lead worktree 안에 존재하지 않으므로 모든 lead prompt에 넘긴다.
-- **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:222-229, 268, 440-446`, REQ `:230-233`).
-- **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:60-62, 86-103, 163-190, 252-269`, REQ `:185-192`).
+- **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:222-229, 268, 440-446`, REQ `:281-284`).
+- **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:60-62, 86-103, 163-190, 252-269`, REQ `:236-243`).
 - preflight는 아무것도 쓰지 않는다. git 호출은 GIT_* 환경 변수를 모두 지우고 `--no-optional-locks`, `-c core.fsmonitor=false`, `LC_ALL=C`, 120초 timeout으로 실행한다. 예기치 않은 crash도 `refuse` 보고를 낸다.
 
 ### 10.3 lead의 수명주기
@@ -1616,11 +1623,12 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
 
 ### 10.4 harvest와 제거
 
-`batch_harvest.py`는 다음 조건이 모두 맞아야 동작한다(`batch_harvest.py:50-243`).
+`batch_harvest.py`는 다음 조건이 모두 맞아야 동작한다(`batch_harvest.py:52-254`).
 
 - `--worktree`가 절대경로
 - `resolve_registered_worktree` 통과(main이 아니고, 자체 manifest가 있음)
-- worktree HEAD가 main HEAD의 조상
+- worktree HEAD가 브랜치에 붙어 있음. rebase가 중간에 멈추면 HEAD가 main HEAD 위치에서 detached되어 다음 조상 검사를 통과하므로 따로 거부한다
+- worktree HEAD가 main HEAD의 조상(rebase + fast-forward를 마치면 두 HEAD가 같다. rebase를 마쳤어도 fast-forward 전이면 거부한다)
 - task_id가 `^TASK__[A-Za-z0-9._-]+$`
 - task 디렉터리와 learnings에 symlink가 없고, 일반 파일과 디렉터리만 있음
 
@@ -1634,7 +1642,7 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
 
 ### 10.5 host 가시성
 
-host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit만 본다. worktree 폴더를 host에서 열지 않는다. lead worktree가 하나라도 존재하는 동안에는 `git worktree prune`이나 host 쪽 정리를 하지 않는다. host에서는 컨테이너 경로가 모두 없는 것으로 보이고, prune은 잠기지 않은 모든 worktree의 메타데이터를 지운다. `git clean -ffdx`도 ignore 설정과 관계없이 `.claude/worktrees/`를 지운다(`batch/SKILL.md:141-151`, REQ `:86-140`).
+host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit만 본다. worktree 폴더를 host에서 열지 않는다. lead worktree가 하나라도 존재하는 동안에는 `git worktree prune`이나 host 쪽 정리를 하지 않는다. host에서는 컨테이너 경로가 모두 없는 것으로 보이고, prune은 잠기지 않은 모든 worktree의 메타데이터를 지운다. `git clean -ffdx`도 ignore 설정과 관계없이 `.claude/worktrees/`를 지운다(`batch/SKILL.md:171-181`, REQ `:137-191`).
 
 ### 10.6 알려진 한계
 
@@ -1858,7 +1866,7 @@ manifest의 `ux_review_supported` 주석은 ux-* 영수증이 close를 막는다
 | C-17 | 턴 종료 지침, 주차, 두 고정 쌍 | `task_close`, `task_verify`, `task_blocked` | 산문은 상태 이름을 planning/implementing/verifying으로 적고, 코드는 open/blocked/closed/invalid를 쓴다(§17.2) |
 | C-18 | 검증 위임은 지침이지 pre-tool gate가 아님 | 없음(의도적) | — |
 
-근거: `CONTRACTS.md:45, 130, 140, 148, 160, 163-176`, `prewrite_gate.py:80-85, 101-108, 712-733`, `contract_lint.py:80-91, 227-234, 410-434, 452-458, 487-492`, `tests/test_contract_lint_real_tree.py:92-113, 253-282`, `.claude/settings.json:3`, `plugin/CHANGELOG.md:98`, `plugin/CLAUDE.md:9-10`.
+근거: `CONTRACTS.md:45, 130, 140, 148, 160, 163-176`, `prewrite_gate.py:80-85, 101-108, 712-733`, `contract_lint.py:80-91, 227-234, 410-434, 452-458, 487-492`, `tests/test_contract_lint_real_tree.py:92-113, 253-282`, `.claude/settings.json:3`, `plugin/CHANGELOG.md:100`, `plugin/CLAUDE.md:9-10`.
 
 ### 12.3 `contract_lint.py`
 

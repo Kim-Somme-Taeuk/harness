@@ -59,15 +59,23 @@ def _write_learnings(root: Path, rows: list) -> None:
     )
 
 
+def _rebase_and_fast_forward(repo: Path, worktree: Path, branch: str) -> None:
+    """The batch skill's step d.1: rebase the lead branch onto the main
+    checkout's HEAD inside the lead worktree, then fast-forward main."""
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    _git("rebase", "-q", "--no-autostash", base, cwd=worktree)
+    _git("merge", "-q", "--ff-only", branch, cwd=repo)
+
+
 def _commit_and_merge(repo: Path, worktree: Path, branch: str) -> None:
     """Commit a real, git-tracked source change on `branch` in the worktree
-    and merge it into the main checkout's HEAD. Mirrors how a lead's actual
-    code change is what gets merged, while its gitignored task evidence and
-    learnings stay worktree-local (never git-added, never touched by merge)."""
+    and integrate it into the main checkout's HEAD. Mirrors how a lead's actual
+    code change is what gets integrated, while its gitignored task evidence and
+    learnings stay worktree-local (never git-added, never touched by git)."""
     (worktree / "src.txt").write_text(f"change from {branch}\n", encoding="utf-8")
     _git("add", "src.txt", cwd=worktree)
     _git("commit", "-q", "-m", f"{branch} work", cwd=worktree)
-    _git("merge", "-q", "--no-ff", branch, cwd=repo)
+    _rebase_and_fast_forward(repo, worktree, branch)
 
 
 def _raises(exc, match=None):
@@ -191,6 +199,133 @@ def test_refuses_unmerged_branch(tmp_path: Path):
         mod.harvest(str(repo), str(worktree), "TASK__demo")
 
     assert not (repo / "doc/harness/archive/batch").exists()
+
+
+def _ignore_task_evidence(repo: Path) -> None:
+    """Commit the ignores a real project has, so task evidence stays out of git
+    and `git worktree remove` sees a clean lead worktree."""
+    (repo / ".gitignore").write_text(
+        "doc/harness/tasks/\ndoc/harness/learnings.jsonl\ndoc/harness/archive/\n",
+        encoding="utf-8",
+    )
+    _git("add", ".gitignore", cwd=repo)
+    _git("commit", "-q", "-m", "ignore task evidence", cwd=repo)
+
+
+def _lead_commit(worktree: Path, name: str, body: str, message: str) -> None:
+    (worktree / name).write_text(body, encoding="utf-8")
+    _git("add", name, cwd=worktree)
+    _git("commit", "-q", "-m", message, cwd=worktree)
+
+
+def test_two_leads_rebased_and_fast_forwarded_are_harvested_and_removed(tmp_path: Path):
+    repo = _main_repo(tmp_path)
+    _ignore_task_evidence(repo)
+    base = _git("rev-parse", "HEAD", cwd=repo)
+    leads = []
+    for n in (1, 2):
+        worktree = tmp_path / f"wt{n}"
+        branch = f"lead-{n}"
+        _add_worktree(repo, worktree, branch)
+        _git("worktree", "lock", str(worktree), cwd=repo)  # Claude's agent lock
+        task_id = f"TASK__lead{n}"
+        _write_task(worktree, task_id, f"plan {n}\n")
+        _write_learnings(worktree, [{"key": f"k{n}", "insight": f"lead {n}"}])
+        _lead_commit(worktree, f"file{n}.txt", f"lead {n}\n", f"lead {n} work")
+        leads.append((worktree, branch, task_id))
+
+    tip_before = _git("rev-parse", "HEAD", cwd=leads[1][0])
+    for index, (worktree, branch, task_id) in enumerate(leads):
+        if index == 1:
+            # Rebased but not yet fast-forwarded: harvest must refuse.
+            base_now = _git("rev-parse", "HEAD", cwd=repo)
+            _git("rebase", "-q", "--no-autostash", base_now, cwd=worktree)
+            with _raises(mod.HarvestError, match="not merged"):
+                mod.harvest(str(repo), str(worktree), task_id)
+        _rebase_and_fast_forward(repo, worktree, branch)
+        assert _git("rev-parse", "HEAD", cwd=worktree) == _git("rev-parse", "HEAD", cwd=repo)
+        summary = mod.harvest(str(repo), str(worktree), task_id)
+        assert summary["learnings_appended"] == 1
+        _git("worktree", "unlock", str(worktree), cwd=repo)
+        _git("worktree", "remove", str(worktree), cwd=repo)
+        _git("branch", "-d", branch, cwd=repo)
+
+    # The second lead was rewritten onto the first; history is linear.
+    assert _git("rev-parse", "HEAD", cwd=repo) != tip_before
+    assert _git("rev-list", "--merges", f"{base}..HEAD", cwd=repo) == ""
+    assert _git("log", "--format=%s", f"{base}..HEAD", cwd=repo).splitlines() == [
+        "lead 2 work", "lead 1 work",
+    ]
+    for _, _, task_id in leads:
+        assert (repo / "doc/harness/archive/batch" / task_id / "PLAN.md").is_file()
+    assert _git("worktree", "list", "--porcelain", cwd=repo).count("worktree ") == 1
+
+
+def test_rebase_conflict_abort_restores_the_lead_and_leaves_main(tmp_path: Path):
+    repo = _main_repo(tmp_path)
+    _ignore_task_evidence(repo)
+    first, second = tmp_path / "wt1", tmp_path / "wt2"
+    _add_worktree(repo, first, "lead-1")
+    _add_worktree(repo, second, "lead-2")
+    _lead_commit(first, "shared.txt", "from lead 1\n", "lead 1 work")
+    _lead_commit(second, "shared.txt", "from lead 2\n", "lead 2 work")
+    _rebase_and_fast_forward(repo, first, "lead-1")
+    main_head = _git("rev-parse", "HEAD", cwd=repo)
+    lead_tip = _git("rev-parse", "HEAD", cwd=second)
+
+    conflict = subprocess.run(
+        ["git", "rebase", "-q", "--no-autostash", main_head],
+        cwd=second, capture_output=True, text=True, check=False,
+    )
+    assert conflict.returncode != 0
+    _git("rebase", "--abort", cwd=second)
+
+    assert _git("rev-parse", "HEAD", cwd=second) == lead_tip
+    assert _git("status", "--porcelain", cwd=second) == ""
+    assert _git("rev-parse", "HEAD", cwd=repo) == main_head
+    with _raises(mod.HarvestError, match="not merged"):
+        mod.harvest(str(repo), str(second), "TASK__lead2")
+
+
+def test_rebase_stopped_at_a_conflict_is_refused_then_continued_and_integrated(tmp_path: Path):
+    """A stopped rebase detaches the worktree HEAD at the main HEAD, which
+    passes the ancestor check; harvest must refuse it. The integration task
+    then resolves, continues, fast-forwards, harvests, and removes."""
+    repo = _main_repo(tmp_path)
+    _ignore_task_evidence(repo)
+    first, second = tmp_path / "wt1", tmp_path / "wt2"
+    _add_worktree(repo, first, "lead-1")
+    _add_worktree(repo, second, "lead-2")
+    _write_task(second, "TASK__lead2")
+    _lead_commit(first, "shared.txt", "from lead 1\n", "lead 1 work")
+    _lead_commit(second, "shared.txt", "from lead 2\n", "lead 2 work")
+    _rebase_and_fast_forward(repo, first, "lead-1")
+    main_head = _git("rev-parse", "HEAD", cwd=repo)
+
+    stopped = subprocess.run(
+        ["git", "rebase", "-q", "--no-autostash", main_head],
+        cwd=second, capture_output=True, text=True, check=False,
+    )
+    assert stopped.returncode != 0
+    assert _git("diff", "--name-only", "--diff-filter=U", cwd=second) == "shared.txt"
+    assert _git("rev-parse", "HEAD", cwd=second) == main_head  # detached at main
+    with _raises(mod.HarvestError, match="detached"):
+        mod.harvest(str(repo), str(second), "TASK__lead2")
+    assert not (repo / "doc/harness/archive/batch/TASK__lead2").exists()
+
+    (second / "shared.txt").write_text("from lead 1\nfrom lead 2\n", encoding="utf-8")
+    _git("add", "shared.txt", cwd=second)
+    env = {**os.environ, "GIT_EDITOR": "true"}
+    subprocess.run(["git", "rebase", "--continue"], cwd=second, env=env,
+                   capture_output=True, check=True)
+    _git("merge", "-q", "--ff-only", "lead-2", cwd=repo)
+    mod.harvest(str(repo), str(second), "TASK__lead2")
+    _git("worktree", "remove", str(second), cwd=repo)
+    _git("branch", "-d", "lead-2", cwd=repo)
+
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "from lead 1\nfrom lead 2\n"
+    assert _git("rev-list", "--merges", "HEAD", cwd=repo) == ""
+    assert (repo / "doc/harness/archive/batch/TASK__lead2/PLAN.md").is_file()
 
 
 def test_refuses_invalid_task_id(tmp_path: Path):
