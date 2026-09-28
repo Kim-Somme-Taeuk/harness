@@ -39,3 +39,6 @@ Verification must cover installed routing and a real native task-result event,
 then fresh required review and QA started/completed receipts. Missing event
 delivery must remain distinguishable from rejected task binding; configuration
 or unit-test success alone cannot establish working receipt acquisition.
+The installation regression must also exercise the next task in the same
+running session: its native task result must replace the previous binding
+without a daemon restart, and its fresh lens must record lifecycle receipts.
