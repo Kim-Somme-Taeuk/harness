@@ -285,9 +285,8 @@ Test command: `bun test` (Bun runtime)
 
 | Variable | Effect | Semantics |
 |----------|--------|-----------|
-| `HARNESS_DISABLE_SCOPE_LOCK` | Bypass PROGRESS.md forbidden_paths gate once | one-shot (cleared after one bypass) |
-| `HARNESS_SKIP_PREWRITE` | Bypass `prewrite_gate.py` for one tool call (logs `gate-bypass` to learnings.jsonl) | one-shot (per invocation) |
+| `HARNESS_DISABLE_SCOPE_LOCK` | Skip the PROGRESS.md `forbidden_paths` scope lock (other prewrite rules still apply) | applies to every write while set in the runtime's environment; read on every call, never cleared |
+| `HARNESS_SKIP_PREWRITE` | Skip every `prewrite_gate.py` rule, C-05 included (logs `gate-bypass` to learnings.jsonl per call) | applies to every write while set in the runtime's environment; read on every call, never cleared |
 | `HARNESS_DISABLE_RETRO` | Skip auto-retro post-close trigger | session-wide while set |
-| `HARNESS_DISABLE_HYGIENE` | Skip Tier-3 hygiene audit post-close | session-wide while set |
 | `HARNESS_SKIP_INTERVIEW` | Setup skill auto-accepts defaults | session-wide while set |
 | `HARNESS_SPAWNED` | Orchestrator-spawned session: auto-resolve prompts | session-wide while set |

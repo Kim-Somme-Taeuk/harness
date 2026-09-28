@@ -20,12 +20,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest
+          # pyproject.toml [dependency-groups] dev: pytest, pytest-xdist, pyyaml (pip >= 25.1)
+          python -m pip install --group dev
 
       - name: Run full test suite
         env:

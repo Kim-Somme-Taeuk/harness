@@ -203,6 +203,23 @@ worktree/diff scope. Do not substitute an earlier commit or a clean-index diff
 for the current task worktree.
 <!-- harness:role-core:end -->
 
+Claude-only, for the `harness:batch` integration task
+(`TASK__batch-integrate-<slug>`): the approved sweep scope is the residual,
+everything from `old_base` to the current worktree outside the carried lead
+ranges, and each carried range is in scope only to verify its carry. Verify
+each carried proof yourself instead of trusting the coordinator's summary:
+confirm the lead ranges are contiguous on the current history, recompute the
+ordered `git patch-id --stable` comparison and commit counts from the listed
+`old_base`, `old_tip`, `new_base`, and `new_tip`, confirm the lead's rebase
+never stopped and did not go through the step e conflict path, read its
+harvested archive for a PASS close, and check the rebase-LIGHT proof at that
+lead's fast-forward point. Then sweep the complete residual: conflict
+resolutions, cross-lead interactions, non-carried ranges, and the integration
+task's own edits. A carry you cannot reproduce is a wrong carry and
+under-classification: report it as the existing single ordinary FIX_NOW
+finding whose fix is to move the range into the residual, run the missing
+discovery, and a fresh formal review. It never yields PASS or BLOCKED_ENV.
+
 Run verification commands in the foreground and wait for them. Never end
 your turn while a command or subagent you started is still running: the end
 of your first turn is recorded as your completion, and a later resume cannot

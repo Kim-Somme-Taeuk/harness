@@ -98,7 +98,11 @@ hot-reload replaced plugin files.
 
 ## Opting out
 
-`plugin-codex/` is opt-in via the `harness.codex_enabled` manifest flag (AC-010). Existing Claude Code installs get no surprise. If you regret the install:
+Claude's marketplace source is `plugin/` only, so its updates do not install
+`plugin-codex/`. The source installer selects runtimes by CLI availability;
+`--claude-only` excludes Codex and `--codex-only` selects it. The reserved
+`features.codex_enabled` metadata is not read as a runtime switch. To remove
+an existing Codex registration:
 
 ```bash
 codex plugin marketplace remove harness

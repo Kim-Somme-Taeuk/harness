@@ -31,6 +31,16 @@ class TestHooksJson(unittest.TestCase):
             os.path.exists(os.path.join(REPO_ROOT, "plugin", "scripts", "mcp_bash_guard.py"))
         )
 
+    def test_prewrite_gate_gets_the_c12_maximum_timeout(self):
+        """A killed Claude hook allows the write, so the gate gets the full budget."""
+        timeouts = [
+            h.get("timeout")
+            for entry in self.data["hooks"]["PreToolUse"]
+            for h in entry.get("hooks", [])
+            if "prewrite_gate.py" in h["command"]
+        ]
+        self.assertEqual(timeouts, [10])
+
     def test_user_prompt_submit_registers_prompt_memory(self):
         """AC-007: UserPromptSubmit entry for prompt_memory with fail-safe."""
         entries = self.data["hooks"].get("UserPromptSubmit", [])

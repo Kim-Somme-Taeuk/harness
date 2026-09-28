@@ -1616,8 +1616,8 @@ def _session_resumes(repo_root: str, task_dir: str, session_id: str) -> bool:
     Ordinary Codex MCP calls do not, so their successful result is bound later
     by PostToolUse instead of consulting shared hint/default state here.
 
-    Many tasks are open at once — C-09 queues a second mutating request, it
-    does not close the first — so "the task being read is open" says nothing
+    Many tasks are open at once — C-09 limits write focus per session and
+    closes nothing — so "the task being read is open" says nothing
     about the caller's focus; that conjunct guards parked tasks, this one
     guards other open ones.
 

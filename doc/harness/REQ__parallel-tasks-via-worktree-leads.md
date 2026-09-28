@@ -8,12 +8,13 @@ invalidated_by_paths:
   - plugin/scripts/prewrite_gate.py
   - plugin/scripts/_lib.py
   - plugin/scripts/batch_harvest.py
+  - plugin/scripts/batch_finish.py
   - plugin/scripts/setup_finalize.py
   - plugin/scripts/batch_preflight.py
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-27T16:48:34Z
+freshness_updated: 2026-09-28T08:01:12Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -31,6 +32,13 @@ freshness_updated: 2026-09-27T16:48:34Z
   fast-forward**, not by merge commits: "batch작업 worktree로 분할하고
   합칠때 그냥 rebase fast-forward로 해줘". The main branch history stays
   linear.
+- (2026-09-28) Lead agents keep their prompt cache for one hour through the
+  per-agent `experimental: { cacheTtl: 1h }` in `plugin/agents/task-lead.md`
+  (wave 1 measured 89% of lead cache writes as 5-minute expiries; see
+  `doc/harness/GUIDE__how-harness-works.md` §10.6). A
+  session-wide `subagentPromptCacheTtl` was rejected; add none anywhere.
+  Tests pin the frontmatter text only: Claude Code ignores an unknown
+  frontmatter key, so nothing here proves the TTL takes effect at runtime.
 
 ## Requirement
 
@@ -43,18 +51,22 @@ freshness_updated: 2026-09-27T16:48:34Z
   Task state under `doc/harness/tasks/` is gitignored, so every worktree has
   its own task namespace, focus markers, and `RECEIPTS.jsonl`.
 - A lead runs the normal lifecycle (`task_start` → plan → develop → review/QA
-  → `task_close`) inside its worktree and commits on its branch. It never asks
-  the user; undelegated material decisions go back to the coordinator.
+  → `task_close`) inside its worktree and commits on its branch, in one commit
+  carrying a `Harness-Task: <task_id>` trailer (`git commit --trailer`), so
+  the task stays traceable after the rebase gives that commit a new id. It
+  never asks the user; undelegated material decisions go back to the
+  coordinator.
 - The coordinator integrates lead branches into the main checkout one at a
   time. For each closed lead it rebases the lead branch onto the main
   checkout's current HEAD inside the lead's worktree
   (`git -C <W> rebase --no-autostash <main HEAD>`), fast-forwards the main
   checkout (`git merge --ff-only <branch>`), harvests the lead's task
-  evidence, then removes the worktree and branch. No merge commit is
-  created. After every lead is integrated it opens one integration task in the
-  main checkout that runs
-  the full suite, review, QA, and — in the harness source repo — the verified
-  install. Leads never run `install_verified.py`.
+  evidence, then removes the worktree and branch;
+  `plugin/scripts/batch_finish.py` runs that whole step for one lead. No
+  merge commit is created. After every lead is integrated it opens one
+  integration task in the main checkout that runs the full suite, review,
+  QA, and — in the harness source repo — the verified install. Leads never
+  run `install_verified.py`.
 - The coordinator procedure (intake, preflight, spawn, rebase/conflict path,
   harvest, integration) is owned by `plugin/skills/batch/SKILL.md`; the lead's
   rules and its JSON return shape by `plugin/agents/task-lead.md`.
@@ -80,7 +92,8 @@ freshness_updated: 2026-09-27T16:48:34Z
   else enforces it, and a rebase linearizes a merge and silently drops any
   change made in the merge commit itself; every later guard then passes. The
   coordinator checks `git rev-list --merges <main HEAD>..<branch>` first and
-  keeps such a lead unintegrated.
+  keeps such a lead unintegrated. `batch_finish.py` (below) performs this
+  check and the rebase, abort, and classification steps of the next bullets.
 - The rebase targets the main HEAD sha, not a branch name, because the main
   checkout's branch name differs between projects. `--no-autostash` makes a
   dirty lead worktree stop the rebase instead of being stashed and replayed.
@@ -107,10 +120,85 @@ freshness_updated: 2026-09-27T16:48:34Z
   commits before. The lead's returned `commit` is its pre-rebase tip, so the
   coordinator records the main HEAD after each fast-forward, and the report
   lists both.
-- The coordinator checks for a merge commit in prose only: the check must run
+- `plugin/scripts/batch_finish.py --repo --worktree --branch --task-id
+  --commit` owns SKILL step d for one closed lead. Before it changes
+  anything it checks that the worktree is a registered linked worktree of
+  the repository with no rebase in progress and the branch checked out, that
+  the returned commit is the branch tip, that
+  `git rev-list --merges <main HEAD>..<branch>` is empty (the check must run
   before the rebase, after which the merge is gone and every later guard
-  passes, and no script owns that step yet. A coordinator helper script for
-  step d is a planned follow-up.
+  passes), that the lead worktree is clean, and that the main checkout is
+  clean and on a branch (on a detached HEAD the fast-forward would move only
+  that HEAD, and `git branch -d` would then delete the one branch holding
+  the lead's work). Then it rebases with `rebase.updateRefs=false` (no other
+  branch moves), fast-forwards `refs/heads/<branch>` (a tag with the
+  branch's name would win a bare-name lookup), harvests through
+  `batch_harvest.py`, runs `git worktree unlock` only when
+  `git worktree list --porcelain` shows the worktree (compared by realpath)
+  locked, and runs `git worktree remove` and `git branch -d`, never with
+  `--force`. It aborts a failed or interrupted rebase only when
+  `rebase-merge` or `rebase-apply` exists (`rev-parse --git-path`), because
+  the dirty-worktree and untracked-file refusals never start one and
+  `rebase --abort` then exits 128; it never aborts a rebase it did not
+  start. Git calls use the trusted environment (no ambient `GIT_*`) plus the
+  four `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity variables, because the
+  rebase writes commits and a container or CI identity may exist only
+  there. It prints one JSON object whose twelve keys are present on every
+  status, a failed check and `error` included: `status`, `reason`,
+  `task_id`, `branch`, `worktree` (realpath), `returned_commit` (the full
+  sha once it resolves), `branch_tip`, `integrated_tip`,
+  `conflicted_paths`, `trailer_present`, `harvest` (the harvest summary or
+  null), and `cleanup` with the booleans `unlocked`, `relocked`, `removed`,
+  and `branch_deleted` (`removed: true` with `branch_deleted: false` means
+  only the branch was kept). It exits with the status: `integrated` 0,
+  `kept` 3 (this lead stays, the wave goes on), `conflict` 4 (stop,
+  resolve in the integration task), `ff-refused` 5 (the main checkout is
+  dirty, detached, or refused the fast-forward: stop), `error` 1 (an
+  unexpected failure: stop). Whatever the status, a non-null
+  `integrated_tip` means the commits are on the main branch. Usage errors
+  exit 2 without JSON and change nothing: `--commit` not 7-64 hex
+  characters, `--branch` starting with `-` or holding whitespace or any of
+  ``~^:?*[\``, `--task-id` not matching `TASK__[A-Za-z0-9._-]+`, a
+  relative `--worktree`, or a missing required flag (`--repo` defaults to
+  the checkout found from the current directory). When the bad value came
+  from a lead's result (for example `"commit": null`), only that lead is
+  affected.
+- `--resume` serves integration-task step e.1: after the coordinator reran
+  the rebase, resolved each stopped commit, and ran
+  `GIT_EDITOR=true git -C <W> rebase --continue`, the branch tip no longer
+  equals the returned commit. Resume only drops that tip check (the returned
+  commit must still exist); the rebase is then a no-op, or replays onto a
+  main HEAD that moved meanwhile with the normal failure handling. The same
+  flag finishes a lead after `ff-refused` once its branch was rebased, or
+  after a `kept` whose cause was fixed while its worktree still exists.
+  Resume does not relate the tip to
+  the returned commit, and a rebase drops a commit that becomes empty, so
+  the coordinator checks the resolved branch before resuming.
+- When `git worktree remove` refuses after the script released the agent
+  lock, it locks the worktree again with the original reason, so a kept
+  worktree stays protected from `git worktree prune`.
+- `trailer_present` is true when every commit between the main HEAD and the
+  lead tip carries `Harness-Task: <task_id>`, false when one does not, and
+  null when that range is empty or was not read. It is reported, not
+  enforced: a lead without the trailer still integrates.
+- Known limit: the repositories' own hooks run as for any rebase and
+  fast-forward (`pre-rebase`, `post-rewrite`, and `post-checkout` in the
+  lead worktree, `post-merge` in the main checkout); a hook failure during
+  the rebase is a `kept` rebase failure.
+- Known limit: the script cannot tell whether a lead is still running. Run
+  for a running lead, it would release Claude Code's lock and remove the
+  worktree under it; the coordinator runs it only for leads that returned.
+- Known limit: harvest checks its inputs (links, non-regular files, an
+  archive collision) only after the fast-forward, as the prose step did. A
+  refusal there, or a removal refusal, returns `kept` with `integrated_tip`
+  set: the commits are on the main branch and only the worktree is kept,
+  which a `--resume` rerun finishes once the cause is fixed. A
+  `git branch -d` refusal comes after the worktree is removed, so a rerun
+  fails its registration check; the reason says to run `git branch -d` by
+  hand once the cause is fixed.
+- Known limit: `ff-refused` also covers a main checkout that is not clean
+  or not on a branch before anything changed, because the coordinator's
+  action is the same: stop integrating and report.
 - In batch surfaces, "merge" and "post-merge" name this fast-forward
   (`git merge --ff-only`); no batch step creates a merge commit.
 
@@ -175,8 +263,9 @@ open the repository at all.
   `<control>/.git/worktrees/` with a matching back-pointer, wherever the
   checkout sits; `batch_preflight.py` recognizes lead worktrees by the paths
   `git worktree list --porcelain` registers, not by where they live. The only
-  location-specific step is batch SKILL preflight step b.3, which checks that
-  Claude's default `.claude/worktrees/` is gitignored.
+  location-specific check is `batch_preflight.py`'s `worktrees_ignore` (batch
+  SKILL preflight step b.3), which checks that Claude's default
+  `.claude/worktrees/` is gitignored where git sees it.
 - Placing worktrees under `.git` (for example `.git/harness-worktrees/<name>`)
   was evaluated and rejected:
   - Claude Code treats any absolute path with a `.git` segment as protected,
@@ -242,7 +331,9 @@ Stop-gap rules (current):
   (submodule changes included, whatever `submodule.<name>.ignore` says), in
   any populated submodule, or in any ignored nested repo; and refuses when a
   post-checkout hook (the default hooks dir or `core.hooksPath`) mentions
-  `submodule` in a repository with submodules. It fails closed: a directory
+  `submodule` in a repository with submodules. It also refuses when
+  `.claude/worktrees/` is not gitignored at the path git sees (see
+  "Preconditions and limits"). It fails closed: a directory
   it cannot read while looking for nested repos or placing a declared scope,
   a tracked or untracked path git reports it could not open (git itself only
   warns and exits 0), a submodule directory it cannot inspect, and an
@@ -262,15 +353,16 @@ Stop-gap rules (current):
   meaning a value with `*?[` or a comma that names no existing path; an
   existing path such as `app/[locale]` is fine, and each path gets its own
   `--request`) is a usage error: exit 2 and no report. `ok` covers only these
-  checks; the coordinator's other preflight steps (`baseRef`, the worktree
-  ignore, no open main-checkout task, the recorded HEAD) still apply. The
+  checks; the coordinator's other preflight steps (`baseRef`, no open
+  main-checkout task, the recorded HEAD) still apply. The
   coordinator acts on `verdict` and on `refusals`, `excluded_requests`,
   `overlaps`, and `off_limits`, and reruns the script after adjusting a wave;
   `control_root.shape` is informational (it reads `non-git` with an empty
   reason when shape detection itself could not run). Every report key
   (`verdict`, `control_root`, `submodules`, `nested_repos`, `off_limits`,
-  `post_checkout_hooks`, `dirty`, `scopes`, `overlaps`, `excluded_requests`,
-  `refusals`) is always present, even on an early refusal or a crash, and
+  `post_checkout_hooks`, `worktrees_ignore`, `dirty`, `scopes`, `overlaps`,
+  `excluded_requests`, `refusals`) is always present, even on an early
+  refusal or a crash, and
   `dirty` lists at most 20 status entries per repo alongside the full `count`.
   Hook detection reads the first 256 KiB of each post-checkout hook, matches
   `submodule` case-insensitively, and ignores the executable bit.
@@ -340,6 +432,8 @@ Stop-gap rules (current):
   is not refused for that state (it gets `ok` when the tree is otherwise
   clean; unmerged entries still refuse as dirt), and kept blocked/failed lead
   worktrees are not compared with the new wave's scopes; both are follow-ups.
+  At integration, `batch_finish.py` does refuse a detached main HEAD
+  (`ff-refused`) before changing anything.
 
 Verified hazards (git 2.43, reproduced in the 2026-09-27 investigation):
 
@@ -401,16 +495,25 @@ stop-gap above applies.
   coordinator HEAD it was given.
 - `.claude/worktrees/` is gitignored in every harness project: manifest
   version 7 adds it to setup's managed operational ignores
-  (`doc/harness/REQ__versioned-project-file-migrations.md`). The batch SKILL
-  preflight step b.3 (`git check-ignore`, not `batch_preflight.py`) still
-  checks it and, when the path is not ignored (for example in a project not
-  yet migrated to v7), tells the user to add it; a later
-  `--migrate-harness-version` moves that line into the managed block.
-- Known limit: when `.claude` or `.claude/worktrees` is a symlink, step b.3's
-  `git check-ignore .claude/worktrees/x` exits 128 ("beyond a symbolic link")
-  even after the v7 migration has written the ignore entry, so batch stops at
-  preflight in that layout although v7 accepts it. Follow-up: make b.3 check
-  the path git actually sees, as `setup_finalize.py` does for the v7 entry.
+  (`doc/harness/REQ__versioned-project-file-migrations.md`).
+  `batch_preflight.py` still checks it (batch SKILL step b.3) and refuses
+  when it is not ignored, for example in a project not yet migrated to v7;
+  the refusal tells the user which path to add, and a later
+  `--migrate-harness-version` moves the line into the managed block.
+- The check runs where git sees the directory, as `setup_finalize.py` does
+  for the v7 entry: it reuses that script's `_git_visible_path` and
+  `representative_path` and runs `git check-ignore --no-index` on
+  `.claude/worktrees/__harness_probe__` with symlinked parents resolved. A
+  `.claude` (or `.claude/worktrees`) symlink resolving inside the repository
+  is checked at its target, so the literal `.claude/worktrees/` entry does
+  not satisfy it there; one leading outside the repository (or looping)
+  passes, because git never lists what lies beyond it. Plain
+  `git check-ignore .claude/worktrees/x` exits 128 ("beyond a symbolic
+  link") through either link, which is why the old prose step could not be
+  used in those layouts. Report key `worktrees_ignore`:
+  `{"path", "git_path", "status"}`, with status `ignored`, `not-ignored`,
+  `outside-repo`, or `unchecked` (control root not `ok`, or check-ignore
+  failed or `setup_finalize` could not be loaded, both of which refuse).
 - Default concurrency is 3 leads; more only on explicit user request. Each
   worktree builds its own `.venv`, and on a 9p/drvfs mount pytest `-n auto` per
   lead oversubscribes CPU and IO, so leads pass `-n 4`.
@@ -448,6 +551,34 @@ stop-gap above applies.
   start and stop receipts from `cwd=<worktree>` land in the worktree task.
 - `tests/test_mcp_tool_name_contracts.py`: the six task tools declare optional
   `workspace`; goal tools do not.
+- `tests/test_batch_finish.py` (scratch repos, lead worktrees under
+  `<main>/.claude/worktrees/`): two leads integrated in order onto a linear
+  history (the second rebased, the first unchanged), harvested, unlocked,
+  removed, and their branches deleted; the trailer reported, not enforced,
+  false unless every lead commit carries it, and null for a lead with no
+  commit; a merge-commit lead, a dirty lead (tracked change or untracked
+  file), a returned commit that is not the tip or does not exist, an
+  unregistered worktree, and a wrong branch are kept with nothing changed;
+  a dirty main checkout and a detached main HEAD are `ff-refused` before any
+  change; a conflict (merge and apply backends) is aborted back to the exact
+  tip with the lock kept, a failed abort is reported without claiming the
+  rebase was aborted, and a failure while diagnosing a failed rebase still
+  aborts it; a pre-rebase hook
+  failure is `kept` without conflicted paths; a rebase already in progress
+  is never aborted; a main HEAD that moves before the fast-forward is
+  `ff-refused`, and `--resume` then lands the rebased branch; a harvest
+  refusal (archive collision, or a non-UTF-8 learnings file) after the
+  fast-forward is `kept` with `integrated_tip` and the lock untouched, and a
+  `--resume` rerun finishes it once fixed; a crash after the fast-forward
+  is `error` that still carries `integrated_tip`; unlock runs only for a
+  locked worktree; a removal refusal after unlock relocks with the original
+  reason, and a failed relock says the worktree is unlocked; a `branch -d`
+  refusal is `kept` after removal and names the manual `git branch -d`;
+  `--resume` integrates a lead resolved by
+  hand while the plain call keeps it; an identity only in the environment
+  reaches the rebase; CLI JSON with exit codes 0/3/4/5, usage errors exit 2
+  without JSON, an unexpected failure is `error` with exit 1; an ambient
+  `GIT_DIR` cannot redirect it.
 - `tests/test_batch_harvest.py`: copy, append, idempotence; two locked leads
   rebased and fast-forwarded in order, harvest refused after the rebase and
   before the fast-forward, then accepted, unlock/remove/`branch -d`, and a
@@ -476,8 +607,19 @@ stop-gap above applies.
   `core.fsmonitor` launched (root, submodule, or nested repo); ambient
   `GIT_*` ignored; CLI exit codes and JSON, including usage errors for globs
   and comma lists that name nothing while existing paths with `,` or `[` are
-  accepted; an unexpected crash still prints a `refuse` report.
-- `tests/test_batch_skill_contract.py`: lead frontmatter and carve-outs, every
+  accepted; an unexpected crash still prints a `refuse` report; the
+  `.claude/worktrees/` ignore refused when missing and accepted from
+  `.git/info/exclude`, a `.claude` or `.claude/worktrees` symlink leaving the
+  repository accepted where plain check-ignore exits 128, a `.claude`
+  symlink inside the repository checked at its target, a check-ignore
+  failure and an unloadable `setup_finalize` refused with a report, and the
+  key `unchecked` when the control root is not ok.
+- `tests/test_batch_skill_contract.py`: lead frontmatter (`model: inherit`,
+  `experimental: { cacheTtl: 1h }`, no `subagentPromptCacheTtl` under
+  `plugin/` or in `.claude/settings.json`), the lead's one-commit
+  `Harness-Task` trailer, the batch SKILL's `batch_finish.py` call, its
+  status actions and `--resume`, step b.3 moved into the preflight; lead
+  carve-outs, every
   coordinator step, the C-09 clause in both contract files, root CLAUDE.md
   clauses, and this repository's `baseRef`/ignore settings; the preflight
   script in intake/preflight and the off-limits spawn line; the lead's

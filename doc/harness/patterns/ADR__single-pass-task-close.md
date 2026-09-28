@@ -1,6 +1,14 @@
 # ADR: Single-pass task close
 
-Status: accepted
+Status: superseded by [ADR__receipt-gates-without-source-snapshots.md](ADR__receipt-gates-without-source-snapshots.md)
+
+> Superseded. The receipt-gates ADR (2026-08-11) removed Git, HEAD, dirty-path,
+> and freshness evaluation from `task_close`. CHECKS was retired with
+> [ADR__consolidated-task-artifacts.md](ADR__consolidated-task-artifacts.md)
+> (2026-08-12), which owns close-gate semantics today. `task_close` now holds
+> the receipt stream lock, reads `TASK.json` and one receipt snapshot with its
+> fingerprint, and publishes the closed state. The rest of this file records the
+> 2026-08-07 decision and no longer describes current behavior.
 
 ## Context
 

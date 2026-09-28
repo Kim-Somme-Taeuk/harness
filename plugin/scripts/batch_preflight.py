@@ -28,8 +28,11 @@ is refuse > adjust > ok:
   refuse  exit 1  batch must not start: the control root is not a plain git
                   checkout; the main checkout, a populated submodule, or a
                   nested repository is dirty; a post-checkout hook would
-                  initialize submodules in every lead worktree; or something
-                  the report depends on could not be read.
+                  initialize submodules in every lead worktree;
+                  `.claude/worktrees/` is not gitignored at the path git sees
+                  (a symlinked `.claude` leading outside the repository
+                  passes); or something the report depends on could not be
+                  read.
 
 Read-only: it writes no file. Every git call runs with the trusted environment
 (no ambient `GIT_*`), `--no-optional-locks` (no opportunistic index refresh),
@@ -46,11 +49,14 @@ import re
 import stat
 import subprocess
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _lib import _trusted_git_env, find_repo_root  # type: ignore  # noqa: E402
 
 SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Where Claude Code `isolation: worktree` creates every lead worktree.
+WORKTREES_DIR = ".claude/worktrees/"
 GLOB_CHARS = frozenset("*?[")
 MAX_LISTED_ENTRIES = 20
 HOOK_READ_LIMIT = 256 * 1024
@@ -291,6 +297,32 @@ def post_checkout_hooks(root: str, common_dir: str) -> list:
     return hooks
 
 
+def worktrees_ignore(root: str) -> dict:
+    """Whether git ignores Claude Code's lead worktree directory, where git sees it.
+
+    A symlinked `.claude` (or `.claude/worktrees`) moves that directory: one
+    resolving inside the repository is checked at its target, and one leading
+    outside it (or looping) is invisible to git, so it needs no ignore. Plain
+    `git check-ignore .claude/worktrees/x` exits 128 through either link.
+    Where git sees a path is `setup_finalize`'s rule (manifest v7 checks the
+    same entry), so it is imported here rather than restated.
+    """
+    try:
+        from setup_finalize import _git_visible_path, representative_path  # type: ignore
+    except ImportError as exc:
+        raise PreflightError(f"cannot load setup_finalize to place {WORKTREES_DIR}: {exc}") from exc
+    probe = representative_path(WORKTREES_DIR)
+    seen = _git_visible_path(Path(root), probe)
+    info = {"path": WORKTREES_DIR, "git_path": seen, "status": "outside-repo"}
+    if seen is None:
+        return info
+    result = _run_git(root, "check-ignore", "-q", "--no-index", "--", seen)
+    if result.returncode not in (0, 1):
+        raise PreflightError(f"git check-ignore {seen} failed in {root}: {_stderr(result)}")
+    info["status"] = "ignored" if result.returncode == 0 else "not-ignored"
+    return info
+
+
 # ── Cleanliness ──────────────────────────────────────────────────────────
 
 
@@ -416,6 +448,7 @@ def _empty_report(root: str) -> dict:
         "nested_repos": [],
         "off_limits": [],
         "post_checkout_hooks": [],
+        "worktrees_ignore": {"path": WORKTREES_DIR, "git_path": None, "status": "unchecked"},
         "dirty": [],
         "scopes": [],
         "overlaps": [],
@@ -431,6 +464,23 @@ def _exclusion_reason(scope: dict) -> str:
     if scope["class"] == "outside-root":
         return f"{where}; no batch lead can reach it, so it cannot run in harness:batch"
     return f"{where}; run it as an ordinary task in the main checkout, outside the wave"
+
+
+def _worktrees_refusal(git_path: str) -> str:
+    seen = posixpath.dirname(git_path) + "/"
+    if seen == WORKTREES_DIR:
+        where = WORKTREES_DIR
+        fix = (
+            f"add `{seen}` to .gitignore and commit it (setup's "
+            "`--migrate-harness-version` to manifest v7 adds it)"
+        )
+    else:
+        where = f"{WORKTREES_DIR} (git sees {seen})"
+        fix = f"add `{seen}` to .gitignore and commit it"
+    return (
+        f"{where} is not gitignored, so every lead worktree would show up in the main "
+        f"checkout as untracked; {fix}"
+    )
 
 
 def _inspect(report: dict, root: str, common_dir: str) -> None:
@@ -488,6 +538,12 @@ def preflight(repo_root: str, requests: dict) -> dict:
         _inspect(report, root, common_dir)
     except PreflightError as exc:
         report["refusals"].append(str(exc))
+    try:
+        report["worktrees_ignore"] = worktrees_ignore(root)
+    except PreflightError as exc:
+        report["refusals"].append(str(exc))
+    if report["worktrees_ignore"]["status"] == "not-ignored":
+        report["refusals"].append(_worktrees_refusal(report["worktrees_ignore"]["git_path"]))
 
     sub_paths = {entry["path"] for entry in report["submodules"]}
     for slug, paths in requests.items():

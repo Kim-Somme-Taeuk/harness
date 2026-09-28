@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 
+from conftest import ledger_rows, make_tmp_harness_root  # type: ignore
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(REPO_ROOT, "tests", "fixtures", "gstack_adoption")
 
@@ -213,13 +215,26 @@ class TestCodifierPipeline(unittest.TestCase):
             os.unlink(path)
 
     def test_codifier_never_crashes_on_garbage(self):
-        """Codifier should return 0 even on garbage transcript."""
-        with tempfile.TemporaryDirectory() as d:
+        """Codifier should return 0 even on garbage transcript.
+
+        The rejected block is logged to `target_root`'s ledger. Without one the
+        root came from cwd and the rows landed in the developer's gitignored
+        `doc/harness/learnings.jsonl`.
+        """
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as tmp:
+            root = make_tmp_harness_root(tmp)
             transcript = os.path.join(d, "CRITIC__qa.md")
             with open(transcript, "w") as f:
                 f.write("codifiable:\n  - behavior: !!garbage yaml\n    command: [not: valid\n")
-            result = self.module.codify(d, transcript_path=transcript)
+            result = self.module.codify(d, transcript_path=transcript, target_root=root)
+            task_id = os.path.basename(os.path.normpath(d))
+            rows = ledger_rows(root)
         self.assertEqual(result, 0, "codify must never crash")
+        self.assertEqual(
+            sorted((row.get("type"), row.get("task")) for row in rows),
+            [("codifier-fail", task_id), ("codifier-rejected", task_id)],
+            rows,
+        )
 
 
 class TestCodifiableContractInAgentDocs(unittest.TestCase):
@@ -686,27 +701,39 @@ class TestTrivialCommandFilter(unittest.TestCase):
             self.assertIn("trivial-command", log)
 
     def test_learnings_no_leak(self):
-        """codify(target_root=fake) must write learnings inside fake_root, not real repo."""
+        """codify(target_root=fake) must write learnings inside fake_root, not real repo.
+
+        The trivial-command transcript is used because it logs rows: the
+        AC-ID transcript codifies cleanly and logs nothing, which left "no
+        leak" with nothing that could leak. The real ledger is matched by this
+        run's task id, a fresh tmp directory name, rather than by size, which
+        live-session hooks may grow while the test runs.
+        """
         with tempfile.TemporaryDirectory() as fake_root:
-            _make_fake_root_with_manifest(fake_root)
+            make_tmp_harness_root(fake_root)
             with tempfile.TemporaryDirectory() as task_dir:
                 transcript = os.path.join(task_dir, "CRITIC__qa.md")
                 with open(transcript, "w") as f:
-                    f.write(FIXTURE_TRANSCRIPT_WITH_AC_ID)
+                    f.write(FIXTURE_TRANSCRIPT_TRIVIAL)
                 self.module.codify(task_dir, transcript_path=transcript,
                                    target_root=fake_root)
-            real_learnings = os.path.join(REPO_ROOT, "doc", "harness", "learnings.jsonl")
-            if os.path.isfile(real_learnings):
-                with open(real_learnings) as f:
-                    content = f.read()
-                # Must not have entries from this specific test run task
-                # (we can only check that fake_root learnings exist)
-            fake_learnings = os.path.join(fake_root, "doc", "harness", "learnings.jsonl")
-            # Either no log (no blocks skipped) or log is inside fake_root only
-            if os.path.isfile(fake_learnings):
-                with open(fake_learnings) as f:
-                    log = f.read()
-                self.assertIn("qa_codifier", log)
+            task_id = os.path.basename(os.path.normpath(task_dir))
+            fake_rows = ledger_rows(fake_root)
+        self.assertEqual(
+            sorted((row.get("source"), row.get("type"), row.get("task")) for row in fake_rows),
+            [("qa_codifier", "codifier-fail", task_id),
+             ("qa_codifier", "codifier-rejected", task_id)],
+            fake_rows,
+        )
+        # Raw lines, not `ledger_rows`: the real ledger may hold lines that do
+        # not parse, and a row that names this run's tmp task id leaked from it.
+        real = os.path.join(REPO_ROOT, "doc", "harness", "learnings.jsonl")
+        try:
+            with open(real, encoding="utf-8", errors="replace") as f:
+                leaked = [line for line in f if task_id in line]
+        except FileNotFoundError:
+            leaked = []
+        self.assertEqual(leaked, [], "codify leaked a row into the real ledger")
 
     def test_codify_accepts_target_root_kwarg(self):
         """AC-001: codify() writes to target_root, never leaks to real repo."""

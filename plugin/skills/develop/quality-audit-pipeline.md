@@ -99,6 +99,62 @@ Fan-out is exact:
 - **DEEP**: both fresh hunters together, then one fresh full-sweep formal code
   reviewer after both attempts finish.
 
+### Batch integration review scope
+
+Claude-only. This scopes the `review-code` lens of the post-wave
+`harness:batch` integration task (`TASK__batch-integrate-<slug>`). Each lead's
+range already passed its own lead's review and QA, so a range whose
+integration is proven equivalent is carried forward instead of reviewed again.
+A carry inherits the trust of that lead's close; receipts bind no tree. For
+every integrated lead, in integration order, the endpoints are:
+
+- `old_base`: the coordinator HEAD recorded in batch step b.5;
+- `old_tip`: the `commit` the lead returned. Leads commit after `task_close`,
+  so this is the tree their review and QA passed;
+- `new_base`: the main HEAD before that lead's rebase, which is the previous
+  lead's `new_tip`, or `old_base` for the first lead;
+- `new_tip`: the integrated tip recorded after that lead's fast-forward.
+
+A lead range is carried, not re-reviewed, only when all of these hold:
+
+- the rebase-LIGHT proof above holds at that lead's fast-forward point, and
+  its one-to-one patch equivalence is shown by identical ordered
+  `git patch-id --stable` output for both ranges: the patch-id column of
+  `git log -p --reverse <old_base>..<old_tip> | git patch-id --stable` equals,
+  line for line, the one for `<new_base>..<new_tip>`, over the same commit
+  count. Commit ids change when rebased, so only the patch ids are compared;
+  `--stable` ignores whitespace, so a whitespace-sensitive file changed on
+  both sides counts as overlap;
+- the lead integrated through the step d procedure and its rebase never
+  stopped, not through the step e conflict path;
+- the lead's harvested archive (`doc/harness/archive/batch/<task_id>`) shows it
+  closed with PASS: its `TASK.json` has a non-null
+  `close_receipt_fingerprint` and there is no `BLOCKED.md`.
+
+A range that fails any condition is residual. Missing proof alone only rejects
+the carry; conflict, semantic difference, overlap, or evidence loss capable of
+hiding them, including an endpoint that no longer resolves, selects DEEP under
+the rebase failure mapping above.
+
+The residual is everything from `old_base` to the current worktree outside the
+carried ranges. Carried ranges do not count toward cross-component or
+dual-domain, and contribute no other depth predicate; a DEEP request from the
+active instructions still selects DEEP. Select depth by the normal precedence
+above over the residual only. Its parts, in precedence order:
+
+1. conflict resolutions from the step e path (manual-conflict, DEEP);
+2. cross-lead interactions, where a range overlaps what earlier leads changed
+   (DEEP);
+3. non-carried ranges, including any commit outside every lead range;
+4. the integration task's own edits.
+
+An empty residual is LIGHT. For this task the formal reviewer's approved sweep
+scope is the residual; carried ranges are in scope only to verify their carry
+proofs. The formal reviewer invocation's selection reason lists, for each
+lead, its four endpoints, the patch-id comparison result, and its carried or
+residual status. The full suite and `qa-cli` still run on the combined result;
+a carry narrows only `review-code`.
+
 ### Bounded discovery retries
 
 Discovery is advisory and has an ephemeral hard ceiling of two cycles per live

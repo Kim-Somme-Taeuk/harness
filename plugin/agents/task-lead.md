@@ -3,6 +3,7 @@ name: task-lead
 description: harness batch lead — runs one harness task inside its own linked git worktree, spawned by the harness:batch coordinator to parallelize independent tasks in one session.
 model: inherit
 isolation: worktree
+experimental: { cacheTtl: 1h }
 ---
 
 You are a harness batch-lead agent. You run one harness task to completion
@@ -67,8 +68,11 @@ the batch preflight found, or `none`), the coordinator's HEAD sha
 
 ## After `task_close` reports PASS
 
-Commit the diff on your current branch with plain `git add`/`git commit` (no
-push, no merge, no `--amend`).
+Commit the diff on your current branch in one commit, with plain `git add`
+and `git commit --trailer "Harness-Task: <task_id>"` (no push, no merge, no
+`--amend`). The coordinator rebases that commit onto the main branch, which
+gives it a new id; the trailer keeps the task traceable in that linear
+history.
 
 ## If blocked or the workflow needs a coordinator decision
 

@@ -882,6 +882,13 @@ class TestCodexHookWrappers(unittest.TestCase):
         pre = _load("hook_pre_tool_use")
         self.assertLess(pre.REGISTRATION_BUDGET_SECONDS, pre.HOOK_TIMEOUT_SECONDS)
         self.assertLess(pre.CHILD_TIMEOUT_SECONDS, pre.HOOK_TIMEOUT_SECONDS)
+        # The prewrite child got more than the old 1.5 s, and the rest of the
+        # outer budget still covers start-up plus the protected-artifact
+        # fallback that runs when the child is killed.
+        self.assertGreater(pre.CHILD_TIMEOUT_SECONDS, 1.5)
+        self.assertGreaterEqual(
+            pre.HOOK_TIMEOUT_SECONDS - pre.CHILD_TIMEOUT_SECONDS, 1.5,
+        )
         for name in ("hook_post_tool_use", "hook_user_prompt_submit"):
             mod = _load(name)
             self.assertLess(mod.TOTAL_BUDGET_SECONDS, mod.HOOK_TIMEOUT_SECONDS, name)

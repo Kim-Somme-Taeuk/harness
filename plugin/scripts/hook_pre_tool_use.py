@@ -47,7 +47,7 @@ except Exception:  # pragma: no cover - diagnostics must never break the hook
 
 def _payload_cwd(payload: bytes) -> str | None:
     try:
-        data = json.loads(payload.decode("utf-8") or "{}")
+        data = json.loads(payload.decode("utf-8", errors="surrogateescape") or "{}")
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -59,7 +59,10 @@ def _payload_cwd(payload: bytes) -> str | None:
 
 def _tool_name(payload: bytes) -> str:
     try:
-        data = json.loads(payload.decode("utf-8") or "{}")
+        # Every payload parse in this wrapper decodes with surrogateescape, as
+        # prewrite_gate does: one invalid byte in a Write's content must not
+        # hide the tool name and skip the gate.
+        data = json.loads(payload.decode("utf-8", errors="surrogateescape") or "{}")
     except Exception:
         return ""
     if not isinstance(data, dict):
@@ -75,7 +78,7 @@ def _is_subagent_spawn_tool(tool_name: str) -> bool:
 
 def _spawn_task_name(payload: bytes) -> str:
     try:
-        data = json.loads(payload.decode("utf-8") or "{}")
+        data = json.loads(payload.decode("utf-8", errors="surrogateescape") or "{}")
     except Exception:
         return ""
     if not isinstance(data, dict):
@@ -145,7 +148,7 @@ def _harness_root(payload: bytes) -> str:
 
 def _payload_session_id(payload: bytes) -> str:
     try:
-        data = json.loads(payload.decode("utf-8") or "{}")
+        data = json.loads(payload.decode("utf-8", errors="surrogateescape") or "{}")
     except Exception:
         return ""
     if not isinstance(data, dict):
@@ -272,10 +275,18 @@ def _clear_registration_failure(payload: bytes) -> None:
         "last_registration_error": "",
         "last_registration_note": "",
     })
-CHILD_TIMEOUT_SECONDS = 1.5
+# The prewrite gate child's budget. The rest of HOOK_TIMEOUT_SECONDS covers
+# interpreter start, this wrapper's imports, the kill, and the in-process
+# protected-artifact fallback below. HOOK_TIMEOUT_SECONDS itself is set by
+# install.py and is part of the Codex hook trust hash.
+CHILD_TIMEOUT_SECONDS = 3.0
 
 
-def _run(script: str, payload: bytes) -> bytes:
+def _run(script: str, payload: bytes) -> tuple[bytes, bool]:
+    """Return the child's stdout and whether it exited 0.
+
+    A timeout, a spawn failure, or any other error returns ``(b"", False)``.
+    """
     try:
         proc = subprocess.run(
             [sys.executable, os.path.join(SCRIPTS_DIR, script)],
@@ -285,8 +296,25 @@ def _run(script: str, payload: bytes) -> bytes:
             timeout=CHILD_TIMEOUT_SECONDS,
             cwd=_payload_cwd(payload),
         )
-        return proc.stdout or b""
+        return proc.stdout or b"", proc.returncode == 0
     except Exception:
+        return b"", False
+
+
+def _protected_artifact_fallback(payload: bytes) -> bytes:
+    """Deny C-05 protected-artifact targets after the gate child failed.
+
+    A killed or crashed child prints nothing, which would allow the write. The
+    gate's own classifiers decide which targets are protected; everything else
+    stays allowed, and any error here allows too (C-12).
+    """
+    try:
+        import prewrite_gate  # type: ignore
+
+        decision = prewrite_gate.protected_artifact_decision(payload)
+        return decision.encode("utf-8")
+    except (Exception, SystemExit):
+        # prewrite_gate calls sys.exit(0) at import when _lib is unavailable.
         return b""
 
 
@@ -344,7 +372,9 @@ def main() -> int:
     if not script:
         return 0
 
-    out = _run(script, payload)
+    out, finished = _run(script, payload)
+    if not out and not finished:
+        out = _protected_artifact_fallback(payload)
     if out:
         sys.stdout.buffer.write(out)
     return 0

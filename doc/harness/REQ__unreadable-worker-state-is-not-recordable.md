@@ -112,6 +112,12 @@ section naming a line that never ran:
   mutant was `except Exception: pass`, i.e. an ordinary revert would have
   restored the fail-open with nothing going red.
 
+The missing-identity regression explicitly clears `CODEX_THREAD_ID` in its
+test environment (2026-09-28). Otherwise a test run launched from a live Codex
+session can borrow that thread identity, query the worker, and exercise an
+observed failure instead of the intended unreadable-state branch. Production
+identity lookup is unchanged.
+
 ## Note for the next reader
 
 A red test that ships is not a known issue, it is an unresolved contradiction

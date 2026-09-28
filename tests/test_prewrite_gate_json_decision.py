@@ -17,6 +17,8 @@ from conftest import (  # type: ignore
     REPO_ROOT,
     SCRIPTS_DIR,
     invoke_hook,
+    ledger_rows,
+    make_tmp_harness_root,
     parse_decision,
     scratch_task_in_real_repo,
 )
@@ -235,15 +237,27 @@ class TestWorkflowControlSurface(unittest.TestCase):
 
 class TestEnvEscape(unittest.TestCase):
     def test_skip_env_allows_and_logs_bypass(self):
-        with scratch_task_in_real_repo("pr1-skip") as task_dir:
-            plan = os.path.join(task_dir, "PLAN.md")
-            # Without the env var this would be deny; with it → silent allow.
-            r = invoke_hook(
-                GATE, "Write", {"file_path": plan},
-                env_extra={"HARNESS_SKIP_PREWRITE": "1"},
-            )
-            self.assertEqual(r.returncode, 0)
-            self.assertEqual(r.stdout, "")
+        # The bypass row goes to the ledger of the checkout the gate runs in,
+        # so the gate runs in a tmp one: from the real repo it appended to the
+        # developer's gitignored `doc/harness/learnings.jsonl`.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_tmp_harness_root(tmp)
+            with scratch_task_in_real_repo("pr1-skip", repo_root=root) as task_dir:
+                plan = os.path.join(task_dir, "PLAN.md")
+                # Without the env var this would be deny; with it → silent allow.
+                r = invoke_hook(
+                    GATE, "Write", {"file_path": plan},
+                    env_extra={"HARNESS_SKIP_PREWRITE": "1"},
+                    cwd=root,
+                )
+                self.assertEqual(r.returncode, 0)
+                self.assertEqual(r.stdout, "")
+            rows = ledger_rows(root)
+        self.assertEqual(
+            [(row.get("type"), row.get("path")) for row in rows],
+            [("gate-bypass", plan)],
+            rows,
+        )
 
 
 class TestFailSafe(unittest.TestCase):

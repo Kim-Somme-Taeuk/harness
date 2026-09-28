@@ -52,15 +52,19 @@ Before spawning anything:
      to commit or stash in the named repo. A post-checkout hook that mentions
      `submodule` in a repository with submodules also refuses, because it
      would initialize them in every lead worktree. So does a directory the
-     script cannot read: it could hide a nested repo.
+     script cannot read: it could hide a nested repo. So does a
+     `.claude/worktrees/` that is not gitignored (step b.3).
    - `verdict: "adjust"`: drop each `excluded_requests` entry (step a), move
      one request of each `overlaps` pair to a later wave, and rerun.
 2. `.claude/settings.json` must have `"worktree": {"baseRef": "head"}`. If it
    is missing or set to anything else, stop and instruct the user to add it —
    this skill does not edit a project's own settings file (C-15: user-owned
    settings are not overwritten by a skill).
-3. `.claude/worktrees/` must be gitignored (`git check-ignore .claude/worktrees/x`).
-   If it is not ignored, stop and instruct the user to add it.
+3. `.claude/worktrees/` must be gitignored. The step b.1 script checks this
+   at the path git actually sees (report key `worktrees_ignore`) and refuses
+   otherwise; a `.claude` symlink that leads outside the repository passes.
+   On that refusal, stop and instruct the user to add the path the refusal
+   names to `.gitignore`.
 4. No harness task may be open in the main checkout for this session while a
    wave runs: if the session's `[harness-context]` names an open task, park it
    with `task_blocked` or close it first. A lead's late lens stop that
@@ -93,53 +97,71 @@ oversubscribe CPU and IO past that point (see the REQ doc).
 Each lead returns a fenced JSON block: `{"task_id","worktree","branch","commit","verdict","blocked_reason"}`.
 
 Leads are integrated by rebase and fast-forward, never by a merge commit, so
-the main branch history stays linear. A lead's branch is checked out in its
-own worktree, so the rebase runs there, and afterwards `batch_harvest.py`
-finds that worktree's HEAD on the main history.
+the main branch history stays linear. `batch_finish.py` runs this whole step
+for one lead.
 
-For every lead with `verdict: "closed"`, **in order**, from the main checkout:
+1. For every lead with `verdict: "closed"`, **in order**, from the main
+   checkout:
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_finish.py --repo <main checkout> --worktree <W> --branch <branch> --task-id <id> --commit <commit>`
+   It first checks, and changes nothing when a check fails: `<commit>` is the
+   branch tip, the lead worktree is clean, the main checkout is clean and on
+   a branch, and the branch holds no merge commit
+   (`git rev-list --merges "$(git rev-parse HEAD)..<branch>"` prints
+   nothing), because a rebase would drop whatever a merge commit itself
+   changed. Then it rebases inside the lead's worktree, where the branch is
+   checked out (`git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"`),
+   fast-forwards the main checkout (`git merge --ff-only <branch>`), copies
+   the lead's gitignored task evidence and learnings into the main checkout
+   with `batch_harvest.py` before the worktree is gone, releases Claude
+   Code's agent lock only when `git worktree list --porcelain` shows one
+   (`git worktree unlock <W>`), and runs `git worktree remove <W>` and
+   `git branch -d <branch>`. The script never stashes or passes `--force`;
+   around it, never stash, pass `--force`, or fall back to a merge commit
+   either. Run it only for a lead that has returned: never unlock a worktree
+   whose lead is still running.
+2. It prints one JSON result (`status`, `reason`, `conflicted_paths`,
+   `returned_commit`, `branch_tip`, `integrated_tip`, `trailer_present`,
+   `harvest`, `cleanup`). Act on `status`:
+   - `integrated` (exit 0): record `integrated_tip`, the main HEAD after the
+     fast-forward; the lead's returned `commit` is its pre-rebase tip, and
+     every lead after the first gets new commit ids. Go on to the next
+     closed lead.
+   - `kept` (exit 3): keep the worktree, report the lead as kept like a
+     blocked lead with `reason`, and go on to the next closed lead. Causes: a
+     failed check (merge commit, dirty lead worktree, a returned commit that
+     is not the tip, a rebase already in progress); a rebase failure without
+     conflicted paths (an untracked file the rebase would overwrite, a hook
+     or signing failure), after which the script lists
+     `git -C <W> diff --name-only --diff-filter=U` and, when a rebase is in
+     progress, runs `git -C <W> rebase --abort`, which puts the lead's branch
+     and worktree back exactly as the lead left them; a harvest refusal; a
+     removal refusal; or a `git branch -d` refusal. When `integrated_tip` is
+     set, the lead's commits are already on the main branch and only what
+     `cleanup` shows as not removed was kept: the worktree (and, after a
+     harvest refusal, its evidence), which rerunning the step d.1 command
+     with `--resume` finishes once the cause is fixed; or, when
+     `cleanup.removed` is true, just the branch, which you delete with
+     `git branch -d <branch>` once the cause is fixed. If `git worktree remove`
+     refused because a submodule was initialized in the worktree, keep it
+     and report it like a blocked lead: `--force` would delete the
+     worktree's module store and any submodule commit that exists nowhere
+     else.
+   - `conflict` (exit 4): the rebase stopped on `conflicted_paths` and the
+     script aborted it. Stop integrating further leads from this wave and
+     carry the conflict into the integration task (step e). Do not resolve
+     conflicts here.
+   - `ff-refused` (exit 5): the main checkout is not clean or not on a
+     branch, or `git merge --ff-only` refused because the main checkout
+     moved. Stop integrating and report it before step e. When `branch_tip`
+     differs from `returned_commit`, the branch was already rebased: finish
+     that lead later with `--resume`.
+   - Any other exit (1: unexpected error, 2: usage): stop integrating and
+     report the output. A usage error caused by a value the lead returned
+     (for example `"commit": null`) only concerns that lead: report it as
+     kept and go on to the next closed lead.
 
-1. The lead branch must hold no merge commit, because a rebase would drop
-   whatever that merge commit itself changed:
-   `git rev-list --merges "$(git rev-parse HEAD)..<branch>"` must print
-   nothing. Otherwise keep the worktree, report the lead as kept like a
-   blocked lead, and go on to the next closed lead. Then rebase the lead
-   branch onto the main checkout's current HEAD inside the lead's worktree,
-   and fast-forward the main checkout:
-   `git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"`, then
-   `git merge --ff-only <branch>`. For the first lead of a wave the rebase is
-   a no-op; each later lead lands on top of the ones before it, with new
-   commit ids. Record `git rev-parse HEAD` after the fast-forward as that
-   lead's integrated tip: the `commit` the lead returned is its pre-rebase
-   tip.
-2. If the rebase exits non-zero, first list conflicted paths with
-   `git -C <W> diff --name-only --diff-filter=U`, then run
-   `git -C <W> rebase --abort`. The abort puts the lead's branch and worktree
-   back exactly as the lead left them; when the rebase never started it only
-   prints "No rebase in progress?". With conflicted paths: stop integrating
-   further leads from this wave and carry the conflict into the integration
-   task (step e). Do not resolve conflicts here. Without conflicted paths (a
-   dirty lead worktree, an untracked file the rebase would overwrite, a hook
-   or signing failure): keep that worktree, report the lead as kept like a
-   blocked lead, and go on to the next closed lead. If `git merge --ff-only`
-   refuses, the main checkout moved: stop integrating and report it before
-   step e. Never stash, pass `--force`, or fall back to a merge commit.
-3. After the fast-forward: run
-   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_harvest.py --worktree <W> --task-id <id>`
-   to copy the lead's gitignored task evidence and learnings into the main
-   checkout before the worktree is gone. A non-zero exit (a lead HEAD not yet
-   on the main history, symlinked or non-regular evidence, an archive that
-   already holds different evidence for the same task id) stops removal of
-   that worktree.
-4. The lead has returned, but Claude Code keeps its agent lock on the
-   worktree, so release it first: `git worktree unlock <W>`. Then
-   `git worktree remove <W>` and `git branch -d <branch>`. Never pass
-   `--force` to either — a failure there (dirty worktree, unmerged branch)
-   means something is wrong and must be looked at, not overridden. Never
-   unlock a worktree whose lead is still running. If `git worktree remove`
-   refuses because a submodule was initialized in the worktree, keep it and
-   report it like a blocked lead: `--force` would delete the worktree's
-   module store and any submodule commit that exists nowhere else.
+   Whatever the status, a non-null `integrated_tip` means the lead's commits
+   are already on the main branch.
 
 A lead with `verdict: "blocked"` or `"failed"`: report it, and leave its
 worktree and branch in place — never remove or force-remove them. The
@@ -153,18 +175,24 @@ stopped at a conflict carried from step d.2 — open
 `harness:run` lifecycle (`task_start` → plan → develop → QA → close). Under
 that task:
 
-1. Resolve any conflicts carried from step d.2 under this task: rerun the
-   step d.1 rebase in that lead's worktree, resolve each stopped commit in
-   the worktree's files, `git -C <W> add <paths>`, and
+1. Resolve any conflict carried from step d.2 under this task: rerun the
+   rebase in that lead's worktree
+   (`git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"`), resolve each
+   stopped commit in the worktree's files, `git -C <W> add <paths>`, and
    `GIT_EDITOR=true git -C <W> rebase --continue` (without an editor,
    `--continue` fails); repeat for each commit the rebase stops at. Then
-   `git merge --ff-only <branch>`, and harvest and
-   remove that lead's worktree exactly as in steps d.3–d.4. Then continue
-   steps d.1–d.4 in order for every remaining closed lead of the wave,
-   resolving any further conflicts under this same task, so every closed lead
-   not kept in step d is on the main branch before the full suite runs.
+   rerun the step d.1 command with `--resume`: the branch tip is no longer
+   the `commit` the lead returned, which `--resume` accepts, and the script
+   fast-forwards, harvests, and removes that lead's worktree as in step d.
+   Then continue step d in order for every remaining closed lead of the
+   wave, resolving any further conflicts under this same task, so every
+   closed lead not kept in step d is on the main branch before the full
+   suite runs.
 2. Run the full suite (e.g. `uv run pytest tests/ -q`).
-3. Run `review-code` and `qa-cli`.
+3. Run `review-code` and `qa-cli`. Scope `review-code` by § Batch integration
+   review scope in `plugin/skills/develop/quality-audit-pipeline.md`: give the
+   reviewer each lead's `old_base`, `old_tip`, `new_base`, and `new_tip`, its
+   patch-id result, and carried or residual status.
 4. In this plugin source repo, before `task_close`, run
    `python3 plugin/scripts/install_verified.py --task-dir <integration task dir>`
    — this is the only place `install_verified.py` runs in batch mode; leads
@@ -186,11 +214,16 @@ unlock → remove gap never has it).
 ## g) Report
 
 Give the user a table: task slug → branch → verdict → the lead's returned
-`commit` → integrated tip from step d.1. Instead of a tip, write "kept,
-unmerged" for blocked/failed leads and, with the reason, for closed leads kept
-in step d (merge commit, rebase failure, removal refusal); write "not
-integrated" for closed leads left when integration stopped at an `--ff-only`
-refusal. Add a row for every request the
+`commit` → integrated tip (`integrated_tip` from `batch_finish.py`). Instead
+of a tip, write "kept, unmerged" for blocked/failed leads and, with the
+`reason`, for closed leads the script kept before the fast-forward (merge
+commit, dirty worktree, rebase failure); write "integrated, worktree kept"
+with the tip and the `reason` for a `kept` result that carries an
+`integrated_tip` (harvest or removal refusal), or "integrated, branch kept"
+when its `cleanup.removed` is true (`git branch -d` refusal); write "not integrated" for
+closed leads left when integration stopped at `ff-refused` or an error. Note every lead
+whose result has `trailer_present: false`: its commits carry no
+`Harness-Task` trailer. Add a row for every request the
 preflight kept out of the wave: "excluded (ordinary task, done or pending)",
 "deferred to a later wave", or "outside the root, not batchable". End with
 the integration task's verdict.

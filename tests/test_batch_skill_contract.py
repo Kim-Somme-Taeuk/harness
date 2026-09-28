@@ -46,11 +46,32 @@ def _assert_all(body: str, fragments: tuple[str, ...], path: Path) -> None:
 def test_task_lead_frontmatter_declares_worktree_isolation_and_inherits_tools():
     meta = _frontmatter(TASK_LEAD)
     assert meta.get("isolation") == "worktree", TASK_LEAD
+    assert meta.get("model") == "inherit", TASK_LEAD
     # A lead runs the whole lifecycle: it needs Agent, Skill and the harness MCP
     # task tools under whatever server name the host exposes (plugin-scoped
     # `mcp__plugin_harness_harness__*` or a user-level `mcp__harness__*`). A
     # `tools:` allowlist naming one form strips the tools under the other.
     assert "tools" not in meta, f"{TASK_LEAD}: must inherit the session's tools"
+
+
+def test_task_lead_keeps_a_one_hour_prompt_cache_per_agent_only():
+    # Per-agent flow form, the shape Claude Code's agent schema accepts
+    # ("5m" | "1h"). A session-wide subagentPromptCacheTtl was rejected.
+    assert _frontmatter(TASK_LEAD).get("experimental") == "{ cacheTtl: 1h }"
+    surfaces = [p for p in (REPO / "plugin").rglob("*") if p.is_file()]
+    surfaces.append(REPO / ".claude" / "settings.json")
+    offenders = [
+        str(path.relative_to(REPO)) for path in surfaces
+        if "subagentPromptCacheTtl" in path.read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert offenders == []
+
+
+def test_task_lead_commits_once_with_a_harness_task_trailer():
+    norm = _normalized(_text(TASK_LEAD))
+    assert _normalized('git commit --trailer "Harness-Task: <task_id>"') in norm
+    assert _normalized("in one commit") in norm
+    assert "--amend" in norm
 
 
 def test_task_lead_body_states_batch_carveouts():
@@ -92,6 +113,7 @@ def test_batch_skill_names_every_coordinator_step():
             "3 concurrent leads",
             "git merge --ff-only",
             "rebase --no-autostash",
+            "batch_finish.py",
             "batch_harvest.py",
             "git worktree remove",
             "never",
@@ -172,17 +194,37 @@ def test_root_claude_md_states_batch_focus_and_install_clauses():
     ) in body
 
 
-def test_batch_skill_runs_harvest_from_plugin_root_unlocks_and_integrates_every_closed_lead():
+def test_batch_skill_runs_the_finish_helper_from_plugin_root_and_integrates_every_closed_lead():
     body = _text(BATCH_SKILL)
     norm = _normalized(body)
     # User projects have no plugin/scripts/; the installed payload does.
-    assert "${claude_plugin_root}/scripts/batch_harvest.py" in norm
-    assert "python3 plugin/scripts/batch_harvest.py" not in norm
-    # Claude Code keeps its agent lock after the lead returns.
+    assert "${claude_plugin_root}/scripts/batch_finish.py" in norm
+    assert "python3 plugin/scripts/batch_finish.py" not in norm
+    # batch_finish.py owns harvest; the skill no longer calls it directly.
+    assert "scripts/batch_harvest.py" not in norm
+    assert _normalized(
+        "--repo <main checkout> --worktree <W> --branch <branch> --task-id <id> --commit <commit>"
+    ) in norm
+    # Claude Code keeps its agent lock after the lead returns; the helper
+    # releases it only when the worktree is locked.
     assert "git worktree unlock" in norm
+    assert _normalized("only when `git worktree list --porcelain` shows one") in norm
     assert _normalized("never unlock a worktree whose lead is still running") in norm
-    # A conflict never strands later closed leads.
-    assert _normalized("continue steps d.1–d.4 in order for every remaining closed lead") in norm
+    # Every status the helper prints has a coordinator action.
+    for status, code in (
+        ("integrated", 0), ("kept", 3), ("conflict", 4), ("ff-refused", 5),
+    ):
+        assert f"`{status}` (exit {code})" in norm, status
+    assert _normalized("any other exit (1: unexpected error, 2: usage): stop integrating") in norm
+    # Step e.1 resumes a resolved lead; a conflict never strands later leads.
+    assert _normalized("rerun the step d.1 command with `--resume`") in norm
+    assert _normalized("continue step d in order for every remaining closed lead") in norm
+    # Step g reports both tips and the traceability trailer.
+    assert _normalized("integrated, worktree kept") in norm
+    # After a `git branch -d` refusal the worktree is gone: no rerun helps.
+    assert _normalized("integrated, branch kept") in norm
+    assert _normalized("`git branch -d <branch>` once the cause is fixed") in norm
+    assert "`trailer_present: false`" in norm
 
 
 def test_c09_batch_clause_is_in_root_and_template_contracts():
@@ -248,6 +290,10 @@ def test_batch_skill_gates_spawning_on_the_repo_shape_preflight():
     )
     # The plain root-only status check is gone; the script owns cleanliness.
     assert _normalized("`git status --porcelain` in the main checkout must be empty") not in norm
+    # Step b.3 moved into the script: git sees a symlinked `.claude` elsewhere.
+    assert "git check-ignore .claude/worktrees/x" not in norm
+    assert "`worktrees_ignore`" in norm
+    assert _normalized("at the path git actually sees") in norm
 
 
 def test_task_lead_forbids_submodule_commands_and_nested_repo_edits():
@@ -275,6 +321,7 @@ def test_req_documents_worktree_location_and_multi_repo_shapes():
     body = _text(path)
     frontmatter = body.split("\n---", 1)[0]
     assert "plugin/scripts/batch_preflight.py" in frontmatter
+    assert "plugin/scripts/batch_finish.py" in frontmatter
     assert "\n## Worktree location\n" in body
     assert "\n## Multi-repo and submodules\n" in body
     _assert_all(

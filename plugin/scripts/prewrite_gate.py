@@ -8,11 +8,21 @@ Signalling contract:
     ``|| true`` (C-12 fail-safe) does not mask the decision because it rides
     on stdout payload, not the process exit code.
   - Allow: silent exit 0 (silence is the trust signal for allowed calls).
-  - Unexpected exception inside main() → logged via ``_log_gate_error`` and
+  - Unexpected exception inside main() → logged via ``log_gate_crash`` and
     exit 0 (fail-open). Top-level import errors are caught at module load so
     a broken ``_lib`` cannot freeze the session.
 
-Escape hatch: ``HARNESS_SKIP_PREWRITE=1`` → one-shot allow + log ``gate-bypass``.
+Payload: the whole stdin payload is parsed, whatever its size (see
+``_read_whole_hook_input``).
+
+Escape hatch: ``HARNESS_SKIP_PREWRITE=1`` → allow + log ``gate-bypass``. The
+gate reads the variable on every call and never clears it, so it
+applies to every write while set in the runtime's environment.
+
+Codex fallback: ``protected_artifact_decision`` runs only the C-05 rules. The
+Codex PreToolUse wrapper calls it in-process when this gate's child process
+times out or crashes (see hook_pre_tool_use.py).
+
 Dormant-repo behavior follows manifest strictness. Strict-compliance repos
   deny source writes until task_start establishes the canonical loop. Other
   repos remain fail-open when no task is active.
@@ -543,8 +553,9 @@ def _handle_scope_lock(file_path, active_dir, repo_root, task_id):
     is True, and is the full human + tail + escape-hint blob ready for
     ``emit_permission_decision``. Tests consume it to assert message content.
 
-    One-shot bypass via ``HARNESS_DISABLE_SCOPE_LOCK=1``; the env var's
-    lifetime belongs to the shell invoking the hook.
+    ``HARNESS_DISABLE_SCOPE_LOCK=1`` skips this check. The gate reads it on
+    every call and never clears it, so the bypass
+    applies to every write while set in the runtime's environment.
     """
     if os.environ.get("HARNESS_DISABLE_SCOPE_LOCK") == "1":
         try:
@@ -585,7 +596,8 @@ def _handle_scope_lock(file_path, active_dir, repo_root, task_id):
             f"forbidden: {matching}. allowed: {allowed_summary}. "
             f"Options: (a) edit doc/harness/tasks/{task_id}/PROGRESS.md to move "
             f"to allowed_paths, (b) revert this edit and move it to a separate "
-            f"task, (c) one-shot bypass via HARNESS_DISABLE_SCOPE_LOCK=1."
+            f"task, (c) bypass via HARNESS_DISABLE_SCOPE_LOCK=1 (applies to "
+            f"every write while set in the runtime's environment)."
         )
         tail = _tail("scope-lock-forbidden", file_path, "developer", repo_root)
         hint = _escape_hint(GATE_NAME)
@@ -616,7 +628,15 @@ def _has_open_tasks(tasks_dir: str) -> bool:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
-def _check_path(data: dict, file_path: str) -> None:
+def _check_path(data: dict, file_path: str, protected_only: bool = False) -> None:
+    """Emit a deny for ``file_path`` on stdout, or nothing to allow it.
+
+    ``protected_only`` limits the check to the C-05 rules (runtime provenance,
+    another checkout's protected artifact, this root's protected artifacts).
+    A root with an invalid manifest keeps C-05 because the full gate denies
+    every write there; the other non-C-05 denies and all task-state rules are
+    skipped.
+    """
     payload_cwd = str(data.get("cwd") or "").strip()
     hook_cwd = os.path.realpath(payload_cwd or os.getcwd())
     requested_path = os.path.abspath(
@@ -630,15 +650,16 @@ def _check_path(data: dict, file_path: str) -> None:
         harness_root, harness_error = harness_root_resolution(candidate_root)
         repo_root = harness_root or candidate_root
     if harness_error:
-        _deny(
-            "invalid-harness-workspace",
-            requested_path,
-            "harness:setup",
-            f"Harness workspace configuration is invalid: {harness_error}",
-            repo_root,
-        )
-        return 0
-    if not is_harness_enabled_repo(repo_root):
+        if not protected_only:
+            _deny(
+                "invalid-harness-workspace",
+                requested_path,
+                "harness:setup",
+                f"Harness workspace configuration is invalid: {harness_error}",
+                repo_root,
+            )
+            return 0
+    elif not is_harness_enabled_repo(repo_root):
         return 0
     file_path = os.path.realpath(requested_path)
     if any(
@@ -662,7 +683,7 @@ def _check_path(data: dict, file_path: str) -> None:
     except ValueError:
         physical_common = ""
     if physical_common != repo_root:
-        if requested_common == repo_root:
+        if requested_common == repo_root and not protected_only:
             _deny(
                 "symlink-outside-control",
                 requested_path,
@@ -700,7 +721,7 @@ def _check_path(data: dict, file_path: str) -> None:
         _deny("C-05-protected-artifact", file_path, owner, human, repo_root)
         return 0
 
-    if inside_task_dir:
+    if protected_only or inside_task_dir:
         return 0
 
     # Exempt prefixes (harness operational files) allowed without a task.
@@ -824,24 +845,86 @@ def _write_paths(data: dict) -> list[str]:
     return list(dict.fromkeys(path.removesuffix("\r") for path in paths))
 
 
-def main():
-    data = read_hook_input()
-    if not data:
-        return 0
+def _parse_hook_payload(raw: bytes | str) -> dict:
+    """Parse ``raw`` through ``read_hook_input`` with an exact ``max_chars``.
+
+    Bytes decode as UTF-8 with ``surrogateescape`` whatever the locale, so the
+    gate child and the Codex wrapper's in-process fallback read the same
+    payload the same way and a stray byte cannot turn into an empty payload.
+    ``read_hook_input`` also caches the object for ``last_hook_input()``, which
+    root/session resolution and the crash log read, so it must stay the parser.
+    Its shared 64 KiB default would cut a larger Write/Edit/apply_patch payload
+    mid-JSON, parse it to ``{}``, and allow the write.
+    """
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="surrogateescape")
+    saved = sys.stdin
+    sys.stdin = StringIO(raw)
+    try:
+        return read_hook_input(max_chars=len(raw) + 1)
+    finally:
+        sys.stdin = saved
+
+
+def _read_whole_hook_input() -> dict:
+    """Read stdin to EOF and parse it.
+
+    A fixed huge ``max_chars`` is not used: ``stdin.read(n)`` on a pipe can
+    allocate ``n`` bytes up front, and the resulting MemoryError would parse to
+    ``{}`` and allow. A terminal stdin is never a hook payload and reads as
+    empty instead of blocking.
+    """
+    stdin = sys.stdin
+    try:
+        interactive = stdin.isatty()
+    except Exception:
+        interactive = False
+    raw = b""
+    if not interactive:
+        try:
+            stream = getattr(stdin, "buffer", None)
+            raw = stream.read() if stream is not None else stdin.read()
+        except Exception:
+            raw = b""
+    return _parse_hook_payload(raw)
+
+
+def _decision(data: dict, protected_only: bool = False) -> str:
+    """Return the deny JSON for the first denied write target, or ``""``."""
     paths = _write_paths(data)
 
-    # One-shot escape hatch: log and allow (silent stdout).
+    # Escape hatch: read on every call and never cleared (log and allow).
     if os.environ.get("HARNESS_SKIP_PREWRITE") == "1":
         log_gate_bypass(GATE_NAME, ",".join(paths)[:400])
-        return 0
+        return ""
 
     for file_path in paths:
         decision = StringIO()
         with redirect_stdout(decision):
-            _check_path(data, file_path)
+            _check_path(data, file_path, protected_only=protected_only)
         if decision.getvalue():
-            sys.stdout.write(decision.getvalue())
-            return 0
+            return decision.getvalue()
+    return ""
+
+
+def protected_artifact_decision(payload: bytes | str) -> str:
+    """Return the C-05 deny JSON for ``payload``'s write targets, or ``""``.
+
+    The Codex PreToolUse wrapper calls this in-process when the gate child
+    times out, exits nonzero without output, or cannot start. Only the C-05
+    rules run; every other write stays allowed there (C-12).
+    """
+    data = _parse_hook_payload(payload)
+    return _decision(data, protected_only=True) if data else ""
+
+
+def main():
+    data = _read_whole_hook_input()
+    if not data:
+        return 0
+    decision = _decision(data)
+    if decision:
+        sys.stdout.write(decision)
     return 0
 
 

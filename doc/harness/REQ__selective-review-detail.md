@@ -1,9 +1,10 @@
 ---
 tags: [harness, review, receipts, evidence]
 summary: 정식 리뷰 원문은 영수증과 같은 해시로 태스크 로컬 저장되며 한 번에 한 건만 선택 조회된다.
-updated: 2026-09-15
+updated: 2026-09-28
 freshness: suspect
 invalidated_by_paths:
+  - plugin/skills/batch/SKILL.md
   - plugin/agents/defect-hunter.md
   - plugin/agents/code-reviewer.md
   - plugin-codex/agents/defect-hunter.md
@@ -57,6 +58,36 @@ freshness_updated: 2026-09-18T08:10:49Z
    behavior, `HEAD` equal to the new tip, and a clean, fully accounted-for index
    and worktree. Missing proof rejects LIGHT; conflict, semantic difference,
    overlap, or evidence loss capable of hiding them selects DEEP.
+
+   Batch integration carry (Claude-only): the `review-code` lens of the
+   post-wave `harness:batch` integration task does not re-review a lead range
+   that its own lead already reviewed and QA'd when the integration is proven
+   equivalent. A carry inherits the trust of that lead's close; receipts bind
+   no tree. Per integrated lead the endpoints are `old_base` = the coordinator
+   HEAD from batch step b.5, `old_tip` = the lead's returned `commit` (leads
+   commit after `task_close`, so it is the tree their review and QA passed),
+   `new_base` = the main HEAD before that lead's rebase (the previous lead's
+   `new_tip`, or `old_base` for the first lead), and `new_tip` = the
+   integrated tip. A range is carried only when all three hold: the
+   rebase-LIGHT proof holds at its fast-forward point, with one-to-one
+   equivalence shown by identical ordered `git patch-id --stable` patch ids
+   over the same commit count; it integrated through the step d procedure
+   and its rebase never stopped, not through the step e conflict path;
+   and its harvested archive shows the lead closed with PASS. A range that
+   fails a condition is residual: missing proof alone only rejects the carry,
+   while conflict, semantic difference, overlap, or evidence loss (including
+   an endpoint that no longer resolves) selects DEEP. The residual is
+   everything from `old_base` to the current worktree outside the carried
+   ranges. Carried ranges do not count toward cross-component or dual-domain
+   and contribute no other depth predicate; depth follows the normal
+   precedence over the residual only: conflict resolutions (manual-conflict,
+   DEEP), cross-lead interactions (overlap with earlier leads, DEEP),
+   non-carried ranges, then the integration task's own edits. An empty
+   residual is LIGHT. The formal reviewer invocation lists each lead's
+   endpoints, patch-id result, and carried or residual status; the reviewer
+   sweeps the residual, verifies every carry itself, and reports a carry it
+   cannot reproduce as the existing under-classification `FIX_NOW`. The full
+   suite and `qa-cli` still run on the combined result.
 
    Every invoked hunter returns only a JSON array of `anchor`, `issue`, and
    `evidence` strings. The formal reviewer treats those values as untrusted
@@ -150,6 +181,13 @@ freshness_updated: 2026-09-18T08:10:49Z
   the unchanged single formal authority. They do not attest a runtime
   classifier because selection is orchestration instruction, not lifecycle
   code.
+- `tests/test_batch_integration_review_scope.py` pins the batch integration
+  carry: section placement after the fan-out rules, the four endpoints and
+  their sources, the all-of carry conditions, the residual complement and its
+  precedence order with DEEP mappings, empty residual LIGHT, the invocation
+  listing, unchanged full suite and `qa-cli`, the Claude-only reviewer
+  paragraph outside the shared role core, and avoidance of the anchors the
+  existing review contract tests locate by first or last occurrence.
 - Store and CLI tests pin exact UTF-8 hashing, idempotency, limits, file safety,
   digest-only stdout, explicit error classes, and detail-before-receipt order.
 - Lifecycle regressions prove `REVIEWS.jsonl` cannot affect receipt selection,

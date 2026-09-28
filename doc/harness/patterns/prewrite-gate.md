@@ -1,36 +1,80 @@
 ---
-title: prewrite_gate — plan-first + protected artifacts + scope lock
-freshness: suspect
+title: prewrite_gate — protected artifacts, plan-first, scope lock
+freshness: current
 invalidated_by_paths:
   - plugin/scripts/prewrite_gate.py
+  - plugin/scripts/hook_pre_tool_use.py
   - plugin/scripts/_lib.py
   - plugin/hooks/hooks.json
 tier: 2
-freshness_updated: 2026-04-26T14:50:21Z
+freshness_updated: 2026-09-28T08:01:12Z
 ---
 
 # prewrite_gate
 
-PreToolUse hook on `Write` / `Edit` / `MultiEdit`. Blocks writes that would
-violate harness invariants. The hook wrapper preserves C-12 fail-safe (`|| true`)
-by signalling decisions via stdout JSON rather than exit code.
+`plugin/scripts/prewrite_gate.py` gates direct writes. Claude runs it as the
+PreToolUse hook for `Write|Edit|MultiEdit` (`plugin/hooks/hooks.json`). Codex
+runs it as a child of `plugin/scripts/hook_pre_tool_use.py` for
+`Write|Edit|MultiEdit|apply_patch`. Bash and shell writes are not gated.
+
+A deny is a JSON object on stdout and the gate exits 0:
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+  "permissionDecision": "deny", "permissionDecisionReason": "..."}}
+```
+
+An allow prints nothing. The hook command ends with `|| true` (C-12); that
+cannot mask a deny because the decision rides on stdout, not on the exit code.
+
+## Payload
+
+The gate reads the whole stdin payload and hands it to
+`_lib.read_hook_input` with an exact `max_chars`
+(`prewrite_gate._read_whole_hook_input`). The shared 64 KiB default of
+`read_hook_input` stays in place for other hooks. With that default, a
+Write/Edit/MultiEdit/apply_patch payload over 64 KiB was cut mid-JSON, parsed
+to `{}`, and allowed, protected artifacts included.
+
+The gate does not pass a fixed large cap instead: `sys.stdin.read(n)` on a pipe
+can allocate `n` bytes for a read, so a very large `n` can raise `MemoryError`,
+and `read_hook_input` would turn that into the same silent allow. A payload
+too large to read or parse in memory is still allowed.
+
+The payload bytes decode as UTF-8 with `surrogateescape` whatever the locale
+(`_parse_hook_payload`), so an invalid byte cannot empty the payload. The Codex
+wrapper decodes the tool name the same way before it dispatches to the gate,
+and its fallback below passes the same bytes to the same parser.
+
+Write targets come from `tool_input.file_path` (or `.path`). For `apply_patch`
+the gate collects every `*** Add/Update/Delete File:` target, then every
+`*** Move to:` target, without duplicates. Relative paths resolve against the
+payload `cwd`. Paths are checked in that order and the first deny ends the
+call.
 
 ## Rules (in order)
 
-| # | Rule id | When | Deny owner (`owner=`) |
-|---|---------|------|-----------------------|
-| 1 | (escape) | `HARNESS_SKIP_PREWRITE=1` | — (silent allow, logs `gate-bypass`) |
-| 2 | `C-05-protected-artifact` | Write to any `PROTECTED_ARTIFACTS` basename *inside* a task dir | the owning skill / CLI |
-| 2a | `C-05-protected-artifact` | Target outside the cwd's Harness root that is a protected artifact of *its own* valid Harness root (see [Cross-checkout protection](#cross-checkout-protection)); any other out-of-root target is a silent allow | same as rule 2 |
-| 3 | (allow) | Other writes *inside* any task dir | — |
-| 4 | (allow) | Paths under `EXEMPT_PREFIXES` | — |
-| 5 | `workflow-control-surface` | Write to any `WORKFLOW_CONTROL_SURFACE` entry without a MAINTENANCE marker on the active task | `maintain-skill` |
-| 6 | `no-active-task` | Source write without `.active` pointer | `plan-skill` |
-| 7 | `invalid-active` | `.active` unreadable / missing / out of tree | `plan-skill` |
-| 8 | `C-02-plan-first` | Source write but active task lacks `PLAN.md` (and no MAINTENANCE marker) | `plan-skill` |
-| 9 | `scope-lock-forbidden` | Path matches `forbidden_paths` in the active task's `PROGRESS.md` | `developer` |
+| # | Rule id | When | Result (`owner=`) |
+|---|---------|------|-------------------|
+| 0 | — | Empty payload, or not a JSON object | silent allow |
+| 1 | (escape) | `HARNESS_SKIP_PREWRITE=1` | silent allow, logs `gate-bypass` |
+| 2 | `invalid-harness-workspace` | The payload `cwd`'s Harness root cannot be resolved (manifest or a path component is a symlink, not a regular file, unreadable) | deny (`harness:setup`) |
+| 3 | — | No regular `doc/harness/manifest.yaml` at the root | silent allow |
+| 4 | `C-05-protected-artifact` | Target is a Claude subagent transcript (`<config>/projects/**/subagents/agent-*.jsonl`) or a Codex rollout (`<codex home>/sessions/**/rollout-*.jsonl`) | deny (`claude-runtime`) |
+| 5 | `symlink-outside-control` | The requested path is inside the root but its realpath is outside | deny (`developer`) |
+| 6 | `C-05-protected-artifact` | Target outside the root that is a protected artifact of *its own* valid Harness root (see [Cross-checkout protection](#cross-checkout-protection)); any other out-of-root target is a silent allow | deny (same owner as rule 7) |
+| 7 | `C-05-protected-artifact` | Target is a protected artifact (see [Protected artifacts](#protected-artifacts)) | deny (owning tool) |
+| 8 | — | Any other path under `doc/harness/tasks/` | silent allow |
+| 9 | — | Path under `EXEMPT_PREFIXES` | silent allow |
+| 10 | `workflow-control-surface` | `WORKFLOW_CONTROL_SURFACE` file and the active task has no `MAINTENANCE` marker; with the marker it is an immediate allow | deny (`maintain-skill`) |
+| 11 | — | Extension not in `SOURCE_EXTENSIONS` | silent allow |
+| 12 | `no-active-task` | No active task, and the manifest sets top-level `strict_compliance_requires_delegation: true` or some task is open or invalid; otherwise silent allow | deny (`plan-skill`) |
+| 13 | `invalid-active` | The active task path is missing, not a directory, or outside `doc/harness/tasks/` | deny (`plan-skill`) |
+| 14 | `C-02-plan-first` | Active task has no PLAN.md, no `MAINTENANCE` marker, and is not `execution_mode: micro` | deny (`plan-skill`) |
+| 15 | `C-REQ-observable-doc-required` | The path looks like observable UI/API/native/desktop behavior and the task links no `doc/<area>/REQ__*.md` | deny (`developer`) |
+| 16 | `scope-lock-forbidden` | Path matches `forbidden_paths` in the active task's `PROGRESS.md` | deny (`developer`) |
 
-A write that hits no block rule is a silent allow (silence is the trust signal).
+A write that hits no deny rule is a silent allow (silence is the trust signal).
 
 ## Deny-reason structure
 
@@ -41,16 +85,25 @@ Every deny emits a structured tail followed by a human sentence and an escape hi
 escape: HARNESS_SKIP_PREWRITE=1 <retry>
 ```
 
-Agents can parse the tail to route actions without scanning prose. Humans read
-the sentence to understand what to do next.
+`emit_permission_decision` then appends `↳ next action`, `↳ owner`, and
+`↳ docs` lines when the rule has them, and cuts the whole reason at 2000
+characters. Agents can parse the tail to route actions without scanning prose.
 
 ## Protected artifacts
 
 The `PROTECTED_ARTIFACTS` dict maps basename → owner-role. Owners are space-free
 so the structured tail remains grep-stable; the deny sentence names the human
-tool to route through (for example `write_plan` for `PLAN.md`). Claude
-`projects/*/<session>/subagents/agent-*.jsonl` leaves are also protected outside
-the repository because stop-only receipt provenance depends on them.
+tool to route through (for example `write_plan` for `PLAN.md`).
+
+| Target | Match | `owner=` |
+|--------|-------|----------|
+| `TASK.json` | basename, anywhere in the root | `task-control-mcp` |
+| `PLAN.md` | basename | `plan-skill` |
+| `RECEIPTS.jsonl` | basename | `receipt-lifecycle-hook` |
+| `REVIEWS.jsonl` | only `doc/harness/tasks/TASK__*/REVIEWS.jsonl` | `review-detail-writer` |
+| `doc/harness/goals/*.json` | direct children | `goal-control-mcp` |
+| `doc/harness/tasks/.active`, `doc/harness/tasks/.active_sessions/*` | path | `task-control-runtime` |
+| runtime transcripts and rollouts | rule 4 | `claude-runtime` |
 
 ## Cross-checkout protection
 
@@ -107,9 +160,9 @@ Known limits:
   control root and is denied by `symlink-outside-control`, even for an
   ordinary source file, before the cross-checkout branch runs. A session
   working in such a worktree writes under its own root and is unaffected;
-  otherwise use the worktree's real path. (`harness:batch` does not start in
-  that layout today: its preflight step b.3 stops there — see the REQ known
-  limit.)
+  otherwise use the worktree's real path. (For `harness:batch`, batch
+  preflight refuses that layout; see the known limit in
+  `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`.)
 
 ## Workflow-control-surface
 
@@ -120,42 +173,61 @@ Files that define harness runtime behaviour. Writes require a task with a
 
 Touch `doc/harness/tasks/<task>/MAINTENANCE` to enable writes, and record the
 reason in close-time Self-Healing Candidates. The prewrite gate itself does not
-create this marker.
+create this marker. With the marker the gate allows the write at once, so the
+later plan-first, REQ and scope-lock rules do not apply to these files.
 
 ## Scope lock
 
-If `PROGRESS.md` exists in the active task's directory, the gate enforces:
-
-- `forbidden_paths` — deny with rule `scope-lock-forbidden`
-- `allowed_paths` / `test_paths` — advisory; unlisted paths log a warning but do not block (gate philosophy: block only when explicit)
-
-One-shot bypass: `HARNESS_DISABLE_SCOPE_LOCK=1` (audit flag is dropped in
-`audit/scope-lock-bypass.flag` for post-hoc review).
+If `PROGRESS.md` exists in the active task's directory, a source-extension write
+that matches `forbidden_paths` is denied with rule `scope-lock-forbidden`.
+`allowed_paths` and `test_paths` do not change the decision, and an unlisted
+path is a silent allow. Details: [`scope-lock.md`](./scope-lock.md).
 
 ## Escape hatches
 
 | Env var | Effect | Audit |
 |---------|--------|-------|
-| `HARNESS_SKIP_PREWRITE=1` | one-shot silent allow | `gate-bypass` in `doc/harness/learnings.jsonl` |
-| `HARNESS_DISABLE_SCOPE_LOCK=1` | skip scope lock for one write | `scope-lock-bypass.flag` in task `audit/` dir |
+| `HARNESS_SKIP_PREWRITE=1` | Skips every rule, C-05 included | a `gate-bypass` row in `doc/harness/learnings.jsonl` per bypassed call |
+| `HARNESS_DISABLE_SCOPE_LOCK=1` | Skips only the scope lock | overwrites `<task>/audit/scope-lock-bypass.flag`; the next evaluation without the variable deletes it |
 
-Activations are logged. If your `learnings.jsonl` shows recurring `gate-bypass`
-entries against the same path, that is a signal to either move the path into
-the task's `allowed_paths` or to run the work under a maintain task.
+The gate reads both variables on every call and never clears them. Each one
+applies to every write while set in the runtime's environment, meaning the
+environment the runtime gives its hook processes. The Codex wrapper's
+protected-artifact fallback honors `HARNESS_SKIP_PREWRITE` the same way.
+
+Recurring `gate-bypass` rows against the same path are a signal to fix the
+task's scope or run the work under a maintenance task instead.
+
+## Timeouts and killed hooks
+
+A hook killed before it prints emits no decision, and both runtimes then run
+the tool.
+
+| Runtime | Budget | When the budget runs out |
+|---------|--------|--------------------------|
+| Claude | `plugin/hooks/hooks.json` PreToolUse timeout: 10 s, the C-12 maximum | Claude Code kills the hook and runs the tool. **The write proceeds, protected artifacts included.** Nothing on the hook side can make a killed Claude hook deny. |
+| Codex | Outer hook timeout 5 s (set by `install.py`; it is part of the Codex hook trust hash). `hook_pre_tool_use.py` gives the gate child `CHILD_TIMEOUT_SECONDS` = 3.0 s | When the child times out, exits nonzero with empty stdout, or cannot start, the wrapper calls `prewrite_gate.protected_artifact_decision` in-process. That runs only the C-05 rules (4, 6 and 7 above) and the rule-1 escape, and denies protected targets, also under a manifest that fails rule 2. Every other write is allowed (C-12). If the fallback raises, or Codex kills the wrapper at 5 s, the write proceeds. |
+
+The 2.0 s between the Codex child budget and the outer timeout is reserved for
+wrapper startup, child termination and fallback; it does not guarantee they
+finish before the outer timeout. Child output that arrives in time is passed
+through unchanged, even with a nonzero exit.
 
 ## Fail-safe behaviour
 
-- Top-level `_lib` import failure → module-level `sys.exit(0)` (fail-open).
-- Exception inside `main()` → `_log_gate_error` writes a `gate-error` entry to
-  `learnings.jsonl` and the hook exits 0.
-- Malformed / empty stdin → silent allow.
+- Top-level `_lib` import failure → module-level `sys.exit(0)` (allow).
+- Unexpected exception in `main()` → `log_gate_crash` appends a `gate-crash`
+  row (`script`, `tool_name`, `payload_keys`, `error`) to `learnings.jsonl`
+  and the gate exits 0 (allow).
+- Cross-checkout resolution error → `gate-error` row, allow for that path.
+- Scope-lock parse or enforcement error → `gate-parse-fail` row, allow.
+- Empty or non-object payload → silent allow.
 
-The hook wrapper is `python3 ... || true`, so a process-level crash is also
-allowed through. The JSON decision mechanism is what gives the gate teeth —
-exit-code blocking is not used.
+The gate never blocks through its exit code; the JSON decision is what gives
+it teeth.
 
 ## Related
 
-- Bash/shell file mutation is outside this direct-write enforcement surface.
+- REQ: `doc/harness/REQ__protected-artifact-denial-survives-payload-size-and-hook-timeout.md`
 - Tier 2: [`scope-lock.md`](./scope-lock.md) — PROGRESS.md scope lock details
 - Contract: C-02 (plan-first), C-05 (protected artifact), C-12 (hooks fail-safe)

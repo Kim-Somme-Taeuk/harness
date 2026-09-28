@@ -163,7 +163,8 @@ Handle `needs-coordinator-review` before generic rollback: never retry with the
 same ownership; reassign ownership, amend PLAN, or escalate to the user. Keep
 successful independent siblings promoted. Record a failed parallel lane and
 retry only that dependency path sequentially. Load
-`parallel-fanout.md` only for uncommon routing cases.
+`parallel-fanout.md` before any `Agent(...)` batch: it owns the batch cap,
+`harness:test-author` pairing, and ac-worker sub-splits.
 
 ### Phase 3.1: Scope Lock
 

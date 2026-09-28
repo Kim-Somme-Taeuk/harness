@@ -240,18 +240,15 @@ grep -rn 'CLAUDE_PLUGIN_ROOT' ~/.harness/wrappers/ ~/.bashrc ~/.zshrc /etc/profi
 
 **What you see:** Existing Claude Code user ran `claude plugin marketplace update harness` and now `~/.harness/plugin-codex/` exists where it didn't before. Disk space, file count surprise.
 
-**Cause:** Should not happen with v1 — opt-in flag `harness.codex_enabled: false` is default. If you see this, the manifest was edited or someone enabled the flag.
+**Cause:** Claude's marketplace source is `./plugin`, which excludes the
+sibling `plugin-codex/` tree. The source installer instead installs each
+runtime whose CLI is on PATH, unless `--claude-only` or `--codex-only` selects
+one. The reserved `features.codex_enabled` metadata does not control this.
 
-**Fix:**
-```bash
-# Verify the flag:
-grep codex_enabled ~/.harness/plugin/.claude-plugin/marketplace.json
-# Disable + remove:
-# Edit marketplace.json: set "codex_enabled": false
-# Then:
-rm -rf ~/.harness/plugin-codex/
-claude plugin marketplace update harness
-```
+**Fix:** Check whether the source installer ran and inspect the registered
+marketplace source. Use `python3 install.py --claude-only` for future
+Claude-only installs. This does not uninstall an existing Codex registration;
+follow the removal instructions in `README.codex.md` if that is intended.
 
 ---
 

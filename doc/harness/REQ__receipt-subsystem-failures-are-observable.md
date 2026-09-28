@@ -14,7 +14,7 @@ invalidated_by_paths:
   - tests/test_task_context_binds_resuming_session.py
   - tests/regression/task__unified_install/test_install_py.py
   - tests/conftest.py
-freshness_updated: 2026-09-18T08:05:00Z
+freshness_updated: 2026-09-28T08:01:12Z
 ---
 
 # REQ — 영수증 서브시스템의 실패는 관측 가능하다
@@ -187,8 +187,9 @@ legacy `.active` 파일도 다시 쓰고, (2026-09-23 삭제 전까지) stop gat
 하나라도 빠지면 *읽기*가 write focus 를 훔친다:
 
 - 상태 확인이 없으면 park 된 태스크를 읽기만 해도 focus 가 그리로 간다.
-- 세션 확인이 없으면 — C-09 는 두 번째 mutating 요청을 **큐잉**할 뿐 첫
-  태스크를 닫지 않으므로 열린 태스크는 늘 여럿이다 — 다른 열린 태스크를
+- 세션 확인이 없으면 — C-09 는 이 세션의 focus 를 빼앗는 두 번째 태스크만
+  거부할 뿐 어떤 태스크도 닫지 않고, 다른 세션은 각자 focus 를 가지므로
+  열린 태스크는 늘 여럿이다 — 다른 열린 태스크를
   `task_context` 로 한 번 들여다보는 것만으로 이 세션의 마커와 `.active` 가
   거기로 옮겨간다. 그러면 다음 reviewer 영수증이 엿본 태스크에 떨어지고
   진행 중인 태스크에는 아무것도 남지 않는다 — 이 문서가 다루는 실패

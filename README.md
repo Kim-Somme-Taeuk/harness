@@ -95,6 +95,8 @@ All under `plugin/agents/`. Narrow tool surface — each agent gets only what it
 | Agent | Role |
 |-------|------|
 | `developer` | Implements PLAN.md per AC |
+| `ac-worker` | Implements one AC's owned files; may split disjoint work one level deep on Claude |
+| `test-author` | Writes one AC's tests from PLAN.md intent inside its `Tests:` paths alongside the implementation lane |
 | `task-lead` | `harness:batch` lead: runs one whole task lifecycle inside its own `isolation: worktree` checkout and commits on its branch |
 | `defect-hunter` | Non-attesting evidence-only discovery: LIGHT runs 0, STANDARD 1 selected focus, and DEEP both focuses |
 | `code-reviewer` | Always runs fresh after discovery, independently sweeps the full scope, and is the sole `review-code` verdict authority |
@@ -168,7 +170,8 @@ All under `plugin/scripts/`. Stdlib only.
 | `req_detector.py` | Detect observable behavior that needs a durable `REQ__*.md` | stdout |
 | `req_scaffold.py` | Create or update durable REQ scaffolds before observable source work | `doc/<area>/REQ__*.md` |
 | `install_verified.py` | Stateless trusted post-QA delivery wrapper; compares canonical payloads from an isolated verified snapshot and refreshes only stale runtimes | stdout / exit status |
-| `batch_preflight.py` | `harness:batch` intake/preflight: read-only repo-shape report — control-root shape, submodules, ignored nested repos, a post-checkout hook whose text mentions `submodule`, per-scope class, cleanliness of the main checkout plus every populated submodule and nested repo, and scope overlap between requests; exits 0 only when those checks allow the wave | stdout (JSON) |
+| `batch_preflight.py` | `harness:batch` intake/preflight: read-only repo-shape report — control-root shape, submodules, ignored nested repos, a post-checkout hook whose text mentions `submodule`, per-scope class, cleanliness of the main checkout plus every populated submodule and nested repo, whether `.claude/worktrees/` is gitignored at the path git sees (a `.claude` symlink leaving the repository passes), and scope overlap between requests; exits 0 only when those checks allow the wave | stdout (JSON) |
+| `batch_finish.py` | `harness:batch` coordinator step d for one closed lead: checks (returned commit is the branch tip, no merge commit, lead worktree clean, main checkout clean and on a branch), rebases in the lead worktree, fast-forwards the main checkout, harvests through `batch_harvest.py`, unlocks only a locked worktree, then `git worktree remove` and `git branch -d`, never `--force`; `--resume` for a lead resolved by hand in the integration task; status `integrated`/`kept`/`conflict`/`ff-refused` as exit 0/3/4/5 (`error`, exit 1, on an unexpected failure) | stdout (JSON) |
 | `batch_harvest.py` | `harness:batch` coordinator step: copies an integrated (rebased and fast-forwarded) lead worktree's gitignored task evidence and learnings into the main checkout before `git worktree remove`; refuses unregistered, not-yet-integrated, or detached-HEAD (mid-rebase) worktrees, links, non-regular files, and archive collisions | `doc/harness/archive/batch/`, `doc/harness/learnings.jsonl` |
 | `install_smoke.py` | Drives an installed runtime tree once — imports every registered hook module and checks a bound subagent produces a receipt row; run by `install.py` after each sync and on the default run's SYNCHRONIZED skip path | stdout / exit status |
 | `runbook_memory.py` | Capture approved runbooks and pending setup-command candidates | `doc/harness/runbooks.yaml` |

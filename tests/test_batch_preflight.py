@@ -50,10 +50,15 @@ def _git(*args, cwd) -> str:
     return result.stdout.strip()
 
 
-def _repo(path: Path, files: dict | None = None) -> Path:
+def _repo(path: Path, files: dict | None = None, *, ignore_worktrees: bool = True) -> Path:
+    """A committed repository; like every harness project (manifest v7), it
+    ignores `.claude/worktrees/` unless ``ignore_worktrees`` is False."""
     path.mkdir(parents=True, exist_ok=True)
     _git("init", "-q", "-b", "main", cwd=path)
-    for rel, text in (files or {"README.md": "root\n"}).items():
+    files = dict(files or {"README.md": "root\n"})
+    if ignore_worktrees:
+        files[".gitignore"] = files.get(".gitignore", "") + ".claude/worktrees/\n"
+    for rel, text in files.items():
         target = path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
@@ -112,6 +117,11 @@ def test_plain_repo_with_disjoint_scopes_is_ok(monkeypatch, tmp_path):
     assert report["submodules"] == [] and report["nested_repos"] == []
     assert report["off_limits"] == []
     assert report["dirty"] == [] and report["overlaps"] == [] and report["refusals"] == []
+    assert report["worktrees_ignore"] == {
+        "path": ".claude/worktrees/",
+        "git_path": ".claude/worktrees/__harness_probe__",
+        "status": "ignored",
+    }
 
 
 def test_linked_worktree_as_control_root_refuses(monkeypatch, tmp_path):
@@ -367,6 +377,128 @@ def test_nested_repo_with_broken_metadata_refuses(monkeypatch, tmp_path):
         mod.status_entries(str(main / "repos/pruned"))
     assert "missing worktree registration" in str(pruned.value)
     assert "remove the directory" in str(pruned.value)
+
+
+# ── Lead worktree directory ignore (SKILL step b.3) ──────────────────────
+
+
+def _plain_check_ignore(repo: Path) -> int:
+    return subprocess.run(
+        ["git", "check-ignore", "-q", ".claude/worktrees/x"], cwd=repo,
+        capture_output=True, check=False,
+    ).returncode
+
+
+def test_worktrees_dir_must_be_ignored(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _repo(tmp_path / "main", ignore_worktrees=False)
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+    assert report["worktrees_ignore"]["status"] == "not-ignored"
+    assert report["verdict"] == "refuse"
+    [refusal] = report["refusals"]
+    assert "`.claude/worktrees/` to .gitignore" in refusal
+    assert "git sees" not in refusal  # no symlink: git sees the path itself
+    # An ignore from .git/info/exclude counts, as it does for git.
+    (main / ".git/info/exclude").write_text(".claude/worktrees/\n", encoding="utf-8")
+    assert mod.preflight(str(main), {"a": ["README.md"]})["verdict"] == "ok"
+
+
+def test_symlinked_claude_outside_the_repo_passes(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    outside = tmp_path / "claude-config"
+    (outside / "worktrees").mkdir(parents=True)
+    main = _repo(tmp_path / "main", ignore_worktrees=False)
+    (main / ".claude").symlink_to(outside)
+    _git("add", ".claude", cwd=main)
+    _git("commit", "-q", "-m", "shared claude config", cwd=main)
+    assert _plain_check_ignore(main) == 128  # "beyond a symbolic link"
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+    assert report["worktrees_ignore"] == {
+        "path": ".claude/worktrees/", "git_path": None, "status": "outside-repo",
+    }
+    assert report["verdict"] == "ok", report
+
+
+def test_symlinked_worktrees_dir_outside_the_repo_passes(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    outside = tmp_path / "lead-worktrees"
+    outside.mkdir()
+    main = _repo(tmp_path / "main", {"README.md": "r\n", ".claude/settings.json": "{}\n"},
+                 ignore_worktrees=False)
+    (main / ".claude/worktrees").symlink_to(outside)
+    _git("add", ".claude/worktrees", cwd=main)
+    _git("commit", "-q", "-m", "worktrees elsewhere", cwd=main)
+    assert _plain_check_ignore(main) == 128
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+    assert report["worktrees_ignore"]["status"] == "outside-repo"
+    assert report["verdict"] == "ok", report
+
+
+def test_symlinked_claude_inside_the_repo_is_checked_at_its_target(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _repo(tmp_path / "main", {"README.md": "r\n", "config/claude/settings.json": "{}\n"},
+                 ignore_worktrees=False)
+    (main / ".claude").symlink_to("config/claude")
+    _git("add", ".claude", cwd=main)
+    _git("commit", "-q", "-m", "claude config lives in config/", cwd=main)
+    assert _plain_check_ignore(main) == 128
+
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+    assert report["worktrees_ignore"] == {
+        "path": ".claude/worktrees/",
+        "git_path": "config/claude/worktrees/__harness_probe__",
+        "status": "not-ignored",
+    }
+    assert report["verdict"] == "refuse"
+    [refusal] = report["refusals"]
+    assert "(git sees config/claude/worktrees/)" in refusal
+    assert "`config/claude/worktrees/` to .gitignore" in refusal
+
+    # The literal `.claude/worktrees/` entry does not cover what git sees.
+    (main / ".gitignore").write_text(".claude/worktrees/\n", encoding="utf-8")
+    _git("add", ".gitignore", cwd=main)
+    _git("commit", "-q", "-m", "literal ignore", cwd=main)
+    assert mod.preflight(str(main), {})["worktrees_ignore"]["status"] == "not-ignored"
+
+    (main / ".gitignore").write_text("config/claude/worktrees/\n", encoding="utf-8")
+    _git("add", ".gitignore", cwd=main)
+    _git("commit", "-q", "-m", "ignore at the target", cwd=main)
+    fixed = mod.preflight(str(main), {"a": ["README.md"]})
+    assert fixed["worktrees_ignore"]["status"] == "ignored"
+    assert fixed["verdict"] == "ok", fixed
+
+
+def test_check_ignore_failure_refuses(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _repo(tmp_path / "main")
+    real_run = mod._run_git
+
+    def broken_check_ignore(cwd, *args):
+        result = real_run(cwd, *args)
+        if args[:1] == ("check-ignore",):
+            result.returncode, result.stderr = 128, b"fatal: simulated\n"
+        return result
+
+    monkeypatch.setattr(mod, "_run_git", broken_check_ignore)
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+    assert report["verdict"] == "refuse"
+    assert report["worktrees_ignore"]["status"] == "unchecked"
+    assert [r for r in report["refusals"] if "check-ignore" in r], report["refusals"]
+
+
+def test_an_unloadable_setup_finalize_refuses_with_a_report(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _repo(tmp_path / "main")
+    monkeypatch.setitem(sys.modules, "setup_finalize", None)  # import raises ImportError
+    report = mod.preflight(str(main), {"a": ["README.md"]})
+    assert report["verdict"] == "refuse"
+    assert [r for r in report["refusals"] if "setup_finalize" in r], report["refusals"]
+
+
+def test_worktrees_ignore_is_unchecked_when_the_control_root_is_not_ok(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    report = mod.preflight(str(tmp_path / "missing"), {})
+    assert report["worktrees_ignore"]["status"] == "unchecked"
 
 
 # ── Scopes ───────────────────────────────────────────────────────────────

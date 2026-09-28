@@ -1544,6 +1544,7 @@ class TestReadinessIsTriState(unittest.TestCase):
             last_watcher_error = ""
 
         with mock.patch.object(harness_server, "_SERVER", Server()), \
+             mock.patch.dict(os.environ, {"CODEX_THREAD_ID": ""}, clear=False), \
              mock.patch.object(
                  harness_server, "_server_runtime", lambda: "codex",
              ), mock.patch.object(

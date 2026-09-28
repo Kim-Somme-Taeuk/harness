@@ -8,9 +8,14 @@ Exports:
                          with clean finally removal (no leaks on exception)
   install_trees_lose_no_files — session-wide guard: a run may add to an
                          installed harness runtime, never remove from one
+  make_tmp_harness_root(...) / ledger_rows(...) — a tmp checkout for tests that
+                         drive a learnings-ledger writer, and its ledger rows
+  learnings_ledger_gains_no_suite_rows — session-wide guard: a run appends no
+                         row to this checkout's real learnings ledger
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import fcntl
 import json
@@ -105,12 +110,13 @@ _INSTALL_TREE_ROOTS = _default_install_tree_roots()
 # The install-tree guard is skipped for the same reason in reverse: the nested
 # session inventories ~1500 installed files twice while the outer session is
 # already watching them, and its assertion answers a question the outer
-# session owns.
+# session owns. The learnings-ledger guard is skipped on the same ground: the
+# outer session already watches the ledger the probe would write to.
 #
 # Read at call time rather than import time so the guard is testable: a
 # module-level constant would freeze whatever the environment held when pytest
-# imported this file, and the three call sites could then only be checked by
-# reading their source.
+# imported this file, and the call sites could then only be checked by reading
+# their source.
 def is_nested_probe() -> bool:
     return os.environ.get("HARNESS_NESTED_PROBE") == "1"
 
@@ -235,6 +241,165 @@ def install_trees_lose_no_files():
         + "\n  ".join(removed)
         + "\nRe-install with `python3 install.py` to repair, then bind the "
         "responsible test to a tmp install root."
+    )
+
+
+# This checkout's learnings ledger. Read at fixture time, so the guard's own
+# test can point it at a stand-in (tests/test_learnings_ledger_guard.py).
+_LEARNINGS_LEDGER = os.path.join(REPO_ROOT, "doc", "harness", "learnings.jsonl")
+
+# Writers the developer's live session runs in this checkout while the suite
+# runs, named by the part of a row's writer before the first ":". Each fires on
+# a session event, not on anything the suite does to the checkout:
+#   background_hook    SubagentStart/SubagentStop (`background_hook:binding-miss`,
+#                      `background_hook:import`; a `gate-crash` row names it
+#                      under `script`)
+#   subagent_lifecycle the receipt writer that SubagentStop drives
+#   receipts           `receipts:verdict-unbound`, written from the same stop
+#   prompt_memory      UserPromptSubmit
+#   tool_routing       PostToolUse on Bash, including the session's own calls
+# The first four were observed in a real ledger during suite runs; tool_routing
+# is the one remaining session hook with a ledger writer. The write gate
+# (`prewrite`, `prewrite_gate`), `qa_codifier`, `mcp_bash_guard` and every
+# learning an agent appends are deliberately absent: the suite drives those
+# writers directly, and they are what polluted the ledger.
+_LIVE_SESSION_LEDGER_WRITERS = frozenset({
+    "background_hook",
+    "subagent_lifecycle",
+    "receipts",
+    "prompt_memory",
+    "tool_routing",
+})
+
+
+def make_tmp_harness_root(path) -> str:
+    """Make `path` a harness checkout that ledger writers resolve to.
+
+    `.git` stops `find_repo_root` at `path` instead of walking up to the real
+    repo, and `doc/harness/manifest.yaml` makes `is_harness_enabled_repo` true,
+    which most writers require before they append. A test that drives a ledger
+    writer runs it here, so its row lands in `ledger_rows(path)` and not in the
+    checkout the suite runs from.
+    """
+    root = os.fspath(path)
+    os.makedirs(os.path.join(root, ".git"), exist_ok=True)
+    harness = os.path.join(root, "doc", "harness")
+    os.makedirs(harness, exist_ok=True)
+    with open(os.path.join(harness, "manifest.yaml"), "w", encoding="utf-8") as f:
+        f.write("test_command: pytest\n")
+    return root
+
+
+def ledger_rows(root) -> list[dict]:
+    """The parsed rows of `root`'s learnings ledger; empty when it is absent."""
+    path = os.path.join(os.fspath(root), "doc", "harness", "learnings.jsonl")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def _ledger_snapshot(path: str) -> bytes:
+    """The ledger's complete lines as bytes; empty when absent or unreadable.
+
+    A trailing line without its newline is a writer mid-append. Leaving it out
+    here means a teardown read counts it once it is whole, rather than
+    reporting the fragment that follows the recorded offset.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return b""
+    return data[: data.rfind(b"\n") + 1]
+
+
+def _ledger_rows_appended(path: str, before: bytes) -> list[str]:
+    """Rows present now that the `before` snapshot did not hold.
+
+    Normally the ledger only grows, and the answer is everything past the
+    recorded size. If it shrank, was replaced, or was rewritten in place, that
+    offset no longer marks where this run began, so the lines are compared as
+    a multiset instead: each line still present from `before` cancels one
+    occurrence, and whatever is left over was added.
+    """
+    after = _ledger_snapshot(path)
+    if after.startswith(before):
+        added = after[len(before):].splitlines()
+    else:
+        remaining = collections.Counter(before.splitlines())
+        added = []
+        for line in after.splitlines():
+            if remaining[line]:
+                remaining[line] -= 1
+            else:
+                added.append(line)
+    return [line.decode("utf-8", "replace") for line in added if line.strip()]
+
+
+def _suite_ledger_rows(lines: list[str]) -> list[str]:
+    """Drop rows whose writer is one of `_LIVE_SESSION_LEDGER_WRITERS`.
+
+    The writer is the row's `source`, or `script` for a `gate-crash` row, which
+    carries no `source`. A line that is not a JSON object is kept: no hook
+    writes one, so nothing attributes it to the live session.
+    """
+    kept = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if isinstance(row, dict):
+            writer = str(row.get("source") or row.get("script") or "")
+            if writer.split(":", 1)[0] in _LIVE_SESSION_LEDGER_WRITERS:
+                continue
+        kept.append(line)
+    return kept
+
+
+@pytest.fixture(scope="session", autouse=True)
+def learnings_ledger_gains_no_suite_rows():
+    """Fail the run if it appended a row to this checkout's learnings ledger.
+
+    `doc/harness/learnings.jsonl` is gitignored live state (rule 2 of
+    `doc/harness/REQ__test-suite-determinism-under-xdist.md`), and in a batch
+    worktree `batch_harvest` copies it into the main checkout, so a test's
+    `gate-bypass` row becomes the developer's history. A test that drives a
+    ledger writer runs it against `make_tmp_harness_root` instead.
+
+    Rows the developer's live session appends in this checkout during the run
+    are not the suite's; `_LIVE_SESSION_LEDGER_WRITERS` names the writers
+    ignored and why. Two costs follow. A suite-driven row from one of those
+    writers is invisible here. A row the session appends from any other writer
+    during the run, such as a write-gate bypass or a learning added by hand,
+    fails the run; the message names the row so its owner can tell.
+
+    Under pytest-xdist every worker runs this against the shared ledger. Each
+    worker records its snapshot before its own first test, so every row a test
+    appends is reported by at least the worker that ran it, and possibly also
+    by a sibling whose session was still open. A ledger that shrinks or is
+    replaced mid-run is handled by `_ledger_rows_appended`.
+
+    A nested probe session skips this entirely, as it does the install-tree
+    guard; see `is_nested_probe`.
+    """
+    if is_nested_probe():
+        yield
+        return
+    path = _LEARNINGS_LEDGER
+    before = _ledger_snapshot(path)
+    yield
+    appended = _suite_ledger_rows(_ledger_rows_appended(path, before))
+    assert not appended, (
+        f"this test run appended {len(appended)} row(s) to the learnings ledger "
+        f"{path}:\n  "
+        + "\n  ".join(appended)
+        + "\nRun the responsible test's writer against a tmp checkout "
+        "(`make_tmp_harness_root`) and assert the row there. Under pytest-xdist "
+        "another worker's test may have written a row listed here; run suspect "
+        "tests one node at a time with `-n0` to attribute it."
     )
 
 
@@ -481,6 +646,8 @@ __all__ = [
     "parse_decision",
     "scratch_task_in_real_repo",
     "active_marker_lock",
+    "make_tmp_harness_root",
+    "ledger_rows",
 ]
 
 

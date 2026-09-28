@@ -67,6 +67,7 @@ invalidated_by_paths:
   - doc/CLAUDE.md
   - doc/harness/critics/
   - doc/harness/review-overlays/
+freshness_updated: 2026-09-28T08:01:12Z
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -93,7 +94,7 @@ invalidated_by_paths:
 2. **계획이 먼저다.** 활성 과제에 `PLAN.md`가 없으면 PreToolUse 훅 `prewrite_gate.py`가 소스 파일 Write/Edit를 거부한다(C-02).
 3. **독립 증거가 있어야 닫힌다.** 과제를 닫으려면 리뷰 lens와 QA lens 서브에이전트가 실제로 시작하고 끝났다는 기록이 `RECEIPTS.jsonl`에 있어야 한다. 이 파일은 Write/Edit로 쓸 수 없다. `record()`도 allowlist에 있는 호출자(Claude 라이프사이클 훅, Codex watcher)만 부를 수 있다. 다만 셸로 append하는 것은 막지 않는다. 리뷰가 PASS한 **뒤에** 시작한 QA가 PASS해야 `runtime_verdict: PASS`가 되고, 그때만 `task_close`가 과제를 닫는다(C-04, C-14).
 
-**왜 이렇게까지 하는가.** 코디네이터가 스스로 적은 PASS는 환각과 구별할 수 없다(`CONTRACTS.md` C-14 Why). 그래서 PASS의 근거를 "훅이 관찰한 서브에이전트의 시작과 종료"에 묶는다. 반면 영수증은 Git이나 소스 상태에 묶이지 않는다. 리뷰·QA 뒤에 코드를 다시 고쳤다면 해당 lens를 다시 돌리는 것은 개발자 책임이다(`CONTRACTS.md` C-04/C-14, `plugin/skills/develop/quality-audit-pipeline.md:241-243`).
+**왜 이렇게까지 하는가.** 코디네이터가 스스로 적은 PASS는 환각과 구별할 수 없다(`CONTRACTS.md` C-14 Why). 그래서 PASS의 근거를 "훅이 관찰한 서브에이전트의 시작과 종료"에 묶는다. 반면 영수증은 Git이나 소스 상태에 묶이지 않는다. 리뷰·QA 뒤에 코드를 다시 고쳤다면 해당 lens를 다시 돌리는 것은 개발자 책임이다(`CONTRACTS.md` C-04/C-14, `plugin/skills/develop/quality-audit-pipeline.md:297-299`).
 
 구성 요소는 세 층이다.
 
@@ -123,7 +124,7 @@ invalidated_by_paths:
    │ 호출하지 않으면 ─▶ 유일한 기계 장치: prewrite no-active-task (§5.4)
 ```
 
-- Claude 플러그인에서 run, plan, develop, plan-*는 모두 `user-invocable: false`다. 사용자가 slash 명령으로 부를 수 있는 것은 setup과 batch뿐이다(`plugin/skills/run/SKILL.md:5`, `plugin/skills/setup/SKILL.md:9`, `plugin/skills/batch/SKILL.md:5`, `tests/test_skill_visibility.py:9-60`). `CONTRIBUTING.md:71`이 안내하는 `/harness:run <slug>`는 Claude에 없다.
+- Claude 플러그인에서 run, plan, develop, plan-*는 모두 `user-invocable: false`다. 사용자가 slash 명령으로 부를 수 있는 것은 setup과 batch뿐이다(`plugin/skills/run/SKILL.md:5`, `plugin/skills/setup/SKILL.md:9`, `plugin/skills/batch/SKILL.md:5`, `tests/test_skill_visibility.py:9-60`). `CONTRIBUTING.md`도 일반 요청에서 Harness로 자동 라우팅되는 절차를 안내한다.
 - 요청을 run으로 보내는 훅은 없다. 모델이 볼 수 있는 것은 프롬프트 문구뿐이다. root CLAUDE.md의 routing 블록, SessionStart 배너의 "Auto-routing on. Just describe what you want."(`plugin/hooks/hooks.json:8`), prompt_memory가 붙이는 `[harness-goal] … plain mutating request? task_start` 힌트가 그것이다. 마지막 힌트는 활성 과제가 없을 때만 붙는다(`prompt_memory.py:73-108`).
 - 이 저장소에서는 그 goal 힌트가 사실상 전달되지 않는다. DOC_GATE(135자)와 승인된 runbook 블록(396자, 이 저장소에서 측정) 뒤에 붙기 때문에, 힌트는 약 533자 지점에서 시작하고 400자 상한에 잘린다(`prompt_memory.py:48-53, 238-268`, §4.3).
 - 모델이 run을 호출하지 않았을 때 작동하는 기계 장치는 prewrite `no-active-task` 하나다. 이 장치는 `SOURCE_EXTENSIONS`에만 적용되고, 최상위 strict 키가 있거나 다른 open/invalid 과제가 있을 때만 발동한다(§5.4).
@@ -194,7 +195,7 @@ invalidated_by_paths:
 | coordinator / lead | batch에서 main checkout에 있는 세션이 coordinator, worktree 하나를 맡는 `harness:task-lead` 서브에이전트가 lead | `plugin/skills/batch/SKILL.md`, `plugin/agents/task-lead.md` |
 | workspace | task 도구에 넘기는 linked git worktree 절대 경로. 생략하면 main checkout | `harness_server.py:1057-1087` |
 | control root / task root | MCP 프로세스가 속한 checkout / 과제가 실제로 있는 checkout | 같은 곳 |
-| MAINTENANCE | 과제 디렉터리 안의 마커 파일. plan-first 면제, workflow-control 파일 쓰기 허용, `maintenance_task` 라우팅을 켠다. REQ 규칙(§5.5)은 면제하지 않는다 | `prewrite_gate.py:712-728, 762-782`, `_lib.py:2518-2550` |
+| MAINTENANCE | 과제 디렉터리 안의 마커 파일. plan-first 면제, workflow-control 파일 쓰기 허용, `maintenance_task` 라우팅을 켠다. REQ 규칙(§5.5)은 면제하지 않는다 | `prewrite_gate.py:733-749, 783-803`, `_lib.py:2518-2550` |
 | standard / micro | `execution_mode`. micro는 **PLAN.md 요구만** 없앤다. 리뷰·QA 영수증은 그대로 필요하다 | `_lib.py:4857-4864, 1311-1322` |
 | fresh_run | 기존 과제의 run을 교체하고 영수증을 버리는 `task_start` 옵션 | `harness_server.py:1396-1423` |
 | park / BLOCKED.md | `task_blocked`로 남기는 미완료 기록. 이 상태에서 runtime_verdict는 `BLOCKED_ENV` | `harness_server.py:1856-1918` |
@@ -223,18 +224,18 @@ invalidated_by_paths:
 │   ├── .claude-plugin/plugin.json   version 2.3.0 (설치 시 +h<sha8> 부여)
 │   ├── .mcp.json             플러그인 MCP 서버 정의 (${CLAUDE_PLUGIN_ROOT}/mcp/harness_server.py)
 │   ├── CLAUDE.md             런타임 규칙 (스킬이 인용하는 권위 문서)
-│   ├── agents/               16개 에이전트 정의
+│   ├── agents/               17개 에이전트 정의
 │   ├── hooks/hooks.json      Claude 훅 등록 (6개 이벤트)
 │   ├── mcp/harness_server.py MCP 제어면 (도구 11개)
 │   ├── scripts/              _lib.py, prewrite_gate.py, subagent_lifecycle.py, …
 │   └── skills/               run, plan, develop, batch, setup, plan-*-review
 │                             (goal-queue/는 SKILL.md 없는 빈 디렉터리. Git이 추적하지 않는 로컬 잔재)
 ├── plugin-codex/             Codex payload의 일부 (전체 조립은 §2.2)
-│   ├── .codex-plugin/plugin.json    수동 관리 version (2.3.0+codex.20260924180000)
+│   ├── .codex-plugin/plugin.json    수동 관리 version (2.3.0+codex.20260928075810)
 │   ├── .codex-version        요구 codex CLI 최소 버전 (0.130.0)
 │   ├── skills/{run,setup}    공개 진입 스킬 (run은 internal-skills/run을 여는 20줄 래퍼)
 │   ├── internal-skills/      develop, plan, plan-*-review, run 의 SKILL.md 만 (goal-queue/는 빈 잔재)
-│   └── agents/               14개 (ac-worker, task-lead 없음) — 방법론 참고용
+│   └── agents/               15개 (ac-worker, task-lead 없음) — 방법론 참고용
 ├── doc/                      영속 지식 (doc/CLAUDE.md 가 registry)
 │   ├── common/               공용 REQ/GUIDE
 │   └── harness/              manifest.yaml, REQ__*, ADR__*, patterns/, tasks/, goals/,
@@ -254,7 +255,7 @@ invalidated_by_paths:
 | 위치 | 값 | 비고 |
 |---|---|---|
 | `plugin/.claude-plugin/plugin.json` | `2.3.0` | 설치된 사본은 `2.3.0+h<sha8>`(§2.3) |
-| `plugin-codex/.codex-plugin/plugin.json` | `2.3.0+codex.20260924180000` | 손으로 관리. Codex cache 디렉터리 이름 |
+| `plugin-codex/.codex-plugin/plugin.json` | `2.3.0+codex.20260928075810` | 손으로 관리. Codex cache 디렉터리 이름 |
 | root `.codex-plugin/marketplace.json` | `2.3.0-codex` | `:13` |
 | 설치기가 생성하는 Codex marketplace | `2.3.0` | `install.py:1047-1062` |
 | MCP `serverInfo.version` | `2.0.0` | `harness_server.py:26-27` |
@@ -310,11 +311,11 @@ batch lead도 worktree의 `plugin/`이 아니라 설치된 플러그인으로 �
 
 - **요구 사항**: `pyproject.toml`은 Python ≥3.12와 dev 의존성(pytest, pytest-xdist, pyyaml)을 요구한다. addopts는 `-n auto --dist worksteal`이다(`pyproject.toml:1-14`).
 - **실행**: manifest `test_command`는 `uv run pytest tests/ -x --tb=short`(`doc/harness/manifest.yaml:12`)다. runbook의 대안은 `mise exec -- uv run pytest`(`doc/harness/runbooks.yaml:1-13`)다.
-- **conftest**: `PYTHONDONTWRITEBYTECODE`를 강제한다. 실제 설치 트리 네 곳에서 파일이 사라지지 않았는지 확인하는 세션 가드도 있다(`tests/conftest.py:1-80`). xdist에서 결정적으로 돌아야 한다는 요구는 `doc/harness/REQ__test-suite-determinism-under-xdist.md`에 있다.
+- **conftest**: `PYTHONDONTWRITEBYTECODE`를 강제하고 실제 설치 트리 파일 제거를 감시한다. `learnings_ledger_gains_no_suite_rows` 세션 가드는 이 체크아웃의 `doc/harness/learnings.jsonl`에 테스트 행이 추가되면 실패한다. 축소·교체·재작성 뒤에도 새 행을 비교하며, writer 이름으로 라이브 훅을 판별하며 `background_hook`, `subagent_lifecycle`, `receipts`, `prompt_memory`, `tool_routing`의 행만 제외한다. 같은 writer 이름으로 테스트가 쓴 행도 제외되는 한계가 있고, 다른 writer의 실제 세션 행은 실패로 드러난다. 중첩 probe는 바깥 세션 가드에 맡긴다. ledger를 쓰는 테스트는 tmp harness root를 쓴다(`tests/conftest.py`의 `learnings_ledger_gains_no_suite_rows`, `_ledger_rows_appended`, `make_tmp_harness_root`; [결정성 REQ](REQ__test-suite-determinism-under-xdist.md)).
 - **보조 스크립트**:
   - `golden_replay.py`: 스크립트 7종의 스모크 테스트(`plugin/scripts/golden_replay.py:1-24`).
   - `mutation_probe.py`: diff 범위 안에서 mutation을 탐색하고 보고만 한다. 어떤 스킬도 이것을 호출하지 않는다(`plugin/scripts/mutation_probe.py:1-31`, `doc/harness/REQ__mutation-scope-follows-the-diff.md`).
-- **CI 불일치**: `.github/workflows/tests.yml:18-34`는 Python 3.11에 pytest만 설치한다. pyproject의 ≥3.12 요구와 맞지 않고, xdist가 필요한 addopts와도 맞지 않는다(§17.2).
+- **CI**: Python 3.12에 `python -m pip install --group dev`로 pytest·xdist·pyyaml을 설치하고 전체 suite와 packaged golden replay를 실행한다(`.github/workflows/tests.yml`).
 
 ---
 
@@ -344,7 +345,7 @@ batch lead도 worktree의 `plugin/`이 아니라 설치된 플러그인으로 �
 - `doc/harness/checkpoints/<TASK_ID>.md`: `write_checkpoint.py`가 쓴다. gitignore 대상.
 - `doc/harness/goals/*.json`: Goal 상태.
 
-근거: `prewrite_gate.py:64-77, 137-194`, `_lib.py:2484-2512`, `plugin/skills/develop/SKILL.md:168-187`, `plugin/skills/plan/intake.md:117-141`, `plugin/scripts/write_checkpoint.py:1-16`.
+근거: `prewrite_gate.py:74-87, 147-204`, `_lib.py:2484-2512`, `plugin/skills/develop/SKILL.md:169-188`, `plugin/skills/plan/intake.md:117-141`, `plugin/scripts/write_checkpoint.py:1-16`.
 
 `ensure_task_scaffold`는 `TASK.json`과 (요청문이 있으면) `REQUEST.md`만 만든다. PLAN.md는 만들지 않는다(`_lib.py:2484-2512`).
 
@@ -509,12 +510,12 @@ TASK.json 유효?
 
 **write focus(C-09).** `_session_resumes`는 focus가 비어 있거나, 열려 있지 않거나, 지금 시작하려는 과제와 같을 때만 True다. 다른 열린 과제가 focus를 쥐고 있으면 `task_start`는 `task_start refused: another open task owns the resolvable session focus`로 거부하고, next_action은 "Finish or park the currently focused task"다(`harness_server.py:1196-1204, 1338-1347, 1612-1646`).
 
-> 코드와 문서의 차이: C-09 산문은 새 과제가 "queued"되고 soft-warn이라고 말한다(`CONTRACTS.md:144-149`). 실제 코드는 **거부**한다. "queued" 상태는 `goal_add_task`에만 있다.
+> C-09는 세션 focus 충돌을 거부하며 queue는 `goal_add_task`의 Goal child에만 있다. Codex MCP에 `CODEX_THREAD_ID`가 없으면 `task_start`의 거부를 건너뛰고 PostToolUse가 충돌하는 두 과제를 fence하여 thread binding을 지운다(`CONTRACTS.md` C-09).
 
 주의할 점:
 
 - **hint는 저장소 전역이고 마지막에 쓴 쪽이 이긴다.** 한 checkout에서 여러 세션을 동시에 돌리면, 가장 최근에 프롬프트를 보낸 세션이 다음 `task_start`/`task_context`의 바인딩을 가져간다. 여기에는 Claude와 Codex를 섞어 쓰는 경우도 포함된다. 같은 checkout에서 Codex 프롬프트가 들어오면, 동시에 돌고 있는 Claude 세션의 다음 바인딩이 Codex 세션 ID로 바뀐다. legacy `.active`도 공유되므로 다른 세션의 새 과제를 `_session_resumes`가 거부할 수 있다(`harness_server.py:203-209`).
-- **마커가 없는 세션의 쓰기는 다른 세션의 과제 기준으로 gate된다.** prewrite gate는 훅 payload의 session_id로 `resolve_active_task_dir`를 부른다. 이 세션에 살아 있는 마커가 없으면 legacy `.active`로 넘어가는데, 이때 liveness를 검사하지 않는다. 결과적으로 PLAN.md 유무, forbidden_paths, WFCS용 MAINTENANCE가 모두 legacy가 가리키는 (다른 세션의) 과제 기준으로 판정된다(`_lib.py:2353-2386`, `prewrite_gate.py:712-716, 734, 762-782`).
+- **마커가 없는 세션의 쓰기는 다른 세션의 과제 기준으로 gate된다.** prewrite gate는 훅 payload의 session_id로 `resolve_active_task_dir`를 부른다. 이 세션에 살아 있는 마커가 없으면 legacy `.active`로 넘어가는데, 이때 liveness를 검사하지 않는다. 결과적으로 PLAN.md 유무, forbidden_paths, WFCS용 MAINTENANCE가 모두 legacy가 가리키는 (다른 세션의) 과제 기준으로 판정된다(`_lib.py:2353-2386`, `prewrite_gate.py:733-737, 755, 783-803`).
 - **프롬프트를 한 번도 보내지 않은 Claude 세션**(hint 없음)에서 `task_start`를 부르면 `default.json`(과 `.active`)만 생긴다. 이 상태에서 끝난 서브에이전트의 영수증은 기록되지 않는다. hint가 생긴 뒤 `task_context`(또는 plain `task_start`)를 부르면 복구된다. hint 세션에는 마커가 없으므로 `_session_resumes`가 이 과제를 가리키는 legacy `.active`로 넘어가 True가 되고, 그 세션의 마커가 현재 run_id로 쓰인다. 재바인딩은 그 **뒤에** 스폰하는 lens에만 효과가 있다. 이미 끝난 lens의 결과는 NON-ATTESTING으로 취급하고, 영수증을 얻으려고 다시 돌리지 않는다. 실제 결과에 따라 진행한다. 실제 FAIL은 수정하고, 실제 BLOCKED_ENV는 바로 `task_blocked`로 게시하며, 실제 review PASS일 때만 QA로 넘어간다. 실제 QA PASS 뒤에 `task_verify`를 1회 부른다. 순서 있는 영수증 PASS면 닫는다. 아니면 그 응답의 `next_action`에 있는 고정 쌍을 그대로 복사해 `task_blocked`를 부른다. 이 run에 영수증이 하나도 없으면 empty-stream 쌍이고, 영수증은 있는데 필수 completion이 없으면 missing-attestation 쌍이다. 단 `doc/harness/.receipt-capability-broken`이 있으면 어느 쌍도 복사하지 않고 genuine-external-blocker 경로를 따른다(`plugin/skills/run/SKILL.md:9-30`, `harness_server.py:1372, 1455-1458, 1649-1680`, `tests/test_session_hint_marker_binding.py:125-141`, `tests/test_task_context_binds_resuming_session.py:1-15`).
 - **close/주차 뒤에 남는 마커.** `task_close`와 `task_blocked`는 `session_id` 없이 `clear_active_marker`를 부른다. 그래서 MCP 프로세스의 `current_session_id()` 마커(Claude에서는 대개 `default.json`, 어느 과제를 가리키든)를 지우고, legacy `.active`는 이 과제를 가리킬 때만 지운다. hint 이름으로 만든 `<sid>.json`은 디스크에 남는다(`_lib.py:2441-2478`). 이 마커는 과제가 열려 있지 않은 동안에만 무해하다.
   - blocked 과제를 어느 세션이든 plain `task_start`로 재개하면 run이 유지된다. 그러면 원래 세션의 남은 마커가 다시 유효해져서(열린 과제, 같은 run_id) 그 세션이 바인딩과 focus를 조용히 되찾는다.
@@ -593,7 +594,7 @@ task dir, scaffold, request_file, focus 마커는 task root에 쓰인다. 세션
 | SessionStart | — | ① inline 배너 ② `verification_gap_check.py` ③ `project_format_check.py` ④ `drift_warn.py` | 각 5 | 준비 배너와 경고 주입 |
 | SubagentStart | — | `background_hook.py --event start` | 3 | `started` 영수증 |
 | SubagentStop | — | `background_hook.py --event stop` | 3 | `completed` 영수증 |
-| PreToolUse | `Write\|Edit\|MultiEdit` | `prewrite_gate.py` | 3 | 쓰기 차단(§5) |
+| PreToolUse | `Write\|Edit\|MultiEdit` | `prewrite_gate.py` | 10 | 쓰기 차단(§5) |
 | UserPromptSubmit | — | `prompt_memory.py` | 3 | session hint 기록, 상태 주입 |
 | PostToolUse | `Bash` | `tool_routing.py` | 3 | 명령 실패 힌트 |
 
@@ -602,7 +603,7 @@ task dir, scaffold, request_file, focus 마커는 task root에 쓰인다. 세션
 - `PYTHONDONTWRITEBYTECODE=1`: 오염된 bytecode 캐시가 영수증 기능을 꺼 버린 사고 때문에 들어갔다(`doc/harness/REQ__bytecode-cache-cannot-disable-receipts.md`, `install.py:72-92`).
 - `|| true`와 timeout ≤10: C-12 fail-safe 관례다. bytecode 사고보다 먼저 있었다(`CONTRACTS.md:178-187`).
 
-**3초 timeout과 락 대기.** 영수증 append는 과제 디렉터리에 blocking `flock(LOCK_EX)`를 잡는다. 따라서 영수증 훅은 3초 안에 락 획득부터 append까지 끝내야 한다. 그런데 `install_verified.py`는 같은 receipt 트랜잭션을 쥔 채로 중첩 `python3 install.py` 전체(marketplace update, plugin update, smoke)를 실행한다(§11.2). 이 동안 도착한 같은 과제의 SubagentStart/Stop은 락을 기다리다 3초에 강제 종료된다. 그러면 행도 흔적도 남지 않고 재시도도 없다. 그러므로 **install_verified는 모든 lens가 끝난 뒤에만 실행한다.** prewrite gate도 3초를 넘기면 deny JSON을 내지 못하고, 쓰기는 그대로 진행된다(`hooks.json:39, 51, 64, 76`, `_lib.py:2686-2698`, `subagent_lifecycle.py:550, 644, 653, 699`, `_lib.py:3415-3417`, `install_verified.py:343-392`).
+**3초 timeout과 락 대기.** 영수증 append는 과제 디렉터리에 blocking `flock(LOCK_EX)`를 잡는다. 따라서 영수증 훅은 3초 안에 락 획득부터 append까지 끝내야 한다. 그런데 `install_verified.py`는 같은 receipt 트랜잭션을 쥔 채로 중첩 `python3 install.py` 전체(marketplace update, plugin update, smoke)를 실행한다(§11.2). 이 동안 도착한 같은 과제의 SubagentStart/Stop은 락을 기다리다 3초에 강제 종료된다. 그러면 행도 흔적도 남지 않고 재시도도 없다. 그러므로 **install_verified는 모든 lens가 끝난 뒤에만 실행한다.** prewrite gate는 별도로 10초 예산을 갖지만, 그 안에 끝나지 않아 Claude가 죽이면 deny JSON 없이 쓰기가 진행될 수 있다(`hooks.json:39, 51, 64, 76`, `_lib.py:2686-2698`, `subagent_lifecycle.py:550, 644, 653, 699`, `_lib.py:3415-3417`, `install_verified.py:343-392`).
 
 ### 4.2 SessionStart
 
@@ -671,10 +672,10 @@ Claude에서는 hooks.json이 `tool_routing.py`를 직접 실행하므로 힌트
 - **fail open.**
   - 입력이 비었거나 잘못된 JSON이면 `{}`로 보고 조용히 허용한다.
   - gate가 `_lib` import에 실패하면 exit 0.
-  - 잡히지 않은 예외는 `log_gate_crash`가 learnings에 `{type:'gate-crash', script, tool_name, payload_keys, error}`로 남기고 exit 0으로 끝난다. 쓰기는 허용된다(`prewrite_gate.py:31-57, 848-859`, `_lib.py:1010-1030`).
+  - 잡히지 않은 예외는 `log_gate_crash`가 learnings에 `{type:'gate-crash', script, tool_name, payload_keys, error}`로 남기고 exit 0으로 끝난다. 쓰기는 허용된다(`prewrite_gate.py:41-67, 931-942`, `_lib.py:1010-1030`).
 
   불안정한 훅이 세션을 막는 것보다 훅이 없는 편이 낫다는 판단이다(C-12 Why).
-- **64 KiB 상한 우회.** `read_hook_input()`은 stdin을 최대 65,536자까지만 읽는다. Write/Edit/MultiEdit payload에는 `tool_input.content`나 `new_string` 전체가 들어 있다. 그래서 payload가 64 KiB를 넘는 쓰기는 JSON이 중간에서 잘려 파싱에 실패하고, `{}`로 처리되어 조용히 허용된다. 이때 C-05 보호 아티팩트, plan-first, workflow-control, REQ, scope lock 규칙이 **모두** 적용되지 않는다. gate-bypass 행도 crash 행도 남지 않는다. scratch 저장소에서 확인했다: `doc/harness/tasks/TASK__x/TASK.json`에 10바이트를 Write하면 C-05로 거부되지만, 70,000바이트를 Write하면 같은 경로와 `PLAN.md` 모두 허용됐다. Codex 래퍼도 같은 gate에 payload 전체를 넘기므로 같은 구멍이 있다. 자체 상한을 키우는 것은 `background_hook`(8 × 2 MiB)뿐이다(`_lib.py:267-311`, `prewrite_gate.py:827-830`, `background_hook.py:365-368`, `hook_pre_tool_use.py:278-290, 341-349`).
+- **전체 payload 읽기.** gate는 `_read_whole_hook_input`으로 EOF까지 읽고 `_parse_hook_payload`에서 실제 길이에 맞는 `max_chars`를 `read_hook_input`에 넘긴다. `_lib`의 다른 호출자 기본값 64 KiB는 그대로다. gate 자식, Codex fallback과 wrapper의 tool-name 판독 모두 locale과 무관하게 UTF-8 `surrogateescape`를 써서 잘못된 한 바이트 때문에 payload가 비는 우회를 막는다. 메모리 고갈이나 host가 hook 전체를 죽이는 경우까지 보장하지는 않는다(`prewrite_gate.py`의 `_read_whole_hook_input`, `_parse_hook_payload`; `hook_pre_tool_use.py`의 `_tool_name`).
 
 ### 4.7 Codex 훅
 
@@ -688,7 +689,7 @@ Codex 훅은 `hooks.json`이 아니라 `install.py`의 `_codex_hooks_config`가 
 | PostToolUse | `Bash`, `create_goal`, `task_start`/`task_context` | `hook_post_tool_use.py` | 3 |
 
 - 이 명령들에는 `|| true`가 없고 SessionStart timeout은 10을 넘는다. C-12의 적용 범위가 `hooks.json`이라서 계약 위반은 아니다. 대신 내부 try/except와 자식 프로세스 timeout에 의존한다.
-- `hook_pre_tool_use.py`는 쓰기 도구가 오면 `prewrite_gate.py`를 **1.5초 timeout** 자식 프로세스로 돌리고 그 stdout을 그대로 전달한다. gate가 느리면(예: 큰 doc 트리에서 REQ back-link 스캔) 출력이 비고 **쓰기가 조용히 허용된다**(`hook_pre_tool_use.py:275-290`). `spawn_agent`가 오면 bind될 수 없는 review 이름을 거부하고, 0.5초 안에 watcher 등록을 복구한다(`hook_pre_tool_use.py:97-115, 293-350`).
+- `hook_pre_tool_use.py`는 쓰기 도구에서 gate 자식에 3.0초를 준다. timeout, spawn 실패, 출력 없는 nonzero 종료면 `prewrite_gate.protected_artifact_decision`을 프로세스 안에서 실행하여 C-05 대상만 거부한다. 다른 쓰기와 fallback 자체 오류는 fail-open이다. wrapper 전체가 바깥 5초 제한으로 죽으면 이 보장도 없다. `spawn_agent`에서는 bind할 수 없는 review 이름을 거부하고 0.5초 예산으로 watcher 등록을 복구한다(`hook_pre_tool_use.py`의 `CHILD_TIMEOUT_SECONDS`, `_run`, `_protected_artifact_fallback`, `main`).
 - `hook_user_prompt_submit.py`는 harness 저장소에서 항상 `[harness-route] Repository mutation: invoke $harness:run before edits`를 앞에 붙인다. 그다음 `session_id`를 담은 payload를 `HARNESS_RUNTIME=codex` 환경의 `prompt_memory.py`로 넘긴다(자식 6초, 전체 7초). 그래서 Codex에서도 session hint가 기록된다(`hook_user_prompt_submit.py:14-89`).
 - `hook_session_start.py`는 먼저 `restore_watcher_registration(payload, retry_seconds=1.0, budget_seconds=1.25)`를 부른다. 이 호출은 try/except로 감싸져 있지 않다(import만 보호된다). 그다음 `verification_gap_check`와 `project_format_check`를 8초 자식 프로세스로 실행하고, 결과를 additionalContext로 돌려준다. 배너와 drift_warn은 없다(`hook_session_start.py:13-16, 33-69`).
 - `hook_post_tool_use.py`는 세 가지 일을 한다. `task_start`/`task_context` 결과를 thread에 바인딩하고, `create_goal` 뒤에 `[harness-goal]` 힌트를 주고, Bash 결과를 `tool_routing.py`로 넘겨 additionalContext로 감싼다(`hook_post_tool_use.py:149-210`).
@@ -709,18 +710,18 @@ Codex 훅은 `hooks.json`이 아니라 `install.py`의 `_codex_hooks_config`가 
 
 ## 5. prewrite gate
 
-`plugin/scripts/prewrite_gate.py`는 Claude PreToolUse(`Write|Edit|MultiEdit`)와 Codex 래퍼(`apply_patch` 포함)에서 돈다. 쓰기 경로는 `tool_input.file_path`(또는 `.path`)에서 얻는다. `apply_patch`의 경우 `*** Add/Update/Delete File:` 대상을 먼저 모두 모으고, 그다음 `*** Move to:` 대상을 모은다(중복 제거). 상대 경로는 payload `cwd` 기준으로 푼다. 모은 경로를 이 순서대로 검사하고, **처음 거부된 경로에서 호출 전체가 끝난다**. 패치 안에 적힌 순서와는 다를 수 있다(`prewrite_gate.py:619-624, 803-845`).
+`plugin/scripts/prewrite_gate.py`는 Claude PreToolUse(`Write|Edit|MultiEdit`)와 Codex 래퍼(`apply_patch` 포함)에서 돈다. 쓰기 경로는 `tool_input.file_path`(또는 `.path`)에서 얻는다. `apply_patch`의 경우 `*** Add/Update/Delete File:` 대상을 먼저 모두 모으고, 그다음 `*** Move to:` 대상을 모은다(중복 제거). 상대 경로는 payload `cwd` 기준으로 푼다. 모은 경로를 이 순서대로 검사하고, **처음 거부된 경로에서 호출 전체가 끝난다**. 패치 안에 적힌 순서와는 다를 수 있다(`prewrite_gate.py:631-644, 824-928`).
 
-payload가 64 KiB를 넘으면 이 절의 어떤 규칙도 적용되지 않는다(§4.6, §5.8).
+gate는 전체 payload를 UTF-8 `surrogateescape`로 읽는다. 크기 때문에 잘리는 기존 64 KiB 상한은 적용되지 않는다(§4.6).
 
 ### 5.1 규칙 순서
 
-코드에 적힌 순서 그대로다(`prewrite_gate.py:619-845`).
+코드에 적힌 순서 그대로다(`prewrite_gate.py:631-928`).
 
 | # | 조건 | 결과 | rule id | 이유 |
 |---|---|---|---|---|
-| 0 | payload 없음(64 KiB 초과로 잘린 경우 포함) | 허용 | — | fail-safe |
-| 0 | `HARNESS_SKIP_PREWRITE=1` | 허용, learnings에 `gate-bypass` 기록 | — | 명시적 탈출구. 문서는 1회용이라고 하지만 현재 코드는 설정되어 있는 동안 계속 적용한다(§5.8) |
+| 0 | payload 없음 또는 JSON 파싱 실패 | 허용 | — | fail-safe |
+| 0 | `HARNESS_SKIP_PREWRITE=1` | 허용, learnings에 `gate-bypass` 기록 | — | 명시적 탈출구. 환경에 설정되어 있는 동안 계속 적용(§5.8) |
 | 1 | harness root 해석 오류(manifest가 symlink, 경로에 symlink, 일반 파일 아님, 읽기 불가) | 거부 | `invalid-harness-workspace` (owner `harness:setup`) | 잘못된 조상 트리 위에서는 판단할 수 없다 |
 | 2 | 일반 파일 `doc/harness/manifest.yaml`이 없음 | 허용 | — | harness 저장소가 아니다 |
 | 3 | 대상이 Claude transcript(`…/projects/**/subagents/agent-*.jsonl`)나 Codex rollout(`…/sessions/**/rollout-*.jsonl`) | 거부 | `C-05-protected-artifact` (owner `claude-runtime`) | 영수증 출처 증거를 보호한다 |
@@ -738,9 +739,9 @@ payload가 64 KiB를 넘으면 이 절의 어떤 규칙도 적용되지 않는�
 | 15 | PROGRESS.md `forbidden_paths`에 걸림 | 거부 | `scope-lock-forbidden` (owner `developer`) | 범위 고정 |
 | 16 | 그 밖 | 조용히 허용 | — | — |
 
-**1-2행 보충.** root는 대상 파일이 아니라 payload `cwd`에서 해석한다. cwd가 Harness root 아래의 중첩 git 저장소 안에 있으면, 이 세션이 바깥 root에 열린 과제 마커를 가진 동안에만 gate가 적용된다. 그렇지 않으면 root 해석 결과가 비어서 gate는 모든 쓰기를 허용한다(`_lib.py:1939-1995`, `prewrite_gate.py:620-642`, §3.8).
+**1-2행 보충.** root는 대상 파일이 아니라 payload `cwd`에서 해석한다. cwd가 Harness root 아래의 중첩 git 저장소 안에 있으면, 이 세션이 바깥 root에 열린 과제 마커를 가진 동안에만 gate가 적용된다. 그렇지 않으면 root 해석 결과가 비어서 gate는 모든 쓰기를 허용한다(`_lib.py:1939-1995`, `prewrite_gate.py:640-663`, §3.8).
 
-**9행 보충.** MAINTENANCE가 있으면 gate는 그 자리에서 허용을 돌려준다. 그래서 workflow-control 파일에는 10-15행(plan-first, REQ, scope-lock forbidden_paths)이 전혀 적용되지 않는다. 이 파일들 중 여럿은 `.py`다(`_lib.py`, `prewrite_gate.py`, `harness_server.py`). MAINTENANCE 조회는 `resolve_active_task_dir`를 거친다. 이 함수는 세션 마커가 없으면 legacy `.active`로 넘어가는데, 이때 열린 과제인지 확인하지 않는다. 그래서 오래된 `.active`가 가리키는 닫힌 과제나 주차된 과제에 MAINTENANCE 파일이 있어도 이 쓰기가 허용된다(`prewrite_gate.py:712-728`, `_lib.py:2370-2386`).
+**9행 보충.** MAINTENANCE가 있으면 gate는 그 자리에서 허용을 돌려준다. 그래서 workflow-control 파일에는 10-15행(plan-first, REQ, scope-lock forbidden_paths)이 전혀 적용되지 않는다. 이 파일들 중 여럿은 `.py`다(`_lib.py`, `prewrite_gate.py`, `harness_server.py`). MAINTENANCE 조회는 `resolve_active_task_dir`를 거친다. 이 함수는 세션 마커가 없으면 legacy `.active`로 넘어가는데, 이때 열린 과제인지 확인하지 않는다. 그래서 오래된 `.active`가 가리키는 닫힌 과제나 주차된 과제에 MAINTENANCE 파일이 있어도 이 쓰기가 허용된다(`prewrite_gate.py:733-749`, `_lib.py:2370-2386`).
 
 ### 5.2 보호 대상
 
@@ -754,27 +755,27 @@ payload가 64 KiB를 넘으면 이 절의 어떤 규칙도 적용되지 않는�
 | `doc/harness/tasks/.active`, `.active_sessions/**` | 경로 | `task-control-runtime` |
 | 런타임 transcript / rollout | 경로 패턴(§5.1 3행) | `claude-runtime`(Codex rollout에도 같은 owner) |
 
-근거: `prewrite_gate.py:64-77, 137-194, 644-655`. 마커 경로는 `PROTECTED_ARTIFACTS.get(basename, "task-control-runtime")` 폴백으로 owner가 정해진다.
+근거: `prewrite_gate.py:74-87, 147-204, 665-676`. 마커 경로는 `PROTECTED_ARTIFACTS.get(basename, "task-control-runtime")` 폴백으로 owner가 정해진다.
 
 - CONTRACTS C-05는 두 마커 경로를 목록에 넣지 않았지만 코드는 보호한다.
 - basename으로 판정하기 때문에 batch 보관본(`doc/harness/archive/batch/TASK__x/`)의 TASK.json/PLAN.md/RECEIPTS.jsonl도 Write/Edit가 거부된다(REVIEWS.jsonl은 제외).
 
 ### 5.3 고정 목록
 
-- **`WORKFLOW_CONTROL_SURFACE`**: `plugin/CLAUDE.md`, `plugin/hooks/hooks.json`, `plugin/mcp/harness_server.py`, `plugin/scripts/prewrite_gate.py`, `plugin/scripts/_lib.py`, `doc/harness/manifest.yaml`(`prewrite_gate.py:101-108`)
-- **`EXEMPT_PREFIXES`**: `doc/harness/learnings.jsonl`, `doc/harness/qa`, `doc/harness/checkpoints`, `doc/harness/patterns`, `doc/harness/retros`, `doc/harness/visual-baselines`(`prewrite_gate.py:89-96`)
-- **`SOURCE_EXTENSIONS`**: `.py .ts .tsx .js .jsx .go .rs .java .c .cpp .h .hpp .cs .rb .php .swift .kt .scala .sh .bash .zsh .sql .svelte .vue .astro`. `.md`, `.json`, `.yaml`, `.toml`, `.html`, `.css`는 gate 대상이 아니다(`prewrite_gate.py:80-85`).
+- **`WORKFLOW_CONTROL_SURFACE`**: `plugin/CLAUDE.md`, `plugin/hooks/hooks.json`, `plugin/mcp/harness_server.py`, `plugin/scripts/prewrite_gate.py`, `plugin/scripts/_lib.py`, `doc/harness/manifest.yaml`(`prewrite_gate.py:111-118`)
+- **`EXEMPT_PREFIXES`**: `doc/harness/learnings.jsonl`, `doc/harness/qa`, `doc/harness/checkpoints`, `doc/harness/patterns`, `doc/harness/retros`, `doc/harness/visual-baselines`(`prewrite_gate.py:99-106`)
+- **`SOURCE_EXTENSIONS`**: `.py .ts .tsx .js .jsx .go .rs .java .c .cpp .h .hpp .cs .rb .php .swift .kt .scala .sh .bash .zsh .sql .svelte .vue .astro`. `.md`, `.json`, `.yaml`, `.toml`, `.html`, `.css`는 gate 대상이 아니다(`prewrite_gate.py:90-95`).
 
 `CONTRACTS.md`와 root `CLAUDE.md`(그리고 `doc/CLAUDE.md` 같은 다른 CLAUDE.md)는 WFCS도 아니고 소스 확장자도 아니다. 그래서 이 파일들에 대한 Write/Edit는 과제나 MAINTENANCE 유무와 관계없이 허용된다(1·4행의 workspace 오류나 symlink 이탈이 없을 때, §12.2). 단 `plugin/CLAUDE.md`는 WFCS라서 MAINTENANCE가 없으면 `workflow-control-surface`로 거부된다.
 
 ### 5.4 `no-active-task`가 적용되는 조건
 
-gate는 strict 여부를 `yaml_field("strict_compliance_requires_delegation", manifest)`로 읽는다. `yaml_field`는 0열에서 시작하는 줄(`line.startswith(field + ":")`)만 매칭한다. 그러므로 strict 분기는 **최상위** `strict_compliance_requires_delegation: true` 줄이 있을 때만 켜진다. 이 저장소의 manifest처럼 `capabilities:` 아래에 들여쓴 형태는 효과가 없다. 테스트도 이 동작을 고정한다. 중첩 형태로는 거부하면 **안 된다**(`_lib.py:1173-1185`, `prewrite_gate.py:734-752`, `doc/harness/manifest.yaml:56-58`, `tests/test_prewrite_gate_dormant.py:74-85, 146-152`). scratch 저장소에서 중첩 키만 두고 과제 없이 `src/a.py`를 Write했더니 조용히 허용됐다.
+gate는 strict 여부를 `yaml_field("strict_compliance_requires_delegation", manifest)`로 읽는다. `yaml_field`는 0열에서 시작하는 줄(`line.startswith(field + ":")`)만 매칭한다. 그러므로 strict 분기는 **최상위** `strict_compliance_requires_delegation: true` 줄이 있을 때만 켜진다. 이 저장소의 manifest처럼 `capabilities:` 아래에 들여쓴 형태는 효과가 없다. 테스트도 이 동작을 고정한다. 중첩 형태로는 거부하면 **안 된다**(`_lib.py:1173-1185`, `prewrite_gate.py:755-773`, `doc/harness/manifest.yaml:56-58`, `tests/test_prewrite_gate_dormant.py:74-85, 146-152`). scratch 저장소에서 중첩 키만 두고 과제 없이 `src/a.py`를 Write했더니 조용히 허용됐다.
 
 따라서 이 저장소에서 활성 과제 없이 하는 소스 쓰기는 **열려 있거나 invalid인 `TASK__*`가 하나라도 있을 때만** 거부되고, 그 밖에는 조용히 허용된다. invalid 과제에는 잘못된 `--task-dir`로 install_verified를 돌려서 생긴 빈 디렉터리도 포함된다(§11.2). 정리하면:
 
 - C-02(plan-first)는 활성 과제가 있을 때만 작동한다.
-- gate가 보는 것은 소스 확장자뿐이다. 프롬프트 수준의 런타임(`plugin/skills/**/*.md`, `plugin/agents/*.md`, `CONTRACTS.md`, root `CLAUDE.md`, README, `plugin/.mcp.json`, `.claude/settings.json`)은 과제도 PLAN도 없이 Write/Edit할 수 있다. 막히는 것은 WFCS 6개와 보호 아티팩트뿐이다. 이런 변경을 루프로 처리하는 것은 관행일 뿐이다(`prewrite_gate.py:80-85, 101-108, 730-752`).
+- gate가 보는 것은 소스 확장자뿐이다. 프롬프트 수준의 런타임(`plugin/skills/**/*.md`, `plugin/agents/*.md`, `CONTRACTS.md`, root `CLAUDE.md`, README, `plugin/.mcp.json`, `.claude/settings.json`)은 과제도 PLAN도 없이 Write/Edit할 수 있다. 막히는 것은 WFCS 6개와 보호 아티팩트뿐이다. 이런 변경을 루프로 처리하는 것은 관행일 뿐이다(`prewrite_gate.py:90-95, 111-118, 751-773`).
 - manifest `maintenance_default`는 routing에만 영향을 준다. gate는 MAINTENANCE 파일만 본다.
 
 ### 5.5 REQ 링크 규칙(`C-REQ-observable-doc-required`)
@@ -789,7 +790,7 @@ gate는 strict 여부를 `yaml_field("strict_compliance_requires_delegation", ma
 
 `.html`/`.css`/`.scss`는 `SOURCE_EXTENSIONS`가 아니라서 이 규칙까지 오지 않는다.
 
-**어떻게 풀리나**(`prewrite_gate.py:300-369, 762-782`, `req_scaffold.py:45, 107`):
+**어떻게 풀리나**(`prewrite_gate.py:310-379, 783-803`, `req_scaffold.py:45, 107`):
 
 - PLAN.md 어디에든 `doc/<something>/REQ__*.md` 형태의 문자열이 하나라도 있으면 된다. surface별로 따지지 않고, 그 파일이 실제로 있을 필요도 없다.
 - 또는 `doc/<area>/REQ__*.md` 안에 `source: task: <id>` 부분 문자열이 있으면 된다. 깊이 2까지 스캔하고 `doc/harness`는 건너뛴다. 부분 문자열 비교이므로 `TASK__a`가 `TASK__ab`에도 맞는다.
@@ -800,18 +801,18 @@ develop Phase 1의 Durable Docs Preflight가 REQ를 **소스 수정보다 먼저
 
 ### 5.6 scope lock
 
-scope lock 단계는 소스 확장자 파일에만 도달한다. 그 앞 단계에서 과제 디렉터리 안 경로, `EXEMPT_PREFIXES`, (MAINTENANCE가 있는) workflow-control 파일, 소스가 아닌 파일은 이미 허용으로 끝났기 때문이다(5.1의 7-10행). 이 단계는 도달한 모든 소스 쓰기에서 실행된다. PROGRESS.md는 `forbidden_paths` 매칭에만 필요하다(`prewrite_gate.py:397-455, 546-593, 703-732, 784-798`).
+scope lock 단계는 소스 확장자 파일에만 도달한다. 그 앞 단계에서 과제 디렉터리 안 경로, `EXEMPT_PREFIXES`, (MAINTENANCE가 있는) workflow-control 파일, 소스가 아닌 파일은 이미 허용으로 끝났기 때문이다(5.1의 7-10행). 이 단계는 도달한 모든 소스 쓰기에서 실행된다. PROGRESS.md는 `forbidden_paths` 매칭에만 필요하다(`prewrite_gate.py:407-465, 556-605, 724-753, 805-819`).
 
 - 차단 효과가 있는 것은 `forbidden_paths`뿐이다.
   - `forbidden_paths`로는 Markdown/JSON/YAML/설정 파일, 과제 디렉터리 파일, workflow-control 파일을 막을 수 없다.
-  - `develop/SKILL.md:187`의 "forbidden → BLOCK"과 §10.6의 관행(CHANGELOG, CONTRACTS.md, CLAUDE.md, README를 lead의 `forbidden_paths`에 넣기)은 이런 파일에 대해 어떤 gate도 강제하지 않는다.
+  - `develop/SKILL.md:188`의 "forbidden → BLOCK"과 §10.6의 관행(CHANGELOG, CONTRACTS.md, CLAUDE.md, README를 lead의 `forbidden_paths`에 넣기)은 이런 파일에 대해 어떤 gate도 강제하지 않는다.
 - `allowed_paths`는 거부 메시지에만 나타나고, `test_paths`는 파싱만 하고 쓰지 않는다.
 - 절대경로, `..`, 트리 밖 항목은 `gate-parse-fail`로 기록하고 건너뛴다. 예외가 나면 쓰기를 허용한다.
 - `HARNESS_DISABLE_SCOPE_LOCK=1`이면 scope lock을 건너뛰고 `<task>/audit/scope-lock-bypass.flag`를 쓴다. 이 플래그의 성질:
   - 우회할 때마다 덮어쓰므로(mode `'w'`) 마지막 우회 경로만 남는다.
   - 환경 변수 없이 scope lock 검사가 다시 돌면 gate가 "stale bypass flag"로 보고 지운다. 따라서 다음 일반 소스 쓰기 뒤에는 흔적이 사라지고, 영속 감사 기록이 되지 못한다.
   - PROGRESS.md가 있든 없든 쓰인다.
-  - gate는 환경 변수를 **지우지 않는다.** 설정되어 있는 동안에는 모든 쓰기에 우회가 적용된다(`prewrite_gate.py:549-570`).
+  - gate는 환경 변수를 **지우지 않는다.** 설정되어 있는 동안에는 모든 쓰기에 우회가 적용된다(`prewrite_gate.py:560-581`).
 
 ### 5.7 거부 메시지 형식
 
@@ -824,7 +825,7 @@ escape: HARNESS_SKIP_PREWRITE=1 <retry>
 ↳ docs: …
 ```
 
-실제 reason은 `"{tail} {human}\n{hint}"`다. 즉 대괄호 tail과 사람이 읽는 문장이 한 줄에 있다. ↳ 블록은 빈 줄 뒤에 온다. ↳ 줄은 줄마다 하나씩이고, 값이 비어 있으면 나오지 않는다(`prewrite_gate.py:461-532`, `_lib.py:939-978`). 필드별 폴백:
+실제 reason은 `"{tail} {human}\n{hint}"`다. 즉 대괄호 tail과 사람이 읽는 문장이 한 줄에 있다. ↳ 블록은 빈 줄 뒤에 온다. ↳ 줄은 줄마다 하나씩이고, 값이 비어 있으면 나오지 않는다(`prewrite_gate.py:471-542`, `_lib.py:939-978`). 필드별 폴백:
 
 - **next action**: `_RULE_NEXT_ACTION`에 없거나 값이 빈 문자열이면(C-05 항목이 그렇다) `_owner_to_next_action(owner)`를 쓴다. 이 폴백은 owner가 plan-skill, receipt-lifecycle-hook, review-detail-writer일 때만 비어 있지 않다.
 - **owner**: 없으면 원래 owner 문자열.
@@ -833,16 +834,16 @@ escape: HARNESS_SKIP_PREWRITE=1 <retry>
 ### 5.8 탈출구와 한계
 
 - **탈출구**:
-  - `HARNESS_SKIP_PREWRITE=1`: 기록이 남는다. gate는 호출될 때마다 이 환경 변수를 읽고 지우지 않는다. 그래서 훅 프로세스 환경에 설정되어 있는 동안은 모든 Write/Edit가 우회되고 매번 `gate-bypass`가 기록된다(§13.2의 대량 `gate-bypass` 행과 일치). `plugin/CLAUDE.md:289`와 gate docstring(`prewrite_gate.py:15`)은 "one-shot"이라고 설명하지만, 현재 코드는 이 변수를 지우지 않는다(`prewrite_gate.py:833-836`). 이 어긋남은 §17.2에 관찰로 기록했고, 정리는 wave 2 항목 X가 맡는다.
+  - `HARNESS_SKIP_PREWRITE=1`: gate와 Codex protected fallback은 호출마다 읽고 지우지 않는다. 훅 환경에 설정된 동안 모든 쓰기가 우회되고 `gate-bypass`가 기록된다(`prewrite_gate.py`의 `_decision`).
   - `HARNESS_DISABLE_SCOPE_LOCK=1`(§5.6).
   - MAINTENANCE 마커.
   - `execution_mode: micro`(PLAN.md만 면제).
-- **64 KiB 초과 payload**는 JSON 파싱 실패로 모든 규칙을 우회하고 기록도 남기지 않는다(§4.6). PLAN.md와 TASK.json 같은 보호 아티팩트도 예외가 아니다.
-- **timeout**: Claude는 3초, Codex 래퍼는 1.5초를 넘기면 deny가 나오지 않고 쓰기가 진행된다(§4.1, §4.7).
+- **자원 한계**: 전체 payload를 읽으므로 메모리 고갈과 host의 hook 강제 종료는 여전히 fail-open 한계다(§4.6).
+- **timeout**: Claude gate는 10초이며 강제 종료되면 쓰기를 허용할 수 있다. Codex는 3.0초 자식 timeout 뒤 C-05만 fallback으로 거부한다. wrapper 전체의 5초 강제 종료나 fallback 오류에서는 쓰기가 허용된다(§4.1, §4.7).
 - **MAINTENANCE는 자기 인가가 가능하다.** 과제 디렉터리 안의 일반 파일이라 아무나 만들 수 있고, gate는 누가 만들었는지 구별하지 못한다. 거부 메시지의 owner인 `maintain-skill`이라는 스킬은 `plugin/skills/`에 없다.
-- `_runtime_name()`은 payload에 `session_id`가 있으면 `codex`로 판정한다. Claude payload에도 `session_id`가 있으므로 Claude 세션에도 Codex 형태의 힌트(`write_plan { task_id=… }`)가 나온다(`HARNESS_RUNTIME=claude`를 설정하면 해결된다). `no-active-task` 거부의 next action도 `write_plan`을 제안하지만, 실제로 해야 할 일은 `task_start`다(`prewrite_gate.py:485-507, 751`).
-- scope lock의 next-action 키는 `C-09-scope-lock`이다. CONTRACTS C-09 본문은 write focus를 다루고, `scope-lock.md:7`은 scope lock을 C-09 범위 계약의 기계화로 설명한다. 이 차이는 관찰로만 적는다(§17.2). 판정에는 `forbidden_paths`만 쓰이고 `allowed_paths`는 영향이 없다. 그래서 ↳ next action의 "Add the file to PROGRESS.md allowed_paths"만으로는 거부가 풀리지 않는다. 사람이 읽는 문장의 선택지 (a) "move to allowed_paths"는 걸린 `forbidden_paths` 항목을 지우거나 좁힐 때만 효과가 있다. 나머지 방법은 쓰기를 되돌리거나 환경 변수로 우회하는 것이다(`prewrite_gate.py:479-481, 572-592, 784-796`).
-- `doc/harness/patterns/prewrite-gate.md`(freshness: suspect)와 `scope-lock.md`의 설명은 현재 코드와 다르다. "exits 2", "unlisted path warns", "one-shot bypass"는 모두 현재 코드와 다르다. 이 절은 현재 코드 동작을 관찰해 적은 것이고 규범이 아니다. 규범은 두 패턴 문서이며, 문서와 코드 중 어느 쪽을 고칠지는 후속 과제가 정한다(§17.2).
+- `_runtime_name()`은 payload에 `session_id`가 있으면 `codex`로 판정한다. Claude payload에도 `session_id`가 있으므로 Claude 세션에도 Codex 형태의 힌트(`write_plan { task_id=… }`)가 나온다(`HARNESS_RUNTIME=claude`를 설정하면 해결된다). `no-active-task` 거부의 next action도 `write_plan`을 제안하지만, 실제로 해야 할 일은 `task_start`다(`prewrite_gate.py:495-517, 772`).
+- scope lock의 next-action 키는 `C-09-scope-lock`이다. CONTRACTS C-09는 write focus 계약이고 scope lock은 별도의 보조 guard다(`patterns/scope-lock.md`). 판정에는 `forbidden_paths`만 쓰이고 `allowed_paths`는 영향이 없다. next action의 "Add the file to PROGRESS.md allowed_paths"만으로 거부가 풀리지 않으며, 걸린 forbidden 항목을 지우거나 좁혀야 한다(`prewrite_gate.py`의 `_handle_scope_lock`).
+- [prewrite gate](patterns/prewrite-gate.md)와 [scope lock](patterns/scope-lock.md) 패턴 문서는 현재의 JSON deny, 미등록 경로 허용, 지속 환경 변수 우회, timeout 동작을 설명한다.
 
 ---
 
@@ -913,13 +914,13 @@ task_close  ──▶ 같은 스냅샷의 fingerprint를 TASK.json에 기록
 | `harness:qa-cli` / `-api` / `-browser` / `-desktop` | qa-* | 있음 |
 | `harness:qa-linux-cli`, `linux-cli-checker`, `harness:linux-api-qa` | `ux-cli` / `ux-cli` / `ux-api` | **없음** |
 | `harness:ux-*` | ux-* | **없음**(SUPPORTED_LENSES 밖) |
-| `harness:developer`, ac-worker, defect-hunter, dogfooder, documentation-review, task-lead | `''` | 없음 |
+| `harness:developer`, ac-worker, test-author, defect-hunter, dogfooder, documentation-review, task-lead | `''` | 없음 |
 
 - 3번 규칙은 `ux` 부분 문자열을 `qa`보다 먼저 본다. 그래서 `linux`처럼 `ux`를 포함한 토큰이 이름에 있으면 `qa`가 함께 있어도 ux-*로 추론되고, 영수증이 조용히 사라진다. 2번 규칙은 qa/ux 바로 앞에 구분자가 있어야 해서 이 경우를 구하지 못한다.
 - 2번 정규식이 review 쌍보다 먼저 검사되므로, 섞인 이름은 review보다 QA로 묶일 수 있다.
 - 추론은 이름의 토큰만 보고 플러그인 네임스페이스는 보지 않는다. 그래서 harness verdict 계약을 따르지 않는 다른 플러그인의 reviewer도 review-code 영수증을 만들고, 대개 PENDING으로 결속된다(`subagent_lifecycle.py:114-172`).
 
-**`name=`을 주면 대개 영수증이 없다.** Claude Agent 도구에 `name=`을 넘기면 display name이 agentType 자리를 차지해 대개 lens를 잃는다. 이름이 우연히 lens를 담고 있으면(`qa-cli-1` → `qa-cli`) lens가 추론되어 영수증이 남는다. 그래서 이 문제는 간헐적으로 나타났다. 2026-09-10 측정에서는 이름을 준 spawn 3번 중 영수증이 0개였다. 흔적은 learnings의 `background_hook:binding-miss`에 reason `named-spawn-shadows-agent-type`으로 남는다(`subagent_lifecycle.py:114-174`, `plugin/skills/develop/parallel-fanout.md:63-98`). lane 구분은 prompt 본문에 적는다.
+**`name=`을 주면 대개 영수증이 없다.** Claude Agent 도구에 `name=`을 넘기면 display name이 agentType 자리를 차지해 대개 lens를 잃는다. 이름이 우연히 lens를 담고 있으면(`qa-cli-1` → `qa-cli`) lens가 추론되어 영수증이 남는다. 그래서 이 문제는 간헐적으로 나타났다. 2026-09-10 측정에서는 이름을 준 spawn 3번 중 영수증이 0개였다. 흔적은 learnings의 `background_hook:binding-miss`에 reason `named-spawn-shadows-agent-type`으로 남는다(`subagent_lifecycle.py:114-174`, `plugin/skills/develop/parallel-fanout.md:69-104`). lane 구분은 prompt 본문에 적는다.
 
 ### 6.4 start 경로
 
@@ -955,7 +956,7 @@ append는 `record_subagent_receipt`가 맡는다(`_lib.py:4145-4287`).
    - 모두 없으면 `no-canonical-start-attachment`로 거부.
 
    run cutoff보다 앞선 attachment는 `start-precedes-task-run`으로 거부된다. 두 attachment 모양은 모두 제3자 플러그인(oh-my-claudecode)의 SubagentStart 출력에서 나온다. harness start 훅은 아무것도 출력하지 않는다. 그래서 그런 플러그인이 없는 보통 설치에서는 harness `started` 행을 통한 `hook_start_type`이 정상 경로다. hook `started` 행이 없고(stop만 오는 런타임) attachment도 없으면 항상 `no-canonical-start-attachment`로 거부된다(ADR `:195-206`).
-6. **최종 텍스트는 비교하지 않는다.** 런타임이 transcript의 최종 텍스트를 거의 같은 순간에 flush하기 때문에 일부러 생략했다. verdict는 payload의 `last_assistant_message`에서 읽는다(`subagent_lifecycle.py:412-421`, ADR `:208-212`). CONTRACTS C-14 산문은 stop-only 쌍에 final text 일치를 요구한다. 반면 ADR(`:208-212`)과 현재 코드는 이 값을 비교하지 않는다. 이 어긋남은 §17.2에 관찰로 기록했고, 정리는 wave 2 항목 X가 맡는다.
+6. **최종 텍스트는 비교하지 않는다.** 런타임의 transcript flush와 stop 시점이 겹칠 수 있어, verdict는 검증된 stop payload의 `last_assistant_message`에서 읽는다. C-14도 stop-only fallback의 identity·출처 검증과 이 verdict 경계를 명시한다(`subagent_lifecycle.py:412-421`, `CONTRACTS.md` C-14).
 7. **기록**(트랜잭션 안, `subagent_lifecycle.py:698-766`).
    - started만 있음 → savepoint 안에서 completion append.
    - started와 completion이 이미 있음 → 정규화 결과가 같으면 `duplicate_stop`, 다르면 `completion-already-recorded`. **재개된 에이전트는 첫 completion을 바꿀 수 없다.**
@@ -981,7 +982,7 @@ append는 `record_subagent_receipt`가 맡는다(`_lib.py:4145-4287`).
   - 그 외 → `INVALID`.
 - PENDING을 durable append한 뒤에는 `receipts:verdict-unbound` 흔적을 남긴다. 원인만 적고 에이전트 텍스트는 복사하지 않는다.
 
-**verdict 형식 계약은 에이전트 정의가 소유한다.** spawn prompt에 형식을 다시 적거나 옮겨 적으면 안 된다. 그러면 PENDING으로 결속된다(`doc/harness/REQ__lens-verdict-contract-ownership.md`, `plugin/skills/develop/SKILL.md:315-318`).
+**verdict 형식 계약은 에이전트 정의가 소유한다.** spawn prompt에 형식을 다시 적거나 옮겨 적으면 안 된다. 그러면 PENDING으로 결속된다(`doc/harness/REQ__lens-verdict-contract-ownership.md`, `plugin/skills/develop/SKILL.md:316-319`).
 
 ### 6.7 lens별 유효 completion
 
@@ -1164,8 +1165,8 @@ MCP 안의 WatcherManager 가 rollout 을 tail:
 
 - lens를 `name=`으로 스폰하면 대개 영수증이 없다(§6.3).
 - 끝난 lens를 SendMessage나 wake-up으로 재개해도 아무것도 쓰이지 않는다. 수정 후 재검증은 **새 lens를 스폰**해서 한다(`doc/harness/REQ__subagent-lifecycle-receipt-boundaries.md`).
-- 자기 백그라운드 명령을 기다리려고 턴을 끝낸 lens는 SubagentStop이 일찍 불려서 중간 텍스트가 PENDING completion으로 기록된다. reviewer와 QA는 명령을 foreground로 돌린다(`plugin/agents/code-reviewer.md:206-209`).
-- 같은 lens에 영수증을 만드는 리뷰어를 여러 개 동시에 돌리지 않는다. 벽시계 순서로 마지막 completion이 이기므로 FAIL이 PASS로 덮일 수 있다(`plugin/skills/develop/parallel-fanout.md:136-158`).
+- 자기 백그라운드 명령을 기다리려고 턴을 끝낸 lens는 SubagentStop이 일찍 불려서 중간 텍스트가 PENDING completion으로 기록된다. reviewer와 QA는 명령을 foreground로 돌린다(`plugin/agents/code-reviewer.md:223-226`).
+- 같은 lens에 영수증을 만드는 리뷰어를 여러 개 동시에 돌리지 않는다. 벽시계 순서로 마지막 completion이 이기므로 FAIL이 PASS로 덮일 수 있다(`plugin/skills/develop/parallel-fanout.md:172-194`).
 - completion 없이 남은 `started` 행은 만료되지 않고 그 lens의 앞선 결과를 가린다. 새 스폰으로 풀리지만, 재실행이 다른 이유로 필요할 때만 그렇게 한다. 영수증만을 위한 재실행은 금지다(§6.7, §6.11).
 - 형식이 틀린 행 하나가 스트림 전체를 막는다(§6.2).
 - install_verified가 receipt 락을 쥔 동안 끝난 lens는 3초 timeout으로 영수증을 잃는다(§4.1).
@@ -1280,19 +1281,19 @@ full:    0 → 1: deferred-scope.md 생성, 전제 추출, 코디네이터가 pl
 | 0 | manifest, TASK.json, 종료 상태, focus 사전 점검 | `develop/SKILL.md:91-98` |
 | 1 | PLAN/REQUEST/TASK 로드, PROGRESS.md `completed_acs`로 재개(mtime 재검증), learnings. **Durable Docs Preflight**: 선택한 REQ를 첫 소스 편집 전에 작성 | `:100-128` |
 | 2 | 만들기 전에 검색 | — |
-| 3.0 | lane 표(AC / Files / Depends on / Lane / Route / Reason). 독립 AC마다 `harness:ac-worker`를 두고, 2개 이상이면 한 메시지로 스폰. 순차 route의 허용 범위는 아래 설명 | `:142-166`, `parallel-fanout.md:116, 174-211` |
+| 3.0 | lane 표(AC / Files / Tests / Depends on / Lane / Route / Reason). disjoint AC별 ac-worker와 필요시 test-author를 한 메시지로 스폰. `develop.fanout_cap` 적용 | `develop/SKILL.md` Phase 3.0, `parallel-fanout.md` Batch cap |
 | 3.1 | 코디네이터만 PROGRESS.md(7키)를 쓴다. forbidden은 차단, 목록에 없는 경로는 경고 후 자동 추가(스킬 산문. gate 코드는 소스 확장자 파일의 forbidden만 막고 경고는 하지 않는다, §5.6) | `:168-187` |
 | 3 | AC 하나씩 구현(`developer.md`의 최소 충분 사다리). AC별 테스트 실패는 cycle에 세지 않고, Phase 7 full-suite 실패만 3-cycle 한도에 센다 | `:189-217` |
 | 3.3 | `write_checkpoint.py` → `doc/harness/checkpoints/<id>.md` | `:219-227` |
 | 3.4-3.9 | 테스트 프레임워크 부트스트랩, 회귀 규칙과 증거 게이트, fix-first 자기 점검, durable docs(3.6.1), lint, build, runtime smoke. 전제가 없으면 건너뜀 | `:229-251` |
 | 4.5 | 병렬 advisory 감사: coverage trace, visual smoke(브라우저), 조건부 migration/contract, LLM-trust, perf. verdict가 아니다 | `quality-audit-pipeline.md:7-27` |
-| 4.8 | 변경 함수 저비용 스캔 | `quality-audit-pipeline.md:249-255` |
-| 4.85 / 4.9 | coverage 종합 / coverage 게이트(`coverage_minimum` 미만이면 BLOCK. 스킬 산문) | `develop/SKILL.md:263-265` |
+| 4.8 | 변경 함수 저비용 스캔 | `quality-audit-pipeline.md:305-311` |
+| 4.85 / 4.9 | coverage 종합 / coverage 게이트(`coverage_minimum` 미만이면 BLOCK. 스킬 산문) | `develop/SKILL.md:264-266` |
 | 5 | scope drift 감지 + `note_freshness.py --paths` | — |
 | 6 | 계층 순서로 bisect 가능한 커밋(infra → models → controllers → tests → docs) | — |
 | 6.5 | IRON LAW checkpoint | — |
-| 6.6 | 리뷰(§7.5) | `quality-audit-pipeline.md:29-247` |
-| 7 | QA(§7.6) | `develop/SKILL.md:332-358`, `verification-gate.md` |
+| 6.6 | 리뷰(§7.5) | `quality-audit-pipeline.md:29-303` |
+| 7 | QA(§7.6) | `develop/SKILL.md:333-359`, `verification-gate.md` |
 | 7.7 | dogfooder | `:361-391` |
 | 7.8 | install_verified(harness 소스 저장소만) | `:393-419` |
 | 8 | pre-close 체크리스트 → `task_close` → 최종 응답 | `:421-441` |
@@ -1300,11 +1301,11 @@ full:    0 → 1: deferred-scope.md 생성, 전제 추출, 코디네이터가 pl
 | 8.6 | 변경 경로 → doc root 매핑, Known ceiling 복사, `task_verify` 재호출. REQ/GUIDE/ADR/POLICY가 바뀌었거나 과제에 명시적인 durable 사용자 교정이 있으면 documentation-review를 스폰한다. Retrospective REQ pass가 만든 `status: candidate` REQ는 close를 막지 않는다. 바뀐 REQ의 관찰 가능한 동작이 모호하면 FAIL | `:481-493` |
 | 8.7 | `doc/changes/<date>-<slug>.md` | `:495-496` |
 
-**Phase 3.0 순차 route.** develop/SKILL.md는 route로 `Agent(...)`, `sequential-prelude`, `sequential-dependent`만 허용한다(`:151`). parallel-fanout.md는 여기에 `sequential-small-task`를 더한다. 이 route는 lane 표에 `reason:"small-task"`, `estimated_lines`, `estimated_seconds`를 적어야 하고, 합계 10줄 미만이면서 약 15초 이내로 추정될 때만 쓸 수 있다. 사용자가 공격적 병렬을 요청하면 쓸 수 없다(`parallel-fanout.md:183-189, 208-211`). 두 파일의 어휘 차이는 §7.9에 있다.
+**Phase 3.0 순차 route.** develop/SKILL.md는 route로 `Agent(...)`, `sequential-prelude`, `sequential-dependent`만 허용한다(`:151`). parallel-fanout.md는 여기에 `sequential-small-task`를 더한다. 이 route는 lane 표에 `reason:"small-task"`, `estimated_lines`, `estimated_seconds`를 적어야 하고, 합계 10줄 미만이면서 약 15초 이내로 추정될 때만 쓸 수 있다. 사용자가 공격적 병렬을 요청하면 쓸 수 없다(`parallel-fanout.md:221-227, 247-250`). 두 파일의 어휘 차이는 §7.9에 있다.
 
 **8과 8.5-8.7의 순서.** 스킬 본문이 모순된다. `:80`은 "Phases run in strict order"라고 하는데, 번호와 위치가 8.5보다 앞선 Phase 8이 "Call `task_close`"라고 한다(`:433`). 반면 8.5("record it before close", `:459-461`)와 8.6("cannot close with unresolved durable-doc gaps", "Call task_verify", `:482, :489-490`)은 close 전에 해야 하는 일처럼 쓰여 있다. 이 문서는 8.5·8.6의 문구를 따라 **8.5-8.7을 `task_close` 전에 한다**고 해석한다(§7.9).
 
-**병렬 규칙**(`parallel-fanout.md:26-106`): 병렬 Agent 호출은 한 assistant 메시지에 몰아 넣고, 배치당 최대 4개다. 더 많으면 4개씩 이어서 돌린다. 코디네이터가 떠맡는 식으로 합치지 않는다. `name=`은 절대 넘기지 않는다.
+**병렬 규칙**(`parallel-fanout.md` Batch cap): Phase 3.0은 AC lane을 기본 4개씩 실행한다. manifest `develop.fanout_cap` 정수 1–8을 쓰며 8 초과는 8, 누락·그 밖의 값은 4다. cap은 에이전트 수가 아니라 AC lane 수이며 paired test-author는 같은 lane에 속한다. AC마다 `Files`, `Tests`, `Depends on`, `Verify`를 선언하고 소유 경로를 겹치지 않게 나눈다. 공용 선행 변경은 별도 AC로 끝낸 뒤 소비 AC를 실행한다. test-author는 PLAN 의도에서 Tests 경로만 작성하며 두 lane이 모두 돌아온 뒤 코디네이터가 전체 AC Verify를 실행한다. ac-worker는 자기 Files를 최대 3개의 한 단계 sub-worker로 나눌 수 있지만 오직 `harness:ac-worker`만 스폰하고, sub-worker는 추가 스폰이나 형제 작성 중 전체 AC Verify를 하지 않는다. `name=`은 넘기지 않는다. 근거: [병렬 폭 ADR](patterns/ADR__within-task-parallel-width.md), `plan/write-artifacts.md` Per-AC shape, `agents/ac-worker.md` Sub-split.
 
 ### 7.5 Phase 6.6 리뷰: 깊이, hunter, formal reviewer
 
@@ -1346,16 +1347,16 @@ FIX_NOW → 깊이 과소 분류나 STANDARD focus 오류이면 코디네이터�
 모든 required review lens PASS 가 될 때까지 반복
 ```
 
-근거: `quality-audit-pipeline.md:170-186`. hunter를 기다리는 것은 code-reviewer뿐이다.
+근거: `quality-audit-pipeline.md:226-242`. hunter를 기다리는 것은 code-reviewer뿐이다.
 
-- **hunter 출력 검증**: `[]`이거나, `anchor`/`issue`/`evidence` 문자열 키만 가진 객체 최대 20개의 JSON 배열이어야 한다. 문자열 하나는 2,000바이트, 배열은 65,536바이트 이하다. `<`, `>`, `&`는 이스케이프한다. 형식이 틀리면 unavailable로 표시하고 고쳐 쓰지 않는다(`quality-audit-pipeline.md:137-155`).
+- **hunter 출력 검증**: `[]`이거나, `anchor`/`issue`/`evidence` 문자열 키만 가진 객체 최대 20개의 JSON 배열이어야 한다. 문자열 하나는 2,000바이트, 배열은 65,536바이트 이하다. `<`, `>`, `&`는 이스케이프한다. 형식이 틀리면 unavailable로 표시하고 고쳐 쓰지 않는다(`quality-audit-pipeline.md:193-211`).
 - **discovery 예산**: 한 번의 live attempt에서 hunter cycle은 최대 2회다(호출 수로는 LIGHT 0, STANDARD 2 이하, DEEP 4 이하). cycle 2 뒤나 hunter 없는 remediation 분기 뒤에는 DEEP formal-only로 가고, 호출 문구는 정확히 `discovery budget exhausted`다. 재개·복구 때 이전 discovery 횟수를 알 수 없으면 DEEP을 선택하거나 유지하고, 예산을 소진된 것으로 보아 호출 이유를 정확히 `discovery budget unknown and treated as exhausted`로 쓴다. 횟수를 영수증에서 재구성하지 않는다(`:102-135`).
 - **판정 소유**: verdict와 영수증은 formal reviewer만 가진다. INVESTIGATE는 reviewer의 BLOCKED_ENV를 통해서만 진행을 막고, OPTIONAL은 참고용이다. 영향받은 formal review를 모두 다시 PASS시킨 뒤에야 QA로 간다(`:171-247`).
 - 설계 배경: `doc/designs/minimal-implementer-and-code-review-gate.md`.
 
 ### 7.6 Phase 7 QA와 verification gate
 
-- 실제 Phase 6.6 reviewer PASS final을 받은 **뒤에** 해당하는 `qa-*`를 **모두 한 메시지로** 스폰한다. 사용자 대상 변경이고, manifest가 지원하며(`ux_review_supported: true` 또는 해당 `browser_qa_supported`/`desktop_qa_supported`) 변경 경로 규칙이 요구하면 해당 `ux-*`도 스폰한다(non-attesting). full-suite 실행은 qa-*에 맡기고, inline Bash 테스트는 AC별 타깃 실행과 디버그 재실행으로 제한한다(`develop/SKILL.md:332-351`).
+- 실제 Phase 6.6 reviewer PASS final을 받은 **뒤에** 해당하는 `qa-*`를 **모두 한 메시지로** 스폰한다. 사용자 대상 변경이고, manifest가 지원하며(`ux_review_supported: true` 또는 해당 `browser_qa_supported`/`desktop_qa_supported`) 변경 경로 규칙이 요구하면 해당 `ux-*`도 스폰한다(non-attesting). full-suite 실행은 qa-*에 맡기고, inline Bash 테스트는 AC별 타깃 실행과 디버그 재실행으로 제한한다(`develop/SKILL.md:333-352`).
 - `verification-gate.md` 단계(`:8-377`):
   - Step 0: working tree가 깨끗해야 한다(커밋 완료).
   - Step 0.5: 설치 루트 4곳을 스냅샷하고, 제거된 것이 없어야 한다.
@@ -1370,7 +1371,7 @@ FIX_NOW → 깊이 과소 분류나 STANDARD focus 오류이면 코디네이터�
 
 ### 7.7 dogfood, install, close
 
-- **7.7 dogfooder**: 마지막 PASS cycle의 QA 스폰과 함께 보낸다. 완료를 막지 않고 발견 사항만 돌려준다. 건너뛰는 경우: runtime이 PASS가 아닐 때, maintenance 전용 과제일 때, PLAN에 사용자 대상 표면이 없고 `dogfood_required`가 명시적으로 true가 아닐 때. 선언이 모호하면 실행하거나 계획 결정을 남긴다. 라우팅은 Git diff로 추론하지 않는다(`develop/SKILL.md:382-391`).
+- **7.7 dogfooder**: 마지막 PASS cycle의 QA 스폰과 함께 보낸다. 완료를 막지 않고 발견 사항만 돌려준다. 건너뛰는 경우: runtime이 PASS가 아닐 때, maintenance 전용 과제일 때, PLAN에 사용자 대상 표면이 없고 `dogfood_required`가 명시적으로 true가 아닐 때. 선언이 모호하면 실행하거나 계획 결정을 남긴다. 라우팅은 Git diff로 추론하지 않는다(`develop/SKILL.md:383-392`).
 - **7.8 install**: §11.2.
 - **close**: §6.10.
 
@@ -1380,43 +1381,44 @@ FIX_NOW → 깊이 과소 분류나 STANDARD focus 오류이면 코디네이터�
 
 1. 마찰 신호 감지: 잘못된 검증 전략, 낡은 manifest, 반복 실패, 단계 마찰, 새 패턴.
 2. `learnings.jsonl`에 `harness-improvement` 행 추가.
-3. 안전한 manifest 필드 자동 수정(먼저 알린 뒤). **이 경로로는 실패한다.** close 뒤에는 마커가 지워져 활성 과제가 없는데, `doc/harness/manifest.yaml`은 WORKFLOW_CONTROL_SURFACE라서 MAINTENANCE가 있는 활성 과제가 있어야 쓸 수 있다. Write/Edit는 `workflow-control-surface`로 거부된다. close 전에 MAINTENANCE 과제 안에서 하거나 후속 과제로 넘긴다(`self-improvement.md:61-71`, `prewrite_gate.py:101-108, 712-728`, `harness_server.py:1824-1825`).
+3. 안전한 manifest 필드 자동 수정(먼저 알린 뒤). **이 경로로는 실패한다.** close 뒤에는 마커가 지워져 활성 과제가 없는데, `doc/harness/manifest.yaml`은 WORKFLOW_CONTROL_SURFACE라서 MAINTENANCE가 있는 활성 과제가 있어야 쓸 수 있다. Write/Edit는 `workflow-control-surface`로 거부된다. close 전에 MAINTENANCE 과제 안에서 하거나 후속 과제로 넘긴다(`self-improvement.md:61-71`, `prewrite_gate.py:111-118, 733-749`, `harness_server.py:1824-1825`).
 4. `promote_learnings.py --task <id> --task-run-id <run>`(보고만 함).
 5. 마지막 retro 이후 검증된 close가 3개 이상이면 `retro.py --save`(`HARNESS_DISABLE_RETRO=1`로 끔).
-6. (close **전**, develop 8.5와 같은 단계) 재사용할 수 있는 교훈을 captured/rejected/none으로 분류한다. captured는 커밋된 아티팩트가 있어야 한다. 파일 스스로 "Before task close, classify every reusable discovery…"라고 한다(`self-improvement.md:154-171`, `develop/SKILL.md:449-452`).
+6. (close **전**, develop 8.5와 같은 단계) 재사용할 수 있는 교훈을 captured/rejected/none으로 분류한다. captured는 커밋된 아티팩트가 있어야 한다. 파일 스스로 "Before task close, classify every reusable discovery…"라고 한다(`self-improvement.md:154-171`, `develop/SKILL.md:450-453`).
 7. harness 저장소면 완료된 diff를 커밋한다. 이 단계의 출처는 self-improvement.md가 아니라 `plugin/skills/run/SKILL.md:225-230`이다.
 
 Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 
 ### 7.9 스킬 산문의 알려진 어긋남
 
-- `verification-gate.md:357`은 더 이상 스폰하지 않는 "quality synthesis agent"의 표를 전제한다. close 게이트(`develop/SKILL.md:355-358`)에는 그 표를 만드는 주체가 정의되어 있지 않다.
+- `verification-gate.md:357`은 더 이상 스폰하지 않는 "quality synthesis agent"의 표를 전제한다. close 게이트(`develop/SKILL.md:356-359`)에는 그 표를 만드는 주체가 정의되어 있지 않다.
 - `verification-gate.md` Step 1은 PLAN.md 테스트 명령을 직접 실행한다고 쓰고 qa-* 스폰은 말하지 않는다. 머리말은 이 파일이 Phase 6.5 뒤에 로드된다고 해서 6.6 리뷰를 건너뛴다.
 - dogfooder 규칙이 자기모순이다. QA와 함께 스폰하라고 하면서, runtime이 PASS가 아니면 건너뛰라고 한다. 스폰 시점에는 PASS일 수 없다.
-- `develop/SKILL.md:251`은 3.9 smoke를 qa-* 안에서 돌린다고 한다. 6.6 이전에 스폰한 qa-*의 PASS는 영원히 인정되지 않는다. 반대로 FAIL/BLOCKED_ENV는 순서와 관계없이 즉시 runtime_verdict를 FAIL/BLOCKED_ENV로 만든다. 같은 lens가 다시 시작되어 가장 새 행이 `started`가 되면 이 값은 가려지고, 재실행 동안 runtime_verdict는 PENDING이다. 그 뒤에는 읽을 수 있는 새 completion이 결과를 대신한다. `shape` 계열 PENDING completion은 앞선 FAIL/BLOCKED_ENV를 대신하지 못한다(§6.7, `_lib.py:4313-4322, 4453-4485, 4598-4637`, §6.8).
+- `develop/SKILL.md:252`은 3.9 smoke를 qa-* 안에서 돌린다고 한다. 6.6 이전에 스폰한 qa-*의 PASS는 영원히 인정되지 않는다. 반대로 FAIL/BLOCKED_ENV는 순서와 관계없이 즉시 runtime_verdict를 FAIL/BLOCKED_ENV로 만든다. 같은 lens가 다시 시작되어 가장 새 행이 `started`가 되면 이 값은 가려지고, 재실행 동안 runtime_verdict는 PENDING이다. 그 뒤에는 읽을 수 있는 새 completion이 결과를 대신한다. `shape` 계열 PENDING completion은 앞선 FAIL/BLOCKED_ENV를 대신하지 못한다(§6.7, `_lib.py:4313-4322, 4453-4485, 4598-4637`, §6.8).
 - develop 8/8.5-8.7의 순서가 모순된다(§7.4). `:80` strict order + `:433` Phase 8의 task_close vs `:459-461, :482, :489-490`.
 - `self-improvement.md:61-71`의 manifest 자동 수정은 close 뒤에 실행되지만, prewrite gate가 막는다(§7.8). 실제로 하려면 MAINTENANCE 마커가 있는 활성 과제 안에서 쓰거나 후속 과제로 넘겨야 한다. Bash로 gate를 우회하는 것은 CONTRACTS.md § 0이 hard failure로 규정한다.
 - route 어휘가 다르다. `develop/SKILL.md:151`에는 `sequential-small-task`가 없고 `parallel-fanout.md`에는 있다(§7.4). `parallel-fanout.md`의 Phase 4.5 행은 "security" 조건부 specialist를 나열하지만 `quality-audit-pipeline.md` § 4.5에는 그것이 없다(`quality-audit-pipeline.md:7-21`).
-- `develop/SKILL.md:187`의 "forbidden → BLOCK"은 소스 확장자 파일에만 강제된다(§5.6).
-- **allowed-tools 누락.** develop의 allowed-tools에는 harness 도구 중 `task_start`와 `task_context`만 있는데, develop은 `task_verify`(8.6), `task_close`(Phase 8)를 부르고 `task_blocked`도 지시한다. run의 allowed-tools에는 지시하는 `task_blocked`와 `goal_*`가 빠져 있다. 허용 목록 밖이라 권한 확인이 뜰 수 있다(`develop/SKILL.md:6, 433, 482`, `run/SKILL.md:6, 80, 93, 205-217`).
+- `develop/SKILL.md:188`의 "forbidden → BLOCK"은 소스 확장자 파일에만 강제된다(§5.6).
+- **allowed-tools 누락.** develop의 allowed-tools에는 harness 도구 중 `task_start`와 `task_context`만 있는데, develop은 `task_verify`(8.6), `task_close`(Phase 8)를 부르고 `task_blocked`도 지시한다. run의 allowed-tools에는 지시하는 `task_blocked`와 `goal_*`가 빠져 있다. 허용 목록 밖이라 권한 확인이 뜰 수 있다(`develop/SKILL.md:6, 434, 483`, `run/SKILL.md:6, 80, 93, 205-217`).
 - **도구 이름 하드코딩.** 스킬 본문은 `mcp__plugin_harness_harness__*`를 하드코딩한다. 사용자 수준 서버만 등록된 환경(도구 이름 `mcp__harness__*`)에서는 이름이 맞지 않는다(`plan/intake.md:57`).
 - Codex SKILL.md는 손으로 관리하는 별도 포트다. 예: Codex develop에만 `## Model Routing`, `Phase 9`, qa_codifier 단계가 있다(§2.2).
 - `qa_codifier.py`는 사실상 실행되지 않는다(§8.2).
-- `parallel-fanout.md:222, 225`는 이 플러그인에 없는 외부 에이전트(`oh-my-claudecode:executor`, `:debugger`)로 라우팅한다. 존재하지 않는 "§ Model Routing"과 `/tmp/omc-research` 경로도 참조한다. `develop/SKILL.md:87`은 없는 "4 Agent D"를 참조한다. `lens="<lens>"`는 Claude Agent의 실제 파라미터가 아니다.
+- `parallel-fanout.md:312, 315`는 이 플러그인에 없는 외부 에이전트(`oh-my-claudecode:executor`, `:debugger`)로 라우팅한다. 존재하지 않는 "§ Model Routing"과 `/tmp/omc-research` 경로도 참조한다. `develop/SKILL.md:87`은 없는 "4 Agent D"를 참조한다. `lens="<lens>"`는 Claude Agent의 실제 파라미터가 아니다.
 - plan은 `subagent_type 'explore'`를 쓰는데 Claude Code 기본 에이전트 이름은 `Explore`다. 대소문자가 달라도 동작하는지 확인이 필요하다. `plan-ceo-review/SKILL.md:122-127`의 자체 리뷰어 요구는 "리뷰어 정확히 1명" 불변식과 충돌한다.
-- root `CLAUDE.md`의 "hygiene scheduling" 문구와 `plugin/CLAUDE.md:291`의 `HARNESS_DISABLE_HYGIENE`가 있다. 제거된 것은 문서 보관·계약 드리프트를 다루던 hygiene 서브시스템이다. `promote_learnings.py`의 stale-file/contradiction 점검(출력 `[hygiene] …`)은 유지되고, `HARNESS_DISABLE_HYGIENE`는 그 점검의 스위치로 문서화돼 있지만 이를 읽는 코드는 없다(§13.8, `doc/harness/ADR__remove-hygiene-subsystem.md:72-84`).
+- 제거된 hygiene 서브시스템과 유지된 `promote_learnings.py`의 stale-file/contradiction 점검을 구별한다. 유지된 점검에는 `HARNESS_DISABLE_HYGIENE` 스위치가 없다(§13.8, `doc/harness/ADR__remove-hygiene-subsystem.md:72-84`).
 - `self-improvement.md:205-207`의 "If it returns 'queued'"는 앞에 해당 명령이 없다. `intake.md:25`는 정의되지 않은 변수를 출력한다.
 
 ---
 
 ## 8. 에이전트와 lens
 
-### 8.1 Claude 에이전트 16개
+### 8.1 Claude 에이전트 17개
 
 | 에이전트(파일) | model | tools | 역할 | lens / 영수증 | 출력 계약 |
 |---|---|---|---|---|---|
 | developer | sonnet | Read, Write, Bash, Glob, Grep, LS + `mcp__plugin_harness_harness__task_start/task_context` | 코디네이터를 대신한 최소 충분 구현. PLAN과 영수증은 쓰지 않음 | 없음 | `Status: implemented/blocked/needs-coordinator-review`, `Changed:`, `Verification:`, 선택 `Known ceiling:`/`Assumption:` |
-| ac-worker | sonnet | Read, Write, Bash, Glob, Grep, LS | AC나 lane 하나 구현. PLAN/TASK/RECEIPTS/PROGRESS와 MCP writer 금지 | 없음 | `AC-NNN: implemented/blocked/needs-coordinator-review` + Changed/Tests/Blockers |
+| ac-worker | sonnet | Read, Write, Bash, Glob, Grep, LS, Agent | AC 하나 구현. 오직 ac-worker를 최대 3개, 한 단계만 sub-split. MCP writer·보호 증거 쓰기 금지 | 없음 | `AC-NNN: implemented/blocked/needs-coordinator-review` + Changed/Tests/Blockers |
+| test-author | sonnet | Read, Write, Bash, Glob, Grep, LS | PLAN 의도에서 한 AC의 Tests 경로만 작성. 스폰 금지 | 없음 | `AC-NNN tests: written/blocked/needs-coordinator-review` + Expected red/green/Interface |
 | defect-hunter | sonnet | Read, Bash, Glob, Grep, LS | 결함 후보 발굴. focus는 Correctness 또는 Contracts and tests 하나 | 없음(non-attesting) | JSON 배열만(0~20개, `{anchor, issue, evidence}`). VERDICT 금지, 수정 제안 금지 |
 | code-reviewer | opus | Read, Bash, Glob, Grep, LS | 모든 깊이에서 review-code의 유일한 권위 | **review-code** | 1행 VERDICT, 2행 FINDING_COUNTS, 3행 `REVIEW_DETAIL: {"blocker":…,"findings":[…]}` |
 | security-reviewer | opus | Read, Bash, Glob, Grep, LS | 보안 경계 리뷰(hunter 데이터 없이) | **review-security** | VERDICT + FINDING_COUNTS(REVIEW_DETAIL 없음) |
@@ -1429,7 +1431,7 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 | documentation-review (`critic-document.md`) | (지정 없음) | Read, Bash, Glob, Grep, LS | REQ/GUIDE/ADR/POLICY 변경 검토. 문서 수정 금지 | 없음 | PASS/FAIL findings. VERDICT 줄 없음, BLOCKED_ENV 없음 |
 | task-lead | inherit, `isolation: worktree` | **tools 줄 없음**(Edit/MultiEdit 포함 모두 상속) | batch에서 worktree 하나의 전체 수명주기 담당 | 없음(자신은 lens가 아니고, 중첩 lens가 영수증을 만든다) | fenced JSON `{task_id, worktree, branch, commit, verdict: closed/blocked/failed, blocked_reason}` |
 
-근거: `plugin/agents/*.md` frontmatter, `developer.md:1-6, 105-123`, `ac-worker.md:1-6, 79-99`, `defect-hunter.md:9-74`, `code-reviewer.md:13-107, 184-209`, `security-reviewer.md:83-99`, `qa-cli.md:12-193`, `dogfooder.md:115-161`, `critic-document.md:54-65`, `task-lead.md:1-6, 20-89`.
+근거: `plugin/agents/*.md` frontmatter, `developer.md:1-6, 105-123`, `ac-worker.md` Scope/Sub-split/Output Contract, `test-author.md`, `defect-hunter.md:9-74`, `code-reviewer.md:13-107, 184-226`, `security-reviewer.md:83-99`, `qa-cli.md:12-193`, `dogfooder.md:115-161`, `critic-document.md:54-65`, `task-lead.md` frontmatter와 절차.
 
 - `tools:`를 선언한 Claude 에이전트 중에는 Edit/MultiEdit를 가진 것이 없다. 구현 역할인 developer와 ac-worker도 Write만 가진다. 예외는 tools 줄이 없어서 Edit/MultiEdit를 포함한 모든 도구를 상속하는 task-lead다.
 - QA 에이전트에는 Write가 없는데 `QA_KNOWLEDGE.yaml`과 learnings에 append하라는 지시를 받는다. dogfooder는 Bash echo로 learnings를 쓴다. README의 "QA agents never hold Edit/Write"는 frontmatter tools 기준으로만 맞다.
@@ -1447,7 +1449,7 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 
 `codifiable:` YAML 블록의 필수 필드는 behavior, ac_id, command, expected_exit, expected_stdout_contains, expected_stderr_contains다(`qa-cli.md:158-193`).
 
-**이 블록은 현재 테스트로 바뀌지 않는다.** 블록을 테스트로 만드는 것은 `qa_codifier.py --transcript <path>`뿐이다. 동작하면 `<task>/audit/regression-draft/`에 staging한 뒤 `tests/regression/<task>/`로 옮긴다. 그러나 Claude 스킬은 이 스크립트를 부르지 않는다. `develop/SKILL.md:240-241`은 이 블록이 "future regression-test extraction"용이라고만 한다. Codex develop은 `--task-dir`만 넘겨 호출하는데, transcript 경로가 없으면 `codify()`는 `codifier-empty: no transcript path provided` learnings 행을 남기고 바로 0으로 끝난다(`doc/harness/patterns/general.md:1-10`에도 기록). ac_id가 없거나 `echo hello` 같은 사소한 명령을 거부하는 규칙은 누군가 `--transcript`로 수동 실행할 때만 적용된다(`qa_codifier.py:319-356, 447-460`, `plugin-codex/internal-skills/develop/SKILL.md:202-206`).
+**이 블록은 현재 테스트로 바뀌지 않는다.** 블록을 테스트로 만드는 것은 `qa_codifier.py --transcript <path>`뿐이다. 동작하면 `<task>/audit/regression-draft/`에 staging한 뒤 `tests/regression/<task>/`로 옮긴다. 그러나 Claude 스킬은 이 스크립트를 부르지 않는다. `develop/SKILL.md:241-242`은 이 블록이 "future regression-test extraction"용이라고만 한다. Codex develop은 `--task-dir`만 넘겨 호출하는데, transcript 경로가 없으면 `codify()`는 `codifier-empty: no transcript path provided` learnings 행을 남기고 바로 0으로 끝난다(`doc/harness/patterns/general.md:1-10`에도 기록). ac_id가 없거나 `echo hello` 같은 사소한 명령을 거부하는 규칙은 누군가 `--transcript`로 수동 실행할 때만 적용된다(`qa_codifier.py:319-356, 447-460`, `plugin-codex/internal-skills/develop/SKILL.md:202-206`).
 
 ### 8.3 lens와 영수증 요약
 
@@ -1459,7 +1461,7 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 
 ### 8.4 Codex 에이전트
 
-- `plugin-codex/agents/` 14개는 방법론 참고용이다. frontmatter는 모두 name과 description뿐이다. reviewer·developer·dogfooder·qa-* 파일에는 "MCP-hosted lifecycle watcher가 영수증을 소유한다"는 overlay 머리말이 있다. critic-document, defect-hunter, ux-api/-browser/-cli/-desktop 여섯 파일에는 이 문구가 없다. defect-hunter는 대신 이 역할이 "never owns review or QA lifecycle evidence"라고 쓴다(`plugin-codex/agents/code-reviewer.md:1-8`, `defect-hunter.md:1-8`).
+- `plugin-codex/agents/` 15개는 방법론 참고용이다. test-author는 `test_author_ac_<NNN>` task_name으로 스폰하는 lens 없는 역할이다. frontmatter는 모두 name과 description뿐이다. reviewer·developer·dogfooder·qa-* 파일에는 "MCP-hosted lifecycle watcher가 영수증을 소유한다"는 overlay 머리말이 있다. critic-document, defect-hunter, ux-api/-browser/-cli/-desktop 여섯 파일에는 이 문구가 없다. defect-hunter는 대신 이 역할이 "never owns review or QA lifecycle evidence"라고 쓴다(`plugin-codex/agents/code-reviewer.md:1-8`, `defect-hunter.md:1-8`).
 - developer, defect-hunter, code-reviewer, security-reviewer의 `harness:role-core` 블록은 Claude 쪽과 바이트 단위로 같고, 테스트가 이를 확인한다(`tests/test_review_agent_contracts.py`). QA/UX 파일은 손으로 관리하는 축약본이다.
 - Codex에서 lens는 `spawn_agent`의 `task_name`으로 정해진다. 이름 규칙(`plugin-codex/internal-skills/develop/SKILL.md:273-337`):
   - `code_review_*` / `review_code_*`
@@ -1542,39 +1544,39 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
       refuse(1) → 중단, 보고 / 사용법 오류 exit 2 (JSON 없음)
 (b.2) 프로젝트 Claude 설정의 worktree base ref 가 head 인지 확인
       (스킬은 설정 파일을 수정하지 않음, C-15)
-(b.3) git check-ignore .claude/worktrees/x
+(b.3) batch_preflight.py 의 worktrees_ignore 확인: git 이 보는 경로에서 ignore 검사
+      저장소 밖으로 나가는 .claude symlink 는 통과
 (b.4) main 에 이 세션의 열린 과제 없음 (task_blocked 로 주차하거나 close)
 (b.5) main HEAD 기록
 (c) 한 wave 의 lead 전부를 ONE message 로 스폰 (기본 최대 3, name= 금지)
       Agent(subagent_type:"harness:task-lead",
             prompt: 요청 / slug / scope / off-limits / coordinator HEAD / pytest worker cap: 4)
-(d) closed lead 마다 순서대로 (main 에서, merge 커밋 없이 rebase + fast-forward):
-      git rev-list --merges "$(git rev-parse HEAD)..<branch>" 가 비어 있어야 함
-        (lead 브랜치의 merge 커밋은 rebase 가 그 커밋 자체의 변경을 버리므로 → 있으면 worktree 남기고 blocked 처럼 보고, 다음 lead 로)
-      git -C <W> rebase --no-autostash "$(git rev-parse HEAD)"   (lead 브랜치는 W 에 체크아웃돼 있으므로 W 안에서)
-      git merge --ff-only <branch>
-        ├ rebase 실패 → git -C <W> diff --name-only --diff-filter=U 로 충돌 경로 확인 → git -C <W> rebase --abort (lead 가 남긴 그대로 복원)
-        │   ├ 충돌 경로 있음 → 이 wave 통합 중단, 충돌은 통합 과제로
-        │   └ 충돌 없음(dirty W, 덮어쓸 untracked 파일, 훅·서명 실패) → worktree 남기고 blocked 처럼 보고, 다음 lead 로
-        ├ --ff-only 거부 → main 이 움직였음: 통합 중단, (e) 전에 보고 (stash·--force·merge 커밋 금지)
-        └ fast-forward 완료 → batch_harvest.py (0 이 아니면 이 worktree 는 제거하지 않고 보고) → git worktree unlock <W> → git worktree remove <W> (submodule 때문에 거부되면 남겨 두고 blocked 처럼 보고)
-                 → git branch -d <branch>     (--force 절대 금지)
+(d) closed lead 마다 순서대로:
+      python3 plugin/scripts/batch_finish.py --repo <main> --worktree <W> --branch <branch> --task-id <id> --commit <returned commit>
+      registered worktree / branch tip / clean / merge commit 없음 확인 → rebase → ff-only → harvest → 잠겼을 때만 unlock → remove → branch -d
+      integrated(0) → 다음 lead / kept(3) → 이유와 남은 worktree·branch 보고, 다음 lead
+      conflict(4) → rebase abort 후 wave 중단, (e)에서 해결 / ff-refused(5) → 중단·보고
+      error(1) → 중단·보고 / usage(2) → 보고 (lead 반환값 오류면 그 lead만 kept)
+      integrated_tip 이 있으면 이미 main 통합됨. cleanup.removed 로 worktree 와 branch 잔여 구분
       blocked/failed lead: worktree 와 branch 를 그대로 둔다
 (e) TASK__batch-integrate-<slug> 를 main 에서 harness:run 으로:
       남은 충돌 해결: W 에서 rebase 다시 → 해결 → git -C <W> add → GIT_EDITOR=true git -C <W> rebase --continue (멈추는 커밋마다 반복)
-        → git merge --ff-only → harvest·제거, 이어서 남은 lead 도 (d) 순서대로 (남겨 둔 lead 는 제외) → full suite → review-code + qa-cli
+        → (d) 명령에 --resume 추가 → ff·harvest·제거, 이어서 남은 lead 도 (d) 순서대로 (남겨 둔 lead 는 제외)
+        → full suite → review-code(residual 에서만 깊이 선택, 아래 carry 조건) + qa-cli
       → (harness 플러그인 소스 저장소일 때만) install_verified.py (batch 에서 유일하게 실행되는 곳, lead 는 생략) → close
 (f) 사용자에게 branch/commit 으로만 확인하라고 안내
 (g) 보고 표: slug, branch, verdict, lead 가 반환한 commit(rebase 전), 통합된 tip(ff 뒤 main HEAD) 또는 'kept, unmerged'(사유 포함)·'not integrated', 제외/미룸/outside-root, 통합 결과
 ```
 
-근거: `batch/SKILL.md:16-196`, REQ `:48-57, 66-115`.
+근거: `batch/SKILL.md` a–g, `batch_finish.py`의 `_check`, `_rebase`, `_cleanup`, `finish`, REQ의 Integration helper.
+
+**통합 review-code 범위(Claude 전용).** 각 lead의 `old_base`, `old_tip`, `new_base`, `new_tip`, patch-id 결과와 carry/residual 여부를 리뷰어에게 넘긴다. rebase-LIGHT 증명, 동일 commit 수의 순서 있는 `git patch-id --stable` 일치, step d에서 멈추지 않은 rebase, harvested archive의 closed PASS(`close_receipt_fingerprint` 존재, BLOCKED.md 없음)가 모두 있어야 carry한다. 리뷰어가 carry를 확인하며, 하나라도 빠지면 residual이다. 충돌 해결·lead 간 겹침·미승계 범위·통합 수정의 residual만 깊이 판정에 쓰고 비어 있으면 LIGHT다. 리뷰 자체, review-before-QA, 전체 suite와 close 증거 요구는 유지된다. 중단된 미커밋 구현 복구에는 이 carry 증명이 없으므로 적용하지 않는다(`quality-audit-pipeline.md` Batch integration review scope).
 
 `name=`을 금지하는 이유는 영수증 문제만이 아니다. 이 저장소처럼 agent teams 실험 플래그가 켜져 있으면(§2.1) 이름을 준 스폰이 `isolation: worktree` 없는 teammate가 된다.
 
 ### 10.2 preflight(`batch_preflight.py`)
 
-**control root 모양**: 임베디드 `.git` 디렉터리를 가진 평범한 최상위 checkout만 `ok`다. 나머지는 즉시 refuse한다(`batch_preflight.py:121-157, 482-485`).
+**control root 모양**: 임베디드 `.git` 디렉터리를 가진 평범한 최상위 checkout만 `ok`다. 나머지는 즉시 refuse한다(`batch_preflight.py:127-163, 532-535`).
 
 | shape | 조건 |
 |---|---|
@@ -1583,7 +1585,7 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 | `submodule-checkout` | `--show-superproject-working-tree`가 비어 있지 않음 |
 | `separate-git-dir` | common dir이 `<root>/.git`이 아님 |
 
-**scope 분류**(symlink를 푼 경로 기준, `:357-389`):
+**scope 분류**(symlink를 푼 경로 기준, `batch_preflight.py`의 `classify_scope`):
 
 | 분류 | 조건 | 처리 |
 |---|---|---|
@@ -1596,18 +1598,20 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 - **깨끗함**: main, 채워진 submodule 전부, nested repo 전부에서 `git status --porcelain --ignore-submodules=none`이 비어 있어야 한다.
 - **post-checkout 훅**: submodule이 있는 저장소에서 기본 또는 유효(`core.hooksPath`) post-checkout 훅에 `submodule`이 들어 있으면 refuse한다. 그런 훅은 모든 lead worktree에서 submodule을 초기화하기 때문이다.
 - **`off_limits`**: submodule 경로와 nested repo의 합집합. ignored nested repo는 lead worktree 안에 존재하지 않으므로 모든 lead prompt에 넘긴다.
-- **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:222-229, 268, 440-446`, REQ `:290-293`).
-- **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:60-62, 86-103, 163-190, 252-269`, REQ `:245-252`).
+- **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:228-235, 274, 490-496`, REQ `:290-293`).
+- **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:66-68, 92-109, 169-196, 258-275`, REQ `:245-252`).
 - preflight는 아무것도 쓰지 않는다. git 호출은 GIT_* 환경 변수를 모두 지우고 `--no-optional-locks`, `-c core.fsmonitor=false`, `LC_ALL=C`, 120초 timeout으로 실행한다. 예기치 않은 crash도 `refuse` 보고를 낸다.
 
 ### 10.3 lead의 수명주기
+
+`task-lead.md`는 `experimental: { cacheTtl: 1h }`를 선언해 긴 lead의 prompt-cache 수명을 한 시간으로 요청한다.
 
 ```
 W = realpath(pwd); git rev-parse HEAD == coordinator HEAD ?  (다르면 blocked, 쓰기 없음)
 task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
   중첩 review/QA 는 W 에서 스폰 → 영수증이 W 의 과제에 바인딩)
 → task_verify(workspace=W) → task_close(workspace=W)
-→ git add / git commit (push, merge, --amend 금지)
+→ git add / git commit 한 번, trailer "Harness-Task: <task_id>" (push, merge, --amend 금지)
 → fenced JSON {task_id, worktree, branch, commit, verdict, blocked_reason}
 ```
 
@@ -1642,18 +1646,18 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
 
 ### 10.5 host 가시성
 
-host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit만 본다. worktree 폴더를 host에서 열지 않는다. lead worktree가 하나라도 존재하는 동안에는 `git worktree prune`이나 host 쪽 정리를 하지 않는다. host에서는 컨테이너 경로가 모두 없는 것으로 보이고, prune은 잠기지 않은 모든 worktree의 메타데이터를 지운다. `git clean -ffdx`도 ignore 설정과 관계없이 `.claude/worktrees/`를 지운다(`batch/SKILL.md:174-184`, REQ `:146-200`).
+host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit만 본다. worktree 폴더를 host에서 열지 않는다. lead worktree가 하나라도 존재하는 동안에는 `git worktree prune`이나 host 쪽 정리를 하지 않는다. host에서는 컨테이너 경로가 모두 없는 것으로 보이고, prune은 잠기지 않은 모든 worktree의 메타데이터를 지운다. `git clean -ffdx`도 ignore 설정과 관계없이 `.claude/worktrees/`를 지운다(`batch/SKILL.md` § f) Host visibility, REQ § Host visibility).
 
 ### 10.6 알려진 한계
 
 - b.4의 이유: worktree가 제거된 뒤 늦게 도착한 lens SubagentStop은 cwd를 main으로 해석한다. main에 열린 과제가 있으면 그 과제에 기록될 수 있다.
-- SKILL d.4는 항상 unlock하라고 한다. 하지만 wave 1에서는 이미 unlock된 worktree에서 이 명령이 실패했다. "잠겨 있을 때만 unlock"하는 수정은 미뤄졌다. 실행 중인 lead의 worktree는 절대 unlock하지 않는다.
-- `.claude`나 `.claude/worktrees`가 symlink면 b.3의 `git check-ignore`가 exit 128로 실패해 preflight에서 멈춘다.
-- preflight가 잡지 못하는 것: `status.showUntrackedFiles=no`가 숨긴 변경, detached HEAD, rebase/merge 진행 중 상태, 남겨 둔 blocked worktree와 새 scope의 겹침.
+- helper는 잠긴 worktree만 unlock하고 remove 실패 시 원래 이유로 relock을 시도하며 실패도 보고한다. 실행 중인 lead는 unlock하지 않는다(`batch_finish.py`의 `_cleanup`).
+- preflight의 `worktrees_ignore`는 symlink를 푼 뒤 git이 보는 경로를 검사한다. 저장소 밖으로 나가는 경로는 통과하며, 안쪽 경로가 ignore되지 않았으면 refuse한다(`batch_preflight.py`의 `worktrees_ignore`).
+- preflight가 잡지 못하는 것: `status.showUntrackedFiles=no`가 숨긴 변경, detached HEAD, rebase/merge 진행 중 상태, 남겨 둔 blocked worktree와 새 scope의 겹침. finish helper는 main detached HEAD와 lead의 진행 중 rebase를 별도로 거부한다.
 - submodule(git 2.43): 한번 초기화하면 plain remove가 계속 거부된다. `--force`는 모듈 저장소를 지운다. `deinit`은 공유 `.git/config`를 다시 쓴다. merge는 submodule checkout을 갱신하지 않는다. 완전 지원은 미뤄졌다.
-- `batch_harvest.py`는 `HarvestError`만 잡는다. 복사 중 OSError는 traceback으로 드러난다. learnings append가 archive rename 뒤에 있어서, append가 실패해도 archive는 이미 쓰여 있다.
+- `batch_harvest.py` 단독 호출은 `HarvestError`만 잡지만 helper는 모든 harvest 예외를 `kept`로 보고하고 worktree를 남긴다. learnings append가 archive rename 뒤에 있어 append 실패 시 archive는 이미 존재할 수 있다. 통합 후 정리 실패는 `integrated_tip`과 `cleanup`으로 구별하고 원인을 고친 뒤 `--resume`한다. branch만 남았으면 `git branch -d`로 마친다.
 - 공유 파일: wave 1에서 lead의 `forbidden_paths`는 CHANGELOG와 batch REQ를 제외했고, lead에 따라 CONTRACTS.md/CLAUDE.md/README도 제외했다. lead마다 목록이 달랐다. 통합 과제가 쓴 것은 `plugin/CHANGELOG.md`와 batch REQ다. 이 파일들은 모두 소스 확장자가 아니므로 `forbidden_paths`에 넣어도 gate가 강제하지 않는다(§5.6). 계획상의 관행일 뿐이다.
-- 측정값(wave 1): 9p main에서 preflight 7.59초/7.91초. 병합 후 full suite 1651 passed(`-n 8`, 53.7~57.9초). lead prompt-cache write의 89%가 5분 cache 만료 때문이었다(수정은 미룸).
+- 측정값(wave 1): 9p main에서 preflight 7.59초/7.91초. 병합 후 full suite 1651 passed(`-n 8`, 53.7~57.9초). lead prompt-cache write의 89%가 5분 cache 만료 때문이었다. 현재 task-lead는 한 시간 cache를 요청한다.
 
   이 측정값과 위의 공유 파일 기록의 출처는 gitignore된 wave-1 과제 증거뿐이다: `doc/harness/tasks/TASK__batch-integrate-wave1/PLAN.md:9, 17-31`, 같은 과제의 REVIEWS.jsonl, learnings.jsonl key `lead-cache-expiry-overhead`, `doc/harness/archive/batch/TASK__*/PROGRESS.md`. §2.1에서 말했듯 이 증거는 영속적이지 않다. batch REQ에는 이 측정값이 없다. 저장소에서 다시 확인하려면 REQ로 승격해야 한다.
 
@@ -1721,7 +1725,7 @@ python3 plugin/scripts/install_verified.py --task-dir doc/harness/tasks/<task_id
   - 3: review PASS 없음, 또는 review 뒤 QA PASS 없음.
   - 5: payload 모드/타입이 Git index와 다름, payload가 안전하지 않거나 읽을 수 없음(설치 전), 또는 스냅샷·설치 도중 payload·영수증·바인딩이 바뀜(설치 후. 이 경우 install.py는 이미 적용됐을 수 있다).
   - 그 밖의 값(1 포함): install.py의 종료 코드가 그대로 전달된 것.
-- **잘못 입력한 `--task-dir`의 부작용.** 0단계가 검증 없이 디렉터리를 만든다. 그래서 `doc/harness/tasks/TASK__typo` 같은 빈 디렉터리가 남는다. 이 디렉터리의 status는 `invalid`이고, prewrite gate의 `_has_open_tasks`는 invalid를 open처럼 취급한다. 그 결과 strict가 아닌 저장소(이 저장소 포함)에서 과제 없이 하는 소스 쓰기가 `no-active-task`로 거부되기 시작한다(`prewrite_gate.py:598-612, 740-752`, `_lib.py:3893-3897`).
+- **잘못 입력한 `--task-dir`의 부작용.** 0단계가 검증 없이 디렉터리를 만든다. 그래서 `doc/harness/tasks/TASK__typo` 같은 빈 디렉터리가 남는다. 이 디렉터리의 status는 `invalid`이고, prewrite gate의 `_has_open_tasks`는 invalid를 open처럼 취급한다. 그 결과 strict가 아닌 저장소(이 저장소 포함)에서 과제 없이 하는 소스 쓰기가 `no-active-task`로 거부되기 시작한다(`prewrite_gate.py:610-624, 761-773`, `_lib.py:3893-3897`).
 - 마지막에 출력되는 fingerprint는 payload fingerprint가 아니라 RECEIPTS.jsonl 스트림 fingerprint다.
 - 설치 영수증이나 중복 제거 상태는 남기지 않는다. 재시도할 때마다 실제 payload 일치를 다시 계산한다.
 - **이 단계는 워크플로 산문이지 게이트가 아니다.** `task_close`는 설치가 실행됐는지 확인하지 않는다.
@@ -1772,7 +1776,7 @@ context probe (manifest 존재? version 7 대비 UPGRADE_AVAILABLE)
 **이 소스 저장소에서 조심할 점**:
 
 - `--project-doc CLAUDE.md --project-doc-only --ensure-routing`을 실행하면 root CLAUDE.md의 `# Operating mode`와 `# Template sync rule` 절이 사라진다. root의 routing 블록에 닫는 마커가 없어서, 다음 `## ` 제목(`## Memory`)까지를 블록으로 보고 교체하기 때문이다(메모리 안에서 재현: 78줄 → 40줄).
-- prepare나 finalize를 실행하면 root CONTRACTS.md managed block이 템플릿 블록으로 덮인다(329줄 → 311줄). 두 파일은 이미 C-09 batch 조항, C-13, C-14, C-14a, C-17(두 고정 쌍 단락과 REQ 링크 포함), C-18 문구가 다르다. 테스트는 두 사본의 contract id·제목 일치와 템플릿 lint 무결(hard/soft 0건)을 요구하고, 일부 조항 문구(C-09 batch 조항, C-17 Parking clause와 Enforced by 줄)가 두 사본 모두에 있는지도 확인한다. 그 밖의 본문 일치는 요구하지 않는다.
+- prepare나 finalize를 실행하면 root CONTRACTS.md managed block이 템플릿 블록으로 덮인다. C-09와 C-14의 현재 동작 설명은 두 사본에 동기화돼 있다. 두 파일은 이미 C-13, C-14a, C-17(두 고정 쌍 단락과 REQ 링크 포함), C-18 문구가 다르다. 테스트는 두 사본의 contract id·제목 일치와 템플릿 lint 무결(hard/soft 0건)을 요구하고, 일부 조항 문구(C-09 batch 조항, C-17 Parking clause와 Enforced by 줄)가 두 사본 모두에 있는지도 확인한다. 그 밖의 본문 일치는 요구하지 않는다.
 
 ### 11.4 manifest 필드
 
@@ -1800,7 +1804,7 @@ context probe (manifest 존재? version 7 대비 UPGRADE_AVAILABLE)
 | `health_components` | `health.py` | §13.8 |
 | `source_git_roots` | `setup_finalize.py` | setup |
 
-근거: `_lib.py:2518-2546`, `prewrite_gate.py:737-743`, `health.py:64`, `tool_routing.py:113-114`, `verify_runner.py:32-56`, `runtime_services.py:54-130`, `setup_finalize.py:120, 346, 499-503, 552-572, 605`.
+근거: `_lib.py:2518-2546`, `prewrite_gate.py:758-764`, `health.py:64`, `tool_routing.py:113-114`, `verify_runner.py:32-56`, `runtime_services.py:54-130`, `setup_finalize.py:120, 346, 499-503, 552-572, 605`.
 
 **어떤 코드도 읽지 않는 키(산문 전용)**: 런타임의 `qa.*_supported`(스킬 산문만 읽음), `browser.*`, `teams.*`, `tooling.*`, `profiles.*`, `project_meta.*`, `registered_roots`, `capabilities.delegation_mode`, `capabilities.strict_compliance_requires_delegation`(중첩 형태), `smoke_command`, `healthcheck_command`, `coverage_minimum`/`coverage_target`.
 
@@ -1848,25 +1852,25 @@ manifest의 `ux_review_supported` 주석은 ux-* 영수증이 close를 막는다
 | id | 한 줄 | 실제 강제 지점 | 코드와의 차이 |
 |---|---|---|---|
 | C-01 | 정규 루프 start → plan → develop → QA → close | `prewrite_gate.py`(C-02), `task_close`(missing_for_close) | — |
-| C-02 | PLAN.md 전에 소스 쓰기 금지 | `prewrite_gate.py:762-771` | 활성 과제가 있을 때만(§5.4). micro/MAINTENANCE는 면제 |
+| C-02 | PLAN.md 전에 소스 쓰기 금지 | `prewrite_gate.py:783-792` | 활성 과제가 있을 때만(§5.4). micro/MAINTENANCE는 면제 |
 | C-03 | 수락 의도는 PLAN.md에 | `write_plan`. 영수증은 별도 | — |
 | C-04 | close에는 영수증 기반 runtime PASS 필요 | `task_close`(`harness_server.py:1779-1853`) | Git을 보지 않는다 |
-| C-05 | 보호 아티팩트는 소유자만 쓴다 | `prewrite_gate.py` `PROTECTED_ARTIFACTS` + 마커 경로, `_lib` 프레임 검사 | 마커 두 경로는 산문 목록에 없음. Bash는 차단하지 않음. 64 KiB 초과 payload는 우회(§4.6) |
+| C-05 | 보호 아티팩트는 소유자만 쓴다 | `prewrite_gate.py` `PROTECTED_ARTIFACTS` + 마커 경로, `_lib` 프레임 검사 | 마커 두 경로는 산문 목록에 없음. Bash는 차단하지 않음. 전체 payload와 timeout fallback은 §4.6–4.7 |
 | C-06 | note freshness는 명시적 점검 | `note_freshness.py --paths`(수동) | — |
 | C-07 | 짧은 승인은 마지막 제안 전환만 승인 | **강제 없음(산문뿐)** | 계약이 가리키는 "Harness agent system prompt"(`plugin/agents/harness.md`)는 삭제됐다. `.claude/settings.json`은 여전히 그 에이전트를 main-thread agent로 지정한다 |
 | C-08 | 답변 → 변경 lane 전환은 명시적으로 | **강제 없음(산문뿐)** | 같음 |
-| C-09 | write focus는 한 번에 하나(+ worktree 조항) | `task_start`의 거부(`_session_resumes`)가 유일한 강제 | 산문은 queue/soft라고 하지만 코드는 **거부**. "Harness agent" 강제는 없음 |
+| C-09 | 세션별 write focus는 한 번에 하나(+ worktree 조항) | MCP task_start, Codex PostToolUse binding | 충돌은 거부 또는 fence. queue는 Goal child만(§3.7) |
 | C-10 | CLAUDE.md는 maintenance로 자기 관리 | MAINTENANCE 과제(산문) | 산문은 contract_lint 경고를 말하지만 lint는 CLAUDE.md를 읽지 않는다. **쓰기 gate도 없다**: CLAUDE.md는 WFCS도 소스 파일도 아니라서 Write/Edit가 항상 허용된다 |
 | C-11 | managed block 손편집 금지 | `contract_lint.py`(마커 구조), `setup_finalize.py --check`(본문 drift, 사후) | 마커 변조(누락·중복·역순) 감지는 정확하다. 온전한 마커 **안쪽**의 편집은 lint가 잡지 못하고, 어떤 gate도 쓰기를 막지 않는다. "MAINTENANCE 과제만 additive Edit" 인가와 matrix의 "`CLAUDE.md` 편집 필요 … hard"는 산문뿐이다 |
 | C-12 | 훅 fail-safe(`\|\| true`, timeout ≤10) | 관례 + `tests/test_hooks_json.py` | hooks.json에만 적용(Codex 생성 훅은 예외) |
 | C-13 | SKILL.md ≤500줄, fanout 배치 | `contract_lint.py --check-weight`(soft) + `tests/test_contract_lint_real_tree.py` | 이 저장소에서는 사실상 hard다. 무게 초과든 soft lint 이슈든 real-tree 테스트가 suite를 실패시킨다. CLI 기본값 `--plugin-root ./plugin`으로는 plugin-codex를 검사하지 않는다 |
-| C-14 | PASS는 순서가 맞는 hook-owned 영수증 필요 | `task_verify`/`task_close` | 산문은 stop-only 쌍의 final text 일치를 요구하지만 코드는 비교하지 않는다 |
+| C-14 | PASS는 순서가 맞는 hook-owned 영수증 필요 | `task_verify`/`task_close` | stop-only도 identity·출처를 검증. verdict는 stop payload에서 읽고 transcript final text는 비교하지 않음 |
 | C-14a | 가능한 최고 검증 tier 실행 | develop Phase 7 | — |
 | C-15 | setup은 사용자 소유 파일을 덮어쓰지 않음 | setup 절차 | 이 저장소에서는 routing 블록 교체가 위험하다(§11.3) |
 | C-17 | 턴 종료 지침, 주차, 두 고정 쌍 | `task_close`, `task_verify`, `task_blocked` | 산문은 상태 이름을 planning/implementing/verifying으로 적고, 코드는 open/blocked/closed/invalid를 쓴다(§17.2) |
 | C-18 | 검증 위임은 지침이지 pre-tool gate가 아님 | 없음(의도적) | — |
 
-근거: `CONTRACTS.md:45, 130, 140, 148, 160, 163-176`, `prewrite_gate.py:80-85, 101-108, 712-733`, `contract_lint.py:80-91, 227-234, 410-434, 452-458, 487-492`, `tests/test_contract_lint_real_tree.py:92-113, 253-282`, `.claude/settings.json:3`, `plugin/CHANGELOG.md:100`, `plugin/CLAUDE.md:9-10`.
+근거: `CONTRACTS.md:45, 130, 140, 148, 160, 163-176`, `prewrite_gate.py:90-95, 111-118, 733-754`, `contract_lint.py:80-91, 227-234, 410-434, 452-458, 487-492`, `tests/test_contract_lint_real_tree.py:92-113, 253-282`, `.claude/settings.json:3`, `plugin/CHANGELOG.md:100`, `plugin/CLAUDE.md:9-10`.
 
 ### 12.3 `contract_lint.py`
 
@@ -1967,7 +1971,7 @@ root CLAUDE.md의 `## Memory` 규칙:
 ### 13.8 health, hygiene
 
 - `health.py`는 manifest `health_components`(`{name, command, weight}`)를 쓰고, 없으면 `test_command`로 대체한다. 각 컴포넌트를 repo root에서 셸로 실행하고 timeout은 300초다. 점수는 `10 × 통과 weight / 전체 weight`다. 선언된 것이 없으면 NOTE를 출력하고 exit 1. `--dry-run`은 아무 효과 없는 별칭이고, `health-history.jsonl`은 쓰지 않는다(`health.py:6, 31-118`).
-- 문서 보관·계약 드리프트를 다루던 hygiene 서브시스템은 제거됐다(`doc/harness/ADR__remove-hygiene-subsystem.md`, 2026-08-24 채택). 이름이 같은 `promote_learnings.py`의 stale-file/contradiction 점검(`[hygiene] …` 출력)과 `doc/harness/patterns/auto-maintenance.md`는 **유지**된다. `HARNESS_DISABLE_HYGIENE`(`plugin/CLAUDE.md:291`, `patterns/auto-maintenance.md:76`)는 그 유지된 점검의 스위치로 문서화돼 있지만 이 변수를 읽는 코드는 없다(ADR `:72-84`가 기존 공백으로 기록). root CLAUDE.md의 "hygiene scheduling" 문구는 어느 기능을 가리키는지 적혀 있지 않다(§17.2).
+- 문서 보관·계약 드리프트를 다루던 hygiene 서브시스템은 제거됐다(`doc/harness/ADR__remove-hygiene-subsystem.md`). `promote_learnings.py`의 stale-file/contradiction 점검(`[hygiene] …` 출력)과 [auto-maintenance](patterns/auto-maintenance.md)는 유지된다. `HARNESS_DISABLE_HYGIENE`를 읽는 코드는 없으며 현재 runtime 문서는 이 스위치를 안내하지 않는다.
 
 ### 13.9 runtime services
 
@@ -1996,14 +2000,14 @@ root CLAUDE.md의 `## Memory` 규칙:
 | 영수증 source / runtime_id | `claude_hook` / `claude:<sid>:<aid>` | `codex_session_watcher:collaboration` / `codex:<root>:<call_id>:<child>` |
 | lens 결정 | Agent `subagent_type`(→ agent_type). `name=`을 주면 대개 영수증 없음 | `spawn_agent`의 `task_name`(명명 규칙 필수) |
 | completion 증거 | transcript 출처와 start attachment(final text 비교 없음) | root FINAL_ANSWER == child task_complete 메시지 |
-| prewrite gate | PreToolUse `Write\|Edit\|MultiEdit`에서 직접 실행(3초) | 래퍼가 1.5초 자식 프로세스로 실행. `apply_patch` 포함. timeout이면 조용히 허용 |
+| prewrite gate | PreToolUse `Write\|Edit\|MultiEdit`에서 직접 실행(10초) | 래퍼가 3.0초 자식으로 실행. `apply_patch` 포함. 출력 없는 실패 시 C-05만 in-process fallback으로 거부, 다른 쓰기는 허용 |
 | 훅 정의 | `plugin/hooks/hooks.json`(`\|\| true`, timeout ≤10) | `install.py`가 생성(`\|\| true` 없음, SessionStart 20초) |
 | SessionStart | 배너 + gap + format + drift | watcher 등록 복구(1.25초 예산) + gap + format |
 | UserPromptSubmit | `prompt_memory.py`(hint 기록) | `[harness-route]` + `prompt_memory.py`(`HARNESS_RUNTIME=codex`, hint 기록) |
 | PostToolUse 힌트 | 평문 stdout(모델에 보이지 않을 가능성, §4.4) | additionalContext로 감쌈 |
 | spawn 전 검사 | 없음 | `spawn_agent`의 bind 불가 review 이름 거부 |
 | workspace / batch | 지원(`harness:batch`, task-lead) | `workspace`는 `unsupported_runtime`. batch 스킬과 task-lead 없음 |
-| 에이전트 정의 | 16개(model, tools, isolation) | 14개(name/description만. 방법론 참고) |
+| 에이전트 정의 | 17개(model, tools, isolation) | 15개(name/description만. 방법론 참고) |
 | 스킬 본문 | `plugin/skills/*/SKILL.md` | 손으로 관리하는 별도 포트. 공용 보조 문서만 `plugin/skills`에서 복사(§2.2) |
 | 설치 cache version | 내용 해시 `<base>+h<sha8>` | 수동 관리 version 문자열 |
 | CLI 요구 | — | `codex ≥ 0.130.0` |
@@ -2118,7 +2122,7 @@ task_close {"task_id": "TASK__fix-parser-crash"}
 TASK.json, PLAN.md, RECEIPTS.jsonl, 과제의 REVIEWS.jsonl, goal JSON, 마커, 런타임 transcript/rollout을 직접 쓰려 했다. 해당 MCP 도구나 훅 경로를 쓴다. batch 보관본의 파일도 basename 판정 때문에 여기에 걸린다.
 
 **`rule=invalid-harness-workspace` / `symlink-outside-control` / `invalid-active`**
-manifest나 경로에 symlink가 있거나, 마커가 가리키는 디렉터리가 잘못됐다. manifest 문제는 setup으로 복구한다. `invalid-active`라면 작업할 과제로 `task_start`나 `task_context`를 부른다. `_session_resumes`는 열려 있지 않은 과제를 가리키는 마커를 focus 없음으로 취급하므로 MCP 도구가 마커를 다시 쓴다. 마커 파일을 Write/Edit로 고치지 않는다. C-05 보호 대상이라 거부된다(`prewrite_gate.py:473-475, 753-760`, `harness_server.py:1612-1647`).
+manifest나 경로에 symlink가 있거나, 마커가 가리키는 디렉터리가 잘못됐다. manifest 문제는 setup으로 복구한다. `invalid-active`라면 작업할 과제로 `task_start`나 `task_context`를 부른다. `_session_resumes`는 열려 있지 않은 과제를 가리키는 마커를 focus 없음으로 취급하므로 MCP 도구가 마커를 다시 쓴다. 마커 파일을 Write/Edit로 고치지 않는다. C-05 보호 대상이라 거부된다(`prewrite_gate.py:483-485, 774-781`, `harness_server.py:1612-1647`).
 
 **`rule=C-REQ-observable-doc-required`**
 경로 휴리스틱(§5.5)에 걸렸는데 REQ 링크가 없다. PLAN.md에 `doc/<area>/REQ__*.md` 경로(`doc/harness/REQ__*.md`도 인정)를 넣거나, `doc/harness/` 밖의 `doc/<area>/REQ__*.md`(깊이 2) 안에 `source: task: <id>` back-link를 쓴다. `doc/harness/` 아래 REQ에 적은 back-link는 스캔되지 않는다(§5.5). MAINTENANCE나 micro로는 피할 수 없다.
@@ -2127,7 +2131,7 @@ manifest나 경로에 symlink가 있거나, 마커가 가리키는 디렉터리�
 PROGRESS.md `forbidden_paths`에 걸렸다. 메시지는 allowed_paths에 추가하라고 하지만 그것으로는 풀리지 않는다. 걸린 forbidden 항목을 지우거나 좁혀야 한다. `HARNESS_DISABLE_SCOPE_LOCK=1`은 설정되어 있는 동안 계속 적용된다.
 
 **Write가 거부되어야 하는데 통과했다**
-다음을 확인한다. 활성 과제가 없고 열린/invalid `TASK__*`도 없는가(이 저장소는 strict 키가 `capabilities:` 아래 중첩돼 읽히지 않으므로 이 경우 조용히 허용된다, §5.4). 활성 과제에 MAINTENANCE 파일이 있거나 `execution_mode: micro`인가(plan-first 면제, §5.8). payload가 64 KiB를 넘었는가(§4.6). 대상이 소스 확장자가 아닌가(§5.3). cwd가 중첩 git 저장소 안인가(§3.8). gate가 timeout됐는가(§4.1, §4.7). `HARNESS_SKIP_PREWRITE`나 `HARNESS_DISABLE_SCOPE_LOCK`이 환경에 남아 있을 수도 있다(§5.6, §5.8).
+다음을 확인한다. 활성 과제가 없고 열린/invalid `TASK__*`도 없는가(이 저장소는 strict 키가 `capabilities:` 아래 중첩돼 읽히지 않으므로 이 경우 조용히 허용된다, §5.4). 활성 과제에 MAINTENANCE 파일이 있거나 `execution_mode: micro`인가(plan-first 면제, §5.8). 대상이 소스 확장자가 아닌가(§5.3). cwd가 중첩 git 저장소 안인가(§3.8). gate가 timeout됐는가(Claude hook 강제 종료는 허용될 수 있지만 Codex 자식 timeout은 보호 아티팩트를 fallback으로 거부, §4.1, §4.7). `HARNESS_SKIP_PREWRITE`나 `HARNESS_DISABLE_SCOPE_LOCK`이 환경에 남아 있을 수도 있다(§5.6, §5.8).
 
 **`task_close` 거부, `missing_for_close`가 비어 있지 않음**
 PLAN.md, `completed review verdict…`, `completed QA verdict…` 중 무엇이 남았는지 본다. 흔한 원인:
@@ -2240,11 +2244,12 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 | 이름 준 spawn 흔적 | [REQ__runtime-surfaces-name-the-actual-blocker.md](REQ__runtime-surfaces-name-the-actual-blocker.md) |
 | 런타임 규범 문장의 단일 출처(TRUST_BOUNDARY) | [REQ__runtime-normative-text-has-one-source.md](REQ__runtime-normative-text-has-one-source.md) |
 | 계약 강제 주장은 실행 가능해야 함 | [REQ__contract-enforcement-claims-are-executable.md](REQ__contract-enforcement-claims-are-executable.md) |
-| prewrite gate, scope lock | [patterns/prewrite-gate.md](patterns/prewrite-gate.md), [patterns/scope-lock.md](patterns/scope-lock.md)(현재 코드와의 차이는 §5.8, §17.2) |
+| prewrite gate, scope lock | [patterns/prewrite-gate.md](patterns/prewrite-gate.md), [patterns/scope-lock.md](patterns/scope-lock.md)(동작과 한계는 §5.8) |
 | REQ 수집 | [REQ__req-capture-with-or-without-task.md](REQ__req-capture-with-or-without-task.md) |
 | Bash/브라우저를 gate하지 않는 이유 | [patterns/ADR__selective-pretool-dispatch.md](patterns/ADR__selective-pretool-dispatch.md) |
 | SessionStart 훅은 harness 밖에서 no-op | [REQ__session-start-hooks-no-op-outside-harness.md](REQ__session-start-hooks-no-op-outside-harness.md) |
 | Goal | [patterns/native-goals.md](patterns/native-goals.md), [patterns/auto-loop.md](patterns/auto-loop.md) |
+| AC 병렬 폭, test-author | [patterns/ADR__within-task-parallel-width.md](patterns/ADR__within-task-parallel-width.md) |
 | batch, worktree lead | [REQ__parallel-tasks-via-worktree-leads.md](REQ__parallel-tasks-via-worktree-leads.md), [../../plugin/skills/batch/SKILL.md](../../plugin/skills/batch/SKILL.md), [../../plugin/agents/task-lead.md](../../plugin/agents/task-lead.md) |
 | 설치 트리 모드, 설치 트리 smoke | [REQ__installed-tree-modes-are-installer-owned.md](REQ__installed-tree-modes-are-installer-owned.md), [REQ__guards-are-verified-where-they-run.md](REQ__guards-are-verified-where-they-run.md) |
 | manifest version과 migration | [REQ__versioned-project-file-migrations.md](REQ__versioned-project-file-migrations.md) |
@@ -2255,7 +2260,7 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 | 구현자·리뷰 게이트 설계 | [../designs/minimal-implementer-and-code-review-gate.md](../designs/minimal-implementer-and-code-review-gate.md) |
 | 단계 절차 | [run](../../plugin/skills/run/SKILL.md), [plan](../../plugin/skills/plan/SKILL.md), [develop](../../plugin/skills/develop/SKILL.md), [setup](../../plugin/skills/setup/SKILL.md) |
 | 에이전트 출력 계약 | `plugin/agents/*.md` |
-| 런타임별 기능 | [runtime-matrix.md](runtime-matrix.md)(에이전트 역할 행이 불완전하고, §17.2의 어긋남이 있음) |
+| 런타임별 기능 | [runtime-matrix.md](runtime-matrix.md)(역할 목록은 이 가이드 §8도 참고) |
 | MCP 도구 이름 | [../common/GUIDE__mcp-tool-naming.md](../common/GUIDE__mcp-tool-naming.md) |
 | 동작을 고정하는 테스트 | `tests/test_hooks_json.py`, `tests/test_contract_lint_real_tree.py`, `tests/test_review_agent_contracts.py`, `tests/test_batch_*.py`, `tests/test_worktree_workspace.py`, `tests/test_prewrite_gate_cross_checkout.py`, `tests/test_prewrite_gate_dormant.py`, `tests/test_session_hint_marker_binding.py`, `tests/test_task_context_binds_resuming_session.py`, `tests/test_skill_visibility.py` |
 
@@ -2267,39 +2272,27 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 
 ### 17.2 코드와 문서가 어긋나는 곳(작성 시점)
 
-이 표를 비롯해 이 문서의 어느 절(§3.7, §5.8, §7.9, §12 등)에 적은 코드·문서 어긋남이든 모두 2026-09-28 시점에 관찰한 사실이고 규범이 아니다. 규범은 여전히 각 문서이며, 어긋남을 바로잡는 일은 Goal `GOAL__harness-batch-v2-2026-09-27-8b8d6619`의 wave 2 항목 X(prewrite gate 보강과 규범 문서 정정)가 맡는다. Goal과 과제 기록은 gitignore 대상이라 이 checkout에만 있다.
+이 표를 비롯해 이 문서의 어느 절(§3.7, §5.8, §7.9, §12 등)에 적은 코드·문서 어긋남이든 모두 2026-09-28 시점에 관찰한 사실이고 규범이 아니다. Wave 2에서 고친 C-09/C-14, gate, runtime 문서와 CI의 항목은 제거하고 해당 절을 현재 소스와 다시 대조했다. 아래는 그 범위 밖에 남은 관찰이며 규범은 여전히 각 문서다.
 
 | 문서 | 문서의 주장 | 코드의 실제 |
 |---|---|---|
 | `CONTRACTS.md` C-07/C-08 | "Harness agent system prompt"가 강제 | 그 에이전트(`plugin/agents/harness.md`)는 삭제됐다. `.claude/settings.json`은 여전히 `harness:harness`를 main-thread agent로 지정하고 없는 `Skill(harness:maintain)`을 허용한다. 강제 수단 없음 |
-| `CONTRACTS.md` C-09 | 새 과제는 queue되고 soft-warn | `task_start`가 거부(`harness_server.py:1196-1204`) |
 | `CONTRACTS.md` C-10 | contract_lint가 CLAUDE.md 편집을 soft-warn | lint는 CLAUDE.md를 읽지 않는다. 쓰기 gate도 없다 |
 | `CONTRACTS.md` C-11 / matrix "`CLAUDE.md` 편집 필요 … hard" | MAINTENANCE 과제만 additive Edit, hard | 마커 변조 감지는 정확하다. 온전한 마커 안쪽 편집은 lint가 잡지 못하고, CONTRACTS.md/CLAUDE.md 쓰기를 막는 gate도 없다. `--check`로만 사후에 드러난다 |
 | `CONTRACTS.md` C-11 | managed block은 릴리스 때 교체 | `setup_finalize --prepare`/finalize 때만 교체. 설치·릴리스는 건드리지 않는다 |
 | `CONTRACTS.md` C-13 | soft | 이 저장소에서는 real-tree 테스트가 실패시킨다. CLI 기본값은 plugin-codex를 검사하지 않는다 |
-| `CONTRACTS.md` C-14 | stop-only 쌍은 final text 일치 필요 | 일부러 비교하지 않는다(`subagent_lifecycle.py:412-421`) |
 | `CONTRACTS.md` C-17 | 상태 planning/implementing/verifying | open/blocked/closed/invalid만 존재 |
 | `plugin/CLAUDE.md:31` | task_blocked가 "이 세션의" 마커를 지움 | MCP 프로세스 세션(대개 default) 마커와 legacy만 지운다 |
 | `plugin/CLAUDE.md:99` | AC가 모두 passed/deferred면 close | AC 상태는 코드에 없다. 영수증 기반 missing_for_close |
 | `plugin/CLAUDE.md:104`, `run/SKILL.md:24` | capability 마커가 있으면 고정 쌍 금지 | `RECEIPT_UNAVAILABLE_NEXT_ACTION`에 두 쌍이 들어 있다 |
-| `plugin/CLAUDE.md:288-289`, `prewrite_gate.py:15` | `HARNESS_DISABLE_SCOPE_LOCK`, `HARNESS_SKIP_PREWRITE`는 1회용 | 둘 다 훅 프로세스 환경에 설정되어 있는 동안 모든 호출에 적용된다(`prewrite_gate.py:833-836`) |
-| `plugin/CLAUDE.md:291` | `HARNESS_DISABLE_HYGIENE` | 이 변수를 읽는 코드가 없다 |
-| `patterns/ADR__single-pass-task-close.md` | close가 Git/CHECKS를 읽음 | close는 영수증 스냅샷만 읽는다 |
 | `patterns/ADR__consolidated-task-artifacts.md:321` | 잘못된 영수증에는 fresh-run 안내 | reader 재로드를 먼저 권하고, fresh_run은 수리 수단이 아니다 |
-| `patterns/prewrite-gate.md`, `scope-lock.md` | 규칙 표, exit 2, 미등록 경로 경고, gate-error | 현재 코드 동작은 §5에 관찰로 기록(비규범). 정정은 후속 과제 |
-| `develop/SKILL.md:187` | forbidden → BLOCK | 소스 확장자 파일에만 적용(§5.6) |
+| `develop/SKILL.md:188` | forbidden → BLOCK | 소스 확장자 파일에만 적용(§5.6) |
 | `REQ__subagent-receipt-session-binding.md` | task_context의 count 필드, `.receipts.lock` | 둘 다 없다(fd flock) |
 | `run/SKILL.md:156-159` | qa-browser를 건너뛰면 close가 막힘 | 선언된 lens만 게이트 |
 | `run/self-improvement.md:61-71` | close 뒤 manifest 자동 수정 | prewrite gate가 거부(§7.8) |
 | `plan/intake.md:59` | routing의 ui_scope/must_read/compat | `compile_routing`이 반환하지 않는다 |
 | `doc/harness/manifest.yaml` `capabilities.strict_compliance_requires_delegation` | strict 모드 | 중첩 키라 gate가 읽지 않는다(§5.4) |
 | `doc/harness/manifest.yaml`의 `ux_review_supported` 주석 | ux-* 영수증이 close를 막음 | ux-*는 지원 lens가 아니다 |
-| `runtime-matrix.md:31` | Codex도 cache version을 `<base>+codex.<stamp>`로 찍음 | stamping 없음. 손으로 관리하는 manifest version을 `_codex_plugin_version`이 그대로 읽는다(`install.py:1105-1130, 1474-1487`) |
-| `runtime-matrix.md:43` | Claude "Maintain skill ✅" | `plugin/skills`에 maintain 스킬이 없다 |
-| `runtime-matrix.md:60` | manifest 플래그 `harness.codex_enabled` | 읽는 코드가 없다 |
-| `CONTRIBUTING.md:71` | `/harness:run <slug>`로 실행 | Claude에서 run은 `user-invocable: false` |
-| `.github/workflows/tests.yml:18-34` | Python 3.11 + pytest | pyproject는 ≥3.12, addopts는 xdist 필요 |
-| README 에이전트 표 | ac-worker, documentation-review 누락, "좁은 tool 표면" | 둘 다 존재하고 스폰된다. task-lead는 전부 상속 |
-| root `CLAUDE.md` | "hygiene scheduling" | 어느 기능을 가리키는지 적혀 있지 않다. 제거된 문서 보관·계약 드리프트 서브시스템인지, 유지된 `promote_learnings` 점검(`plugin/CLAUDE.md:291`의 post-close hygiene audit)인지 불분명하다(§13.8, `ADR__remove-hygiene-subsystem.md:72-84`) |
+| README 에이전트 표 | documentation-review 누락 | critic-document 역할은 존재하고 documentation-review로 스폰된다(§8) |
 
 어긋남을 발견하면 규칙을 몰래 건너뛰지 말고 **규칙(문서나 코드)을 고치는 과제**를 연다(`CONTRACTS.md` § 0).

@@ -144,9 +144,22 @@ unwanted changes.
 ### C-09
 
 **Title:** One repo-mutating task holds write focus at a time.
-**When:** A second mutating request arrives while a task is open.
-**Enforced by:** Harness agent + MCP `task_start` (queues new task).
-**On violation:** soft-warn. New task is queued, not merged into current.
+**When:** A second mutating request arrives while another open task holds this
+session's write focus.
+**Enforced by:** MCP `task_start` and, on Codex, the PostToolUse task binding.
+While this session's marker (or, when it names no open task, the legacy
+`.active`) names another open task, `task_start` refuses with "another open
+task owns the resolvable session focus", both for a new task and for resuming
+an existing task by id. Once the focused task is closed or parked with
+`task_blocked`, resuming an existing task by id re-points focus to it. Only
+Goal children queue, through `goal_add_task`. When the Codex MCP process has
+no `CODEX_THREAD_ID` (the usual case), `task_start` skips this refusal;
+PostToolUse then binds the thread to the returned task only when the thread
+holds no other open task, and otherwise fences both tasks and clears the
+thread's binding, so neither records receipts while both stay open.
+**On violation:** hard-block. `task_start` returns the refusal, or on Codex the
+conflicting binding is fenced; the second request is never merged into the
+focused task. Close or park the focused task, then call `task_start` again.
 **Why:** Parallel mutations make task ownership and review ordering ambiguous.
 
 **Batch clause:** Each linked git worktree is a separate checkout with its own write focus; a coordinator may run one task per worktree via `harness:batch` (see `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`).
@@ -223,8 +236,10 @@ storage/schema/gates are owned by
 `doc/harness/patterns/ADR__consolidated-task-artifacts.md`.
 Claude builds that omit `SubagentStart` may derive the ordered started/completed
 pair from one exact top-level official-identity `SubagentStop` only when its
-session marker, run ID, stable current-run transcript, final assistant text,
-transcript-derived agent type, and single-use completion identity all match.
+session marker, run ID, stable current-run transcript, transcript-derived agent
+type, and single-use completion identity all match. The transcript's final
+assistant text is deliberately not compared; the verdict is read from the stop
+payload's `last_assistant_message`.
 Untrusted, replayed, foreign,
 stale, aliased, or unbound stops never authorize PASS.
 

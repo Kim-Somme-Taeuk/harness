@@ -6,6 +6,30 @@
 
 ### Changed
 
+- **Wave 2 parallel execution and integration** — AC plans declare owned files,
+  tests and dependencies; a paired test-author and bounded one-level AC sub-split
+  increase parallel work, with `develop.fanout_cap` defaulting to 4 (range 1–8).
+  The coordinator runs the complete AC verification after workers return.
+  See `doc/harness/patterns/ADR__within-task-parallel-width.md`.
+- **Batch finish helper** — `batch_finish.py` checks a closed lead, rebases and
+  fast-forwards it, harvests evidence, and reports partial integration or cleanup
+  failures without forcing removal. Leads use a one-hour prompt cache and a
+  `Harness-Task` commit trailer. Preflight checks the actual worktree ignore path.
+- **Batch integration review scope** — Claude may carry a closed lead's proven
+  patch-equivalent range; the reviewer verifies every carry and sweeps the residual.
+  Combined QA and the full suite remain required.
+- **Protected writes survive large payloads and child failures** — the prewrite
+  gate reads the whole payload with UTF-8 surrogateescape. Claude allows 10 seconds;
+  Codex allows its gate child 3 seconds and checks C-05 targets in-process after
+  timeout or crash. Other writes remain fail-open; killing the whole hook can
+  still bypass protection. Environment bypasses apply while set, not just once.
+- **Test ledger isolation** — formerly polluting gate/codifier tests use temporary
+  roots, and a session guard detects new checkout-ledger rows except documented
+  live-hook writers. A receipt-readiness test also isolates `CODEX_THREAD_ID`.
+- **Current contracts and documentation** — C-09 describes session focus refusal,
+  C-14 describes stop-payload verdicts, stale close/cache/install guidance is
+  corrected, and CI uses Python 3.12 with the project's dev dependency group.
+
 - **`install.py` refreshes only what is stale by default; `--if-stale` is
   gone** — a plain `python3 install.py` now skips a runtime whose installed
   payload matches the source and refreshes a stale one, replacing the harness

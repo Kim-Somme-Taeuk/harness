@@ -22,7 +22,7 @@ do not create tasks automatically.
 - Broad goals grow child tasks as bugs, pages, domains, or follow-up gaps are
   discovered.
 - Known children retain declared order; after each `task_close`, complete
-  self-improvement, learning promotion, and hygiene scheduling before
+  self-improvement and learning-candidate reporting before
   `goal_next_task` selects the next child.
 - Focused goals can remain a single child task.
 - Bootstrap harness in a new project / repair existing → `Skill(harness:setup)`.
@@ -38,8 +38,9 @@ do not create tasks automatically.
   Do not create narrative task artifacts for routine task
   evidence.
 - Memory and automatic learning are part of every Goal child lifecycle:
-  runbook memory, staged learnings, promotion, and hygiene remain active even
-  when several children execute consecutively.
+  runbook memory, staged learnings, and learning-candidate reporting remain
+  active when several children execute consecutively; the removed hygiene
+  scheduler does not create follow-up tasks.
 - Browser-first QA is default for web frontend projects when `browser_qa_supported: true` in manifest.
 - Acceptance criteria live in `PLAN.md`; current-run review and QA authority
   comes only from lifecycle-owned `RECEIPTS.jsonl` entries. Receipt acquisition
@@ -51,7 +52,7 @@ do not create tasks automatically.
   PLAN.md/TASK.json via task MCP tools, and RECEIPTS.jsonl via
   Codex/Claude lifecycle hooks.
 - Pre-plan source writes are blocked until PLAN.md exists on the active task (plan-first rule).
-- Only one repo-mutating task may hold write focus at a time. A second mutating request creates or resumes a separate task that stays queued until the user switches focus or the current task closes.
+- Only one repo-mutating task may hold write focus at a time. While another open task holds this session's focus, `task_start` refuses a second task when it knows the session identity; on Codex, PostToolUse fences a conflicting binding. Close or park the focused task first. Only Goal children queue through `goal_add_task`.
   Each linked git worktree is its own checkout with its own write focus, so a coordinator running `harness:batch` may run one task per worktree from a single session.
 - Short approvals such as `ㅇㅇ ㄱ` approve only the last explicit transition the harness proposed; they never authorize skipping task creation, planning, or verify gates.
 - When an answer-lane exchange turns into repo mutation, make the lane switch

@@ -1,13 +1,15 @@
 ---
 tags: [harness, testing, xdist, isolation]
 summary: 테스트는 프로세스 전역·실제 레포 상태를 형제 테스트에 누출하지 않는다. 단일 green 실행은 안정성의 증거가 아니다.
-updated: 2026-09-03
+updated: 2026-09-28
 freshness: suspect
 invalidated_by_paths:
   - tests/conftest.py
   - tests/test_harness_mcp_server.py
   - plugin/mcp/harness_server.py
   - plugin/scripts/_lib.py
+  - plugin/scripts/prewrite_gate.py
+  - plugin/scripts/qa_codifier.py
   - pyproject.toml
 freshness_updated: 2026-09-07T04:13:35Z
 ---
@@ -29,7 +31,9 @@ properties mandatory:
    `doc/harness/tasks/.active` and `doc/harness/.watcher-diagnostics.json` are
    real files that the harness uses for session focus and watcher health. A test
    that reads them inherits whatever the developer's session is doing; a test
-   that writes them corrupts it.
+   that writes them corrupts it. `doc/harness/learnings.jsonl` is the same kind
+   of file: a test that drives a ledger writer runs it against a tmp checkout
+   (`make_tmp_harness_root` in `tests/conftest.py`) and asserts the row there.
 3. **A single green run is not evidence of a green suite.** Under worksteal an
    isolation defect surfaces only when the offending pair shares a worker.
    Claiming "the suite passes" requires repeated runs — treat ≥10 consecutive
@@ -122,6 +126,52 @@ roughly eighteen conditions and
 of them, so the cause had to be bisected rather than read. Naming the failing
 predicate would have turned a multi-hour hunt into one traceback. Tracked as
 follow-up work.
+
+## Observed gap (2026-09-28) — rule 2: the suite wrote the learnings ledger
+
+`doc/harness/learnings.jsonl` is gitignored and per checkout, and in a batch
+worktree `plugin/scripts/batch_harvest.py` appends that checkout's rows to the
+main checkout's ledger. A full xdist run in an isolated clone (1655 tests)
+appended exactly 4 rows to it. Running each test alone attributed them to three
+tests, each of which handed a ledger writer the real checkout as its root:
+
+| Test | Writer | Rows |
+|------|--------|------|
+| `test_prewrite_gate_json_decision.py::TestEnvEscape::test_skip_env_allows_and_logs_bypass` | `prewrite_gate` with `HARNESS_SKIP_PREWRITE=1` and `cwd=REPO_ROOT`; `log_gate_bypass` resolves the root from cwd | 1 `gate-bypass` |
+| `test_prewrite_gate_scope.py::TestScopeLockCanonicalization::test_absolute_path_in_progress_skipped` | `_handle_scope_lock(..., REPO_ROOT, ...)` on a scratch task under the real `doc/harness/tasks` | 1 `gate-parse-fail` |
+| `test_qa_codifier.py::TestCodifierPipeline::test_codifier_never_crashes_on_garbage` | `codify()` without `target_root`, so the root came from cwd | 1 `codifier-rejected`, 1 `codifier-fail` |
+
+Fixed on the test side; the writers are unchanged. Each test now runs its
+writer against `make_tmp_harness_root(tmp)` (a `.git` directory plus
+`doc/harness/manifest.yaml`, so `find_repo_root` and `is_harness_enabled_repo`
+both stop there) and asserts the row lands in that tmp ledger, so
+`..._logs_bypass` is a true name. `test_qa_codifier.py::test_learnings_no_leak`
+asserted nothing about the real ledger; it now uses a transcript that logs
+rows and fails if any real-ledger line names its tmp task id.
+
+The regression guard is the session-scoped autouse fixture
+`learnings_ledger_gains_no_suite_rows` in `tests/conftest.py`, proven red and
+green by nested pytest sessions in `tests/test_learnings_ledger_guard.py`. It
+records the ledger's complete lines when each session starts and fails the run
+naming every row appended since. When the ledger shrank or was replaced, the
+recorded offset no longer marks the run's start, so rows are compared as a
+multiset instead. Under xdist every worker runs it, so a row is reported by the
+worker whose test wrote it and possibly by a sibling too.
+
+**Exclusion rule.** The developer's live session keeps writing this ledger
+while the suite runs. A row is ignored when its writer (`source`, or `script`
+for a `gate-crash` row without `source`, up to the first `:`) is a hook fired by
+a session event rather than by the suite: `background_hook`,
+`subagent_lifecycle` and `receipts` (SubagentStart/SubagentStop),
+`prompt_memory` (UserPromptSubmit) and `tool_routing` (PostToolUse on Bash). The
+first four were observed during suite runs. The fixture's
+`_LIVE_SESSION_LEDGER_WRITERS` comment is the authoritative list. The write
+gate, `qa_codifier` and agent-authored learnings are not excluded, because the
+suite drives them. Known ceiling: a suite-driven row from an excluded writer is
+invisible to the guard, and a row the live session appends from any other
+writer mid-run, such as a write-gate bypass or a hand-added learning, fails the
+run under that row's name. A nested probe session skips the guard, as it skips
+the install-tree guard.
 
 ## Consequence for verification claims
 

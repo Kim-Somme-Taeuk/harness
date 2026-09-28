@@ -1,6 +1,6 @@
 # harness on Codex CLI
 
-This is the Codex-runtime tree for the harness plugin. **Opt-in.** It does NOT materialize automatically on existing Claude Code installs — set `harness.codex_enabled: true` in your `.claude-plugin/marketplace.json` or invoke `Skill(setup) --include-codex` to enable.
+This is the Codex-runtime tree for the harness plugin. Claude's marketplace installs only `plugin/`, so a Claude marketplace update does not install this sibling tree. The source installer installs each runtime whose CLI is on PATH; use `python3 install.py --codex-only` or `--claude-only` to select one. The manifest's `features.codex_enabled` field is reserved metadata, not an installation switch.
 
 Architecture lives in [`doc/harness/spike-report.md`](../doc/harness/spike-report.md) §3.6 — **MCP-only sharing**:
 - Shared across runtimes: MCP server, hook payload schemas, `plugin/scripts/` (gate scripts, helpers), and contract artifacts (`TASK.json`, `PLAN.md`, unified `RECEIPTS.jsonl`, and the non-authoritative content-addressed `REVIEWS.jsonl` appendix).

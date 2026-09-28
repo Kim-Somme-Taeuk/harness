@@ -1,11 +1,16 @@
 ---
 freshness: current
+freshness_updated: 2026-09-28T08:01:12Z
+invalidated_by_paths:
+  - plugin/scripts/prewrite_gate.py
 ---
 
 # Scope Lock Pattern
 
-Scope lock mechanizes the C-09 prose-only scope contract into a hard prewrite gate
-enforced by `plugin/scripts/prewrite_gate.py`.
+Scope lock turns a task's declared scope into a prewrite-gate deny. It is the
+last rule `plugin/scripts/prewrite_gate.py` applies to a direct write
+(`Write` / `Edit` / `MultiEdit` / `apply_patch`). Bash and shell writes are not
+gated.
 
 ## PROGRESS.md schema
 
@@ -39,15 +44,42 @@ and timestamps belong in checkpoints, durable docs, or the final report.
 
 ## Gate behavior
 
-1. **forbidden write**: exits 2 with message naming `task_id`, matching pattern, allowed summary, and 3 fix options.
-2. **allowed/test write**: exits 0 (proceed).
-3. **unlisted path**: exits 0 + logs warn (auto-add to allowed with note per SKILL.md Phase 3.1).
-4. **no PROGRESS.md**: scope lock not active — gate falls through to existing plan-first rule.
-5. **malformed PROGRESS.md**: gate logs `gate-parse-fail` to `learnings.jsonl` and exits 0 (fail-safe).
+The gate signals a deny with a JSON `permissionDecision: "deny"` on stdout and
+exits 0 in every case; see `prewrite-gate.md` for the envelope.
+
+1. **Reach.** Scope lock runs only for a source-extension file (`SOURCE_EXTENSIONS`)
+   that passed every earlier rule: an active task exists and has PLAN.md (or a
+   MAINTENANCE marker, or `execution_mode: micro`), and the REQ rule did not
+   deny. Paths inside `doc/harness/tasks/`, `EXEMPT_PREFIXES`, workflow-control
+   files, and non-source files (Markdown, JSON, YAML, config) were already
+   decided, so `forbidden_paths` cannot block them.
+2. **Forbidden write.** A path that matches a `forbidden_paths` entry is denied
+   with rule `scope-lock-forbidden` (owner `developer`). The message names the
+   task id, the matching entry, the first three `allowed_paths`, and three
+   options: edit PROGRESS.md, move the edit to a separate task, or bypass with
+   `HARNESS_DISABLE_SCOPE_LOCK=1`.
+3. **Every other write is a silent allow.** `allowed_paths` only appears in the
+   deny message and `test_paths` is parsed but unused; neither changes the
+   decision. An unlisted path is allowed without a warning or a log row.
+4. **No PROGRESS.md.** Scope lock is not active.
+5. **Malformed entries.** An absolute, `..`, or out-of-tree entry is skipped and
+   logged as `gate-parse-fail` in `doc/harness/learnings.jsonl`. A parse or
+   enforcement exception is logged the same way and the write is allowed
+   (C-12).
+
+Matching is `fnmatch` on the repo-relative path, plus a directory prefix match
+for entries ending in `/` and a `<entry>/**` match.
 
 ## Env var bypass
 
-`HARNESS_DISABLE_SCOPE_LOCK=1` — one-shot bypass. Creates `<task_dir>/audit/scope-lock-bypass.flag`, then clears it. Only bypasses one command; the next write is re-evaluated normally.
+`HARNESS_DISABLE_SCOPE_LOCK=1` skips scope lock only; every earlier rule still
+applies. The gate reads the variable on every call and never clears it, so it
+applies to every write while set in the runtime's environment (the environment
+the runtime gives hook processes).
+
+Each bypassed write overwrites `<task_dir>/audit/scope-lock-bypass.flag` with
+the latest path. The next scope-lock evaluation without the variable deletes
+that flag, so it is a last-bypass marker, not a durable audit record.
 
 ## Migration guidance
 
@@ -60,3 +92,4 @@ the develop coordinator at Phase 3.1 using the seven-key canonical shape.
 | Pattern | Discovered | Source |
 |---------|------------|--------|
 | scope-lock-gate | 2026-04-17 | TASK__gstack-ideas-adoption |
+| scope-lock-docs-match-gate | 2026-09-28 | TASK__prewrite-gate-hardening |

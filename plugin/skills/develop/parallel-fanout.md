@@ -1,6 +1,6 @@
 # Parallel Fanout
 
-This sub-file covers Phase 3.0 / Phase 4.5 / Phase 6.6 / Phase 7 / Phase 7.7 parallel-Agent fanout. Loaded when N>=2 component-independent ACs OR a fanout-enabled quality / verification / dogfood phase fires. Lazy-load only; do not pre-read from `SKILL.md`.
+This sub-file covers Phase 3.0 / Phase 4.5 / Phase 6.6 / Phase 7 / Phase 7.7 parallel-Agent fanout. Loaded when N>=2 component-independent ACs OR a fanout-enabled quality / verification / dogfood phase fires, or when an AC routed to an ac-worker declares `**Tests:**` paths (test-author pairing). Lazy-load only; do not pre-read from `SKILL.md`.
 
 ---
 
@@ -58,6 +58,12 @@ Agent(subagent_type="harness:ac-worker",
       prompt="Lane <task_id>:AC-002. Implement AC-002 per PLAN.md ...")
 Agent(subagent_type="harness:ac-worker",
       prompt="Lane <task_id>:AC-NNN. Implement AC-NNN per PLAN.md ...")
+
+# Paired example (same message): an AC declaring both **Files:** and **Tests:**.
+Agent(subagent_type="harness:ac-worker",
+      prompt="Lane <task_id>:AC-001. Implement AC-001 per PLAN.md ... You own only its **Files:**; harness:test-author owns its **Tests:** for this AC.")
+Agent(subagent_type="harness:test-author",
+      prompt="Lane <task_id>:AC-001-tests. Write AC-001's tests per PLAN.md, only in its **Tests:** paths.")
 ```
 
 ### Never pass `name=` to a spawned agent
@@ -99,21 +105,51 @@ spawn site is passing `name=` and should stop. See
 
 ---
 
-Cap parallel fanout at N=4 in a single batch. Past N=4, orchestrator-side PROGRESS.md merge cost dominates the spawn-time savings. **The cap applies per batch, not per task** — broader trigger thresholds produce more batches, each still capped at 4.
+## Batch cap
+
+Read `develop.fanout_cap` from `doc/harness/manifest.yaml` once at Phase 3.0:
+
+```yaml
+develop:
+  fanout_cap: 6
+```
+
+An integer from 1 to 8 is the cap. An integer above 8 caps at 8. A missing
+key, a missing `develop` section, or any other value (zero, negative,
+fractional, boolean, string, null, list) leaves the cap at 4. Setup preserves
+the key and never writes it.
+
+The coordinator writes `effective fanout cap: <N> (<source>)` on a line above
+the lane table, source one of `default`, `develop.fanout_cap`,
+`clamped from <M>`, `invalid value → default`.
+
+The cap governs Phase 3.0 AC lanes only; the other fanout phases stay bounded
+by their own lens lists. The cap counts AC lanes, not agents — an AC's
+`harness:test-author` rides in its AC's lane.
+
+Cap parallel fanout at N=4 in a single batch by default. Past the effective
+cap, orchestrator-side PROGRESS.md merge cost dominates the spawn-time savings.
+**The cap applies per batch, not per task** — broader trigger thresholds
+produce more batches, each still capped at the effective cap.
 For N>4, spawn batches of up to 4 in successive assistant turns; do not
-collapse remaining independent ACs into coordinator work.
+collapse remaining independent ACs into coordinator work. With a configured
+cap C, for N>C spawn batches of up to C.
 Merge cost controls batch size only. It does not justify collapsing two or more
 independent ACs into one executor below the cap.
+
+Worst case concurrent agents: 1 ac-worker + 1 test-author + 3 sub-workers per
+lane = 5 x cap: 20 agents at the default cap 4, 40 agents at the maximum cap 8.
 
 ---
 
 ## Parallelization Triggers
 
-The orchestrator MUST fanout when any row matches. PLAN.md AC dependency matrix is the single source of truth for the first three rows; `git diff --name-only` and runtime context drive the last two.
+The orchestrator MUST fanout when any row matches. PLAN.md AC dependency matrix is the single source of truth for the first four rows; `git diff --name-only` and runtime context drive the last two.
 
 | Trigger | When | Action |
 |---------|------|--------|
 | Component-independent N≥2 | PLAN AC matrix has 2 or more ACs whose target file sets are pairwise disjoint | Parallel `Agent(...)` fanout, one per AC, in one assistant message |
+| Test-author pairing | An AC routed to `harness:ac-worker` declares both `**Files:**` and `**Tests:**` | Spawn one `harness:test-author` in the same assistant message as that ac-worker |
 | API↔frontend split | PLAN AC matrix declares both backend/API files (`*api*`, `*routes/*`, `*endpoint*`, `*graphql*`) AND frontend files (`*.tsx/.jsx/.vue/.svelte/.html/.css/.scss`) | Contract-first sequential prelude (API contract / shared types AC), then parallel-fanout the consumer ACs |
 | Helper-extract-first | PLAN explicitly contains a helper-extraction AC; consumer ACs depend on the extracted helper | Run the extract AC sequentially first, then parallel-fanout the consumers. Guard: extract must be a declared AC in PLAN.md; mid-task extraction is scope creep blocked by Phase 5 |
 | Multi-lens QA / dogfooder | Phase 7 has 2 or more applicable QA lenses (from manifest + diff scope) OR dogfooder is queued for the Phase 7 final-PASS cycle | All QA calls in one assistant message with `lens="<lens>"`; dogfooder batched alongside on the final-PASS pass. FAIL cycles skip dogfooder |
@@ -175,10 +211,12 @@ selected hunter attempts.
 
 Two ACs are **component-independent** iff one of the following holds:
 
-1. Their PLAN target file sets are disjoint (no shared file path).
+1. Their PLAN target file sets are disjoint: the union of `**Files:**` and
+   `**Tests:**` for one AC shares no path with the union for the other (A's
+   `**Tests:**` must not overlap B's `**Files:**` either).
 2. Any shared file is factored into a dedicated helper-extract AC that runs first (sequential prelude → parallel consumers).
 
-Component-independence is a property of the PLAN AC matrix, not of the diff. The orchestrator computes it from `**Files:**` declarations in PLAN.md, not from `git diff --name-only`. If the matrix is ambiguous, write an explicit dependency matrix artifact and flag the ambiguity as a Plan Challenge for the next plan cycle. Then run sequentially by declared dependency. Do not assign multiple possibly-independent ACs to one executor as a silent fallback.
+Component-independence is a property of the PLAN AC matrix, not of the diff. The orchestrator computes it from `**Files:**` and `**Tests:**` declarations in PLAN.md, not from `git diff --name-only`. If the matrix is ambiguous, write an explicit dependency matrix artifact and flag the ambiguity as a Plan Challenge for the next plan cycle. Then run sequentially by declared dependency. Do not assign multiple possibly-independent ACs to one executor as a silent fallback.
 
 ### Small-task edge case
 
@@ -200,7 +238,8 @@ tool, or small-task estimate.
 
 ### Lane table requirement
 
-Before implementation, emit this table and use it as the routing contract:
+Before implementation, write the `effective fanout cap:` line from Batch cap
+above, then emit this table and use it as the routing contract:
 
 | AC | Files | Depends on | Lane | Route | Reason |
 |----|-------|------------|------|-------|--------|
@@ -210,6 +249,56 @@ Before implementation, emit this table and use it as the routing contract:
 parallel spawn batch. `sequential-small-task` requires lane-table values:
 `reason:"small-task"`, `estimated_lines`, and `estimated_seconds`.
 
+### Test-author lane
+
+An AC routed to `harness:ac-worker` that declares non-empty `**Files:**` and
+non-empty `**Tests:**` gets one `harness:test-author`, spawned in the same
+assistant message as that AC's ac-worker. `**Tests:** none` means no
+test-author for that AC. `**Files:** none` marks a test-only AC, which runs
+as one ordinary `harness:ac-worker` lane owning its `**Tests:**`, no pair.
+A sequential AC the coordinator implements itself under `developer.md` has no
+pair either; the coordinator writes its tests.
+
+The paired ac-worker owns only `**Files:**`; it never writes the AC's
+`**Tests:**` paths and does not run or wait on the AC's `Verify:` — that
+happens during reconciliation below.
+
+Lane table notation: the `Files` cell lists both sets and the `Lane` cell
+notes "+test-author"; the Route vocabulary is unchanged (the pair shares its
+AC's `Agent(...)` row).
+
+Reconciliation, once the whole batch returns: the coordinator runs each
+paired AC's `**Tests:**` and full `Verify:` command on the combined tree and reconciles:
+
+| Result | Handling |
+|--------|----------|
+| Green | AC complete |
+| Red, test matches PLAN.md | fix in the `**Files:**` lane |
+| Red, test asserts beyond or against PLAN.md | fix in the `**Tests:**` lane |
+| Collection or import error | decide the interface from PLAN.md and fix that lane (an import of a new symbol PLAN.md names is expected red until the implementation lands) |
+| PLAN.md cannot settle it | `needs-coordinator-review` handling (amend PLAN or escalate; never retry with the same ownership) |
+
+No fix crosses between `**Files:**` and `**Tests:**`.
+The 3-Attempt Escalation Rule in `fix-first-pattern.md` bounds the loop.
+Count attempts per failing test across both lanes: moving a red test to the
+other lane does not reset its count.
+
+Fallback: when `harness:test-author` is unavailable (for example an older
+installed plugin), run the ac-worker unpaired, owning `**Files:**` and
+`**Tests:**`, and write the reason in the lane table.
+
+### ac-worker sub-split (Claude only)
+
+An ac-worker may split its own AC across at most 3 unnamed sub-workers
+owning pairwise-disjoint subsets of its `**Files:**`, spawned in one message,
+one level deep. Every sub-worker call always passes
+`subagent_type="harness:ac-worker"` — never a lens agent (reviewers,
+hunters, qa-*, ux-*, dogfooder) and never `name=`. The parent ac-worker
+stays the sole reporter: it waits for every sub-worker, runs its AC checks
+over the combined result, and the coordinator sees one `AC-NNN:` block. The
+full allowlist, depth bound, and fallback rules live in
+`plugin/agents/ac-worker.md`.
+
 ---
 
 ## Stage Agent Routing
@@ -218,7 +307,8 @@ Harness phases map to specific agent types and model tiers. Models stay AS-DECLA
 
 | Phase | Agent type | Model source | Notes |
 |-------|------------|--------------|-------|
-| 3 (per-AC implement) | `harness:ac-worker` | inherit (sonnet) | One Agent per AC for parallel batches; one inline call for sequential ACs only when dependency-bound, carrying ac-worker's own ladder copy. Otherwise the coordinator implements sequential ACs under `developer.md` |
+| 3 (per-AC implement) | `harness:ac-worker` | inherit (sonnet) | One Agent per AC for parallel batches; one inline call for sequential ACs only when dependency-bound, carrying ac-worker's own ladder copy. Otherwise the coordinator implements sequential ACs under `developer.md`. May sub-split one level deep (Claude only; see ac-worker sub-split above) |
+| 3 (per-AC tests) | `harness:test-author` | inherit (sonnet) | One per AC that declares both `**Files:**` and `**Tests:**`, spawned in the same message as its ac-worker; owns only `**Tests:**`; no lens |
 | 4.5 (pre-review audit inputs) | `oh-my-claudecode:executor` | haiku | Coverage trace, visual smoke, and the conditional migration/contract, LLM-trust, and performance specialists listed in `quality-audit-pipeline.md` § Phase 4.5. Advisory inputs, not verdicts |
 | 6.6 (independent review) | `harness:code-reviewer` / `harness:security-reviewer` | per agent frontmatter | Routed from `task_context`; selected hunters/security batch first, then dependent code review. At LIGHT code/security may batch. Must PASS before Phase 7 QA. |
 | 7 (verification gate) | `harness:qa-cli` / `qa-api` / `qa-browser` / `qa-desktop` | per agent frontmatter | Spawn every applicable lens in one message with `lens="<lens>"` for lens-aware merge |

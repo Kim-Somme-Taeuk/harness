@@ -9,6 +9,12 @@ import sys
 import tempfile
 import unittest
 
+from conftest import (  # type: ignore
+    ledger_rows,
+    make_tmp_harness_root,
+    scratch_task_in_real_repo,
+)
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(REPO_ROOT, "plugin", "scripts", "prewrite_gate.py")
 FIXTURES = os.path.join(REPO_ROOT, "tests", "fixtures", "gstack_adoption")
@@ -247,7 +253,12 @@ class TestScopeLockCanonicalization(unittest.TestCase):
     """AC-004: path canonicalization and HARNESS_DISABLE_SCOPE_LOCK bypass."""
 
     def test_absolute_path_in_progress_skipped(self):
-        """Absolute paths in PROGRESS.md forbidden_paths should be skipped."""
+        """Absolute paths in PROGRESS.md forbidden_paths should be skipped.
+
+        Skipping one logs a `gate-parse-fail` row to the ledger of the root it
+        is given, so the root is a tmp checkout: given `REPO_ROOT` it appended
+        to the developer's gitignored `doc/harness/learnings.jsonl`.
+        """
         progress = (
             "task_id: TASK__test-task\nphase: 3\n"
             "allowed_paths:\n  - src/feature.py\n"
@@ -256,24 +267,23 @@ class TestScopeLockCanonicalization(unittest.TestCase):
         )
         sys.path.insert(0, os.path.join(REPO_ROOT, "plugin", "scripts"))
         from prewrite_gate import _handle_scope_lock
-        real_tasks = os.path.join(REPO_ROOT, "doc", "harness", "tasks")
-        scratch = os.path.join(real_tasks, "TASK__scope-lock-abs-test")
-        os.makedirs(scratch, exist_ok=True)
-        try:
-            with open(os.path.join(scratch, "PROGRESS.md"), "w") as f:
-                f.write(progress)
-            # absolute path in forbidden should be silently skipped (no block)
-            should_block, msg = _handle_scope_lock(
-                os.path.join(REPO_ROOT, "absolute", "path", "billing.py"),
-                scratch,
-                REPO_ROOT,
-                "TASK__scope-lock-abs-test",
-            )
-            # Should not block because absolute paths are skipped
-            self.assertFalse(should_block)
-        finally:
-            import shutil
-            shutil.rmtree(scratch, ignore_errors=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_tmp_harness_root(tmp)
+            with scratch_task_in_real_repo(
+                "scope-lock-abs-test", progress=progress, repo_root=root,
+            ) as scratch:
+                # absolute path in forbidden should be silently skipped (no block)
+                should_block, msg = _handle_scope_lock(
+                    os.path.join(root, "absolute", "path", "billing.py"),
+                    scratch,
+                    root,
+                    "TASK__scope-lock-abs-test",
+                )
+            rows = ledger_rows(root)
+        # Should not block because absolute paths are skipped
+        self.assertFalse(should_block)
+        self.assertEqual([row.get("type") for row in rows], ["gate-parse-fail"], rows)
+        self.assertIn("/absolute/path/billing.py", rows[0].get("insight", ""))
 
     def test_disable_scope_lock_bypass(self):
         """HARNESS_DISABLE_SCOPE_LOCK=1 should bypass the gate."""

@@ -1,6 +1,6 @@
 ---
 freshness: current
-updated: 2026-08-13
+updated: 2026-09-28
 ---
 
 # Auto-Maintenance Pattern
@@ -73,8 +73,7 @@ Auto-ran: hygiene=(none)
 | Variable | Effect | Semantics |
 |----------|--------|-----------|
 | `HARNESS_DISABLE_RETRO` | Skip auto-retro | session-wide while set |
-| `HARNESS_DISABLE_HYGIENE` | Skip hygiene audit | session-wide while set |
-| `HARNESS_DISABLE_SCOPE_LOCK` | One-shot scope gate bypass | cleared after one bypass |
+| `HARNESS_DISABLE_SCOPE_LOCK` | Skip the prewrite scope lock | applies to every write while set in the runtime's environment |
 | `HARNESS_SKIP_INTERVIEW` | Setup skill auto-accepts defaults | session-wide while set |
 | `HARNESS_SPAWNED` | Orchestrator-spawned session: auto-resolve prompts | session-wide while set |
 

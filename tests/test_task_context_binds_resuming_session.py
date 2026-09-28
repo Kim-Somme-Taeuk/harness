@@ -272,7 +272,8 @@ def test_a_refused_marker_write_is_reported_not_swallowed(tmp_path):
 def test_reading_another_open_task_does_not_steal_write_focus(tmp_path, monkeypatch):
     """The same theft, from the direction the status guard could not see.
 
-    C-09 queues a second mutating request; it does not close the first, so
+    C-09 refuses a second task only for the session whose focus it would
+    take; it closes nothing, and other sessions hold their own focus, so
     several tasks are open at any time. Gating the marker write on "the task
     being read is open" therefore let a pure `task_context` read of any other
     open task rebind this session and repoint the shared legacy `.active` —

@@ -173,6 +173,27 @@ unified `RECEIPTS.jsonl` lifecycle stream.
 Planning decisions from earlier phases are included directly in PLAN.md's
 Decision Audit Trail before the single MCP publication.
 
+### Per-AC shape
+
+Write each acceptance criterion in this shape:
+
+```text
+**AC-00N: <outcome>.**
+**Files:** `<source path>`, ... | none
+**Tests:** `<test path>`, ... | none
+**Depends on:** none | AC-00M, ...
+- <criteria>
+- Verify: `<command>`
+```
+
+`**Files:**` lists the source paths the AC's implementer writes. `**Tests:**` holds test paths only; develop may give them to a separate test author working beside the implementer. No path appears in both `**Files:**` and `**Tests:**`.
+
+Cut ACs along disjoint file seams: when two ACs' `**Files:**` and `**Tests:**` sets share no path, develop runs them as parallel lanes; one AC that bundles independent seams runs as a single lane, so split it into one AC per seam instead.
+
+A change that several ACs need is its own AC rather than living inside any one consumer: it is a helper-extract AC that each consumer lists in `**Depends on:**`, and develop runs it before those consumers.
+
+Tests that pin text or output the implementation itself produces belong in a test-only AC (`**Files:** none`) that depends on the implementing AC, rather than living inside the implementing AC.
+
 ## 6.8 Learnings write-back (capture-when-fresh, non-blocking)
 
 When you discover something genuinely useful during the task — a real bug, a workaround that saved time, a pattern that surprised you, a tooling gotcha — log it the moment you find it, **while it's fresh**. Log only concrete, reusable facts at discovery time; leave the log untouched when there is no durable learning.
