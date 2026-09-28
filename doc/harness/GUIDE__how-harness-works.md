@@ -63,6 +63,10 @@ invalidated_by_paths:
   - plugin/
   - pyproject.toml
   - tests/
+  - README.md
+  - doc/CLAUDE.md
+  - doc/harness/critics/
+  - doc/harness/review-overlays/
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -516,7 +520,7 @@ TASK.json 유효?
   - blocked 과제를 어느 세션이든 plain `task_start`로 재개하면 run이 유지된다. 그러면 원래 세션의 남은 마커가 다시 유효해져서(열린 과제, 같은 run_id) 그 세션이 바인딩과 focus를 조용히 되찾는다.
   - close 뒤 `fresh_run`으로 다시 열면 run_id가 바뀌므로 영수증 바인딩은 실패한다. 하지만 `resolve_active_task_dir`는 run_id를 비교하지 않으므로 focus는 여전히 그 세션에 잡혀 있다. 그 세션에서 다른 과제로 `task_start`를 하면 거부된다.
   
-  `plugin/CLAUDE.md:31`의 "clears this session's active marker"는 이 점에서 부정확하다.
+  `plugin/CLAUDE.md:31`은 "clears this session's active marker"라고 설명하지만, 현재 코드는 MCP 프로세스의 `current_session_id()` 마커와 legacy `.active`만 지운다(§17.2에 관찰로 기록).
 
 **Codex의 바인딩.** 보통의 Codex MCP 호스트에는 thread ID가 없다(`defer_codex_binding`). 이 경우 동작은 다음과 같다(`harness_server.py:1188-1193, 1450-1458, 1649-1661`, `_lib.py:2245-2268`, `codex_hook_registration.py:213-330`, `hook_post_tool_use.py:96-154`).
 
@@ -838,7 +842,7 @@ escape: HARNESS_SKIP_PREWRITE=1 <retry>
 - **MAINTENANCE는 자기 인가가 가능하다.** 과제 디렉터리 안의 일반 파일이라 아무나 만들 수 있고, gate는 누가 만들었는지 구별하지 못한다. 거부 메시지의 owner인 `maintain-skill`이라는 스킬은 `plugin/skills/`에 없다.
 - `_runtime_name()`은 payload에 `session_id`가 있으면 `codex`로 판정한다. Claude payload에도 `session_id`가 있으므로 Claude 세션에도 Codex 형태의 힌트(`write_plan { task_id=… }`)가 나온다(`HARNESS_RUNTIME=claude`를 설정하면 해결된다). `no-active-task` 거부의 next action도 `write_plan`을 제안하지만, 실제로 해야 할 일은 `task_start`다(`prewrite_gate.py:485-507, 751`).
 - scope lock의 next-action 키는 `C-09-scope-lock`이다. 그러나 C-09는 write focus에 관한 계약이지 경로 범위 계약이 아니다. 제시하는 해결책도 틀렸다. ↳ next action은 "Add the file to PROGRESS.md allowed_paths or revert the write"라고 하고, 사람이 읽는 문장의 선택지 (a)는 "move to allowed_paths"라고 한다. 그러나 allowed_paths는 판정에 영향이 없다. 쓰기를 풀려면 걸린 `forbidden_paths` 항목을 지우거나 좁히거나, 환경 변수로 우회해야 한다(`prewrite_gate.py:479-481, 572-592, 784-796`).
-- `doc/harness/patterns/prewrite-gate.md`(freshness: suspect)와 `scope-lock.md`는 코드보다 뒤처져 있다. "exits 2", "unlisted path warns", "one-shot bypass"는 모두 현재 코드와 다르다. 이 절은 현재 코드 동작을 관찰해 적은 것이고 규범이 아니다. 규범은 두 패턴 문서이며, 문서와 코드 중 어느 쪽을 고칠지는 후속 과제가 정한다(§17.2).
+- `doc/harness/patterns/prewrite-gate.md`(freshness: suspect)와 `scope-lock.md`의 설명은 현재 코드와 다르다. "exits 2", "unlisted path warns", "one-shot bypass"는 모두 현재 코드와 다르다. 이 절은 현재 코드 동작을 관찰해 적은 것이고 규범이 아니다. 규범은 두 패턴 문서이며, 문서와 코드 중 어느 쪽을 고칠지는 후속 과제가 정한다(§17.2).
 
 ---
 
@@ -951,7 +955,7 @@ append는 `record_subagent_receipt`가 맡는다(`_lib.py:4145-4287`).
    - 모두 없으면 `no-canonical-start-attachment`로 거부.
 
    run cutoff보다 앞선 attachment는 `start-precedes-task-run`으로 거부된다. 두 attachment 모양은 모두 제3자 플러그인(oh-my-claudecode)의 SubagentStart 출력에서 나온다. harness start 훅은 아무것도 출력하지 않는다. 그래서 그런 플러그인이 없는 보통 설치에서는 harness `started` 행을 통한 `hook_start_type`이 정상 경로다. hook `started` 행이 없고(stop만 오는 런타임) attachment도 없으면 항상 `no-canonical-start-attachment`로 거부된다(ADR `:195-206`).
-6. **최종 텍스트는 비교하지 않는다.** 런타임이 transcript의 최종 텍스트를 거의 같은 순간에 flush하기 때문에 일부러 생략했다. verdict는 payload의 `last_assistant_message`에서 읽는다(`subagent_lifecycle.py:412-422`, ADR `:208-212`). CONTRACTS C-14 산문은 stop-only 쌍에 final text 일치를 요구한다. 반면 ADR(`:208-212`)과 현재 코드는 이 값을 비교하지 않는다. 이 어긋남은 §17.2에 관찰로 기록했고, 정리는 wave 2 항목 X가 맡는다.
+6. **최종 텍스트는 비교하지 않는다.** 런타임이 transcript의 최종 텍스트를 거의 같은 순간에 flush하기 때문에 일부러 생략했다. verdict는 payload의 `last_assistant_message`에서 읽는다(`subagent_lifecycle.py:412-421`, ADR `:208-212`). CONTRACTS C-14 산문은 stop-only 쌍에 final text 일치를 요구한다. 반면 ADR(`:208-212`)과 현재 코드는 이 값을 비교하지 않는다. 이 어긋남은 §17.2에 관찰로 기록했고, 정리는 wave 2 항목 X가 맡는다.
 7. **기록**(트랜잭션 안, `subagent_lifecycle.py:698-766`).
    - started만 있음 → savepoint 안에서 completion append.
    - started와 completion이 이미 있음 → 정규화 결과가 같으면 `duplicate_stop`, 다르면 `completion-already-recorded`. **재개된 에이전트는 첫 completion을 바꿀 수 없다.**
@@ -1835,7 +1839,7 @@ manifest의 `ux_review_supported` 주석은 ux-* 영수증이 close를 막는다
 | C-14 | PASS는 순서가 맞는 hook-owned 영수증 필요 | `task_verify`/`task_close` | 산문은 stop-only 쌍의 final text 일치를 요구하지만 코드는 비교하지 않는다 |
 | C-14a | 가능한 최고 검증 tier 실행 | develop Phase 7 | — |
 | C-15 | setup은 사용자 소유 파일을 덮어쓰지 않음 | setup 절차 | 이 저장소에서는 routing 블록 교체가 위험하다(§11.3) |
-| C-17 | 턴 종료 지침, 주차, 두 고정 쌍 | `task_close`, `task_verify`, `task_blocked` | 상태 이름(planning 등)이 낡음 |
+| C-17 | 턴 종료 지침, 주차, 두 고정 쌍 | `task_close`, `task_verify`, `task_blocked` | 산문은 상태 이름을 planning/implementing/verifying으로 적고, 코드는 open/blocked/closed/invalid를 쓴다(§17.2) |
 | C-18 | 검증 위임은 지침이지 pre-tool gate가 아님 | 없음(의도적) | — |
 
 근거: `CONTRACTS.md:45, 130, 140, 148, 160, 163-176`, `prewrite_gate.py:80-85, 101-108, 712-733`, `contract_lint.py:80-91, 227-234, 410-434, 452-458, 487-492`, `tests/test_contract_lint_real_tree.py:92-113, 253-282`, `.claude/settings.json:3`, `plugin/CHANGELOG.md:98`, `plugin/CLAUDE.md:9-10`.
@@ -2212,7 +2216,7 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 | 이름 준 spawn 흔적 | [REQ__runtime-surfaces-name-the-actual-blocker.md](REQ__runtime-surfaces-name-the-actual-blocker.md) |
 | 런타임 규범 문장의 단일 출처(TRUST_BOUNDARY) | [REQ__runtime-normative-text-has-one-source.md](REQ__runtime-normative-text-has-one-source.md) |
 | 계약 강제 주장은 실행 가능해야 함 | [REQ__contract-enforcement-claims-are-executable.md](REQ__contract-enforcement-claims-are-executable.md) |
-| prewrite gate, scope lock | [patterns/prewrite-gate.md](patterns/prewrite-gate.md), [patterns/scope-lock.md](patterns/scope-lock.md)(둘 다 코드보다 뒤처짐) |
+| prewrite gate, scope lock | [patterns/prewrite-gate.md](patterns/prewrite-gate.md), [patterns/scope-lock.md](patterns/scope-lock.md)(현재 코드와의 차이는 §5.8, §17.2) |
 | REQ 수집 | [REQ__req-capture-with-or-without-task.md](REQ__req-capture-with-or-without-task.md) |
 | Bash/브라우저를 gate하지 않는 이유 | [patterns/ADR__selective-pretool-dispatch.md](patterns/ADR__selective-pretool-dispatch.md) |
 | SessionStart 훅은 harness 밖에서 no-op | [REQ__session-start-hooks-no-op-outside-harness.md](REQ__session-start-hooks-no-op-outside-harness.md) |
@@ -2239,7 +2243,7 @@ review처럼 보이는 task_name이 review-code/review-security로 bind되지 �
 
 ### 17.2 코드와 문서가 어긋나는 곳(작성 시점)
 
-이 표와 §5.8, §7.9에 적은 어긋남은 모두 2026-09-28 시점에 관찰한 사실이고 규범이 아니다. 규범은 여전히 각 문서이며, 어긋남을 바로잡는 일은 Goal `GOAL__harness-batch-v2-2026-09-27-8b8d6619`의 wave 2 항목 X(prewrite gate 보강과 규범 문서 정정)가 맡는다. Goal과 과제 기록은 gitignore 대상이라 이 checkout에만 있다.
+이 표를 비롯해 이 문서의 어느 절(§3.7, §5.8, §7.9, §12 등)에 적은 코드·문서 어긋남이든 모두 2026-09-28 시점에 관찰한 사실이고 규범이 아니다. 규범은 여전히 각 문서이며, 어긋남을 바로잡는 일은 Goal `GOAL__harness-batch-v2-2026-09-27-8b8d6619`의 wave 2 항목 X(prewrite gate 보강과 규범 문서 정정)가 맡는다. Goal과 과제 기록은 gitignore 대상이라 이 checkout에만 있다.
 
 | 문서 | 문서의 주장 | 코드의 실제 |
 |---|---|---|
