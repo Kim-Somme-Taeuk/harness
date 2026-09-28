@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import datetime as _dt
 import hashlib
 import json
@@ -1385,6 +1386,23 @@ def install_codex_hook_trust_state(
     }
 
 
+def _codex_peer_uid(conn: socket.socket) -> int:
+    """Read kernel peer identity on Linux or getpeereid-based Unix systems."""
+    if hasattr(socket, "SO_PEERCRED"):
+        credentials = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        return struct.unpack("3i", credentials)[1]
+    try:
+        getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
+    except (OSError, AttributeError) as exc:
+        raise OSError("Codex daemon peer credentials are unavailable on this platform") from exc
+    getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+    getpeereid.restype = ctypes.c_int
+    uid, gid = ctypes.c_uint(), ctypes.c_uint()
+    if getpeereid(conn.fileno(), ctypes.byref(uid), ctypes.byref(gid)) != 0:
+        raise OSError(ctypes.get_errno(), "Cannot verify Codex daemon peer credentials")
+    return uid.value
+
+
 def _reload_codex_daemon_hooks(socket_path: str, *, timeout: float = 10.0) -> None:
     """Refresh loaded hooks through Codex's native local config API.
 
@@ -1425,10 +1443,8 @@ def _reload_codex_daemon_hooks(socket_path: str, *, timeout: float = 10.0) -> No
 
         remaining()
         conn.connect(str(endpoint))
-        if hasattr(socket, "SO_PEERCRED"):
-            credentials = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            if struct.unpack("3i", credentials)[1] != os.getuid():
-                raise ValueError("Codex daemon peer has a different owner")
+        if _codex_peer_uid(conn) != os.getuid():
+            raise ValueError("Codex daemon peer has a different owner")
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         send((
             "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
@@ -1945,8 +1961,12 @@ def install_codex(*, dry_run: bool, force: bool,
     reload_ok, reload_message = _reload_codex_runtime(config_path)
     steps.append(reload_message)
     if not reload_ok:
+        retry = ["python3", "install.py", "--codex-only", "--force"]
+        if config_path is not None:
+            retry.extend(["--config-path", str(Path(config_path).resolve())])
         return InstallResult("codex", False, reload_message +
-                             "; after fixing the daemon, retry: python3 install.py --codex-only --force", steps,
+                             "; keep the same CODEX_HOME and, after fixing the daemon, retry: " +
+                             shlex.join(retry), steps,
                              backup_path=result["backup_path"])
     return InstallResult("codex", True, "Codex install complete", steps,
                          backup_path=result["backup_path"])

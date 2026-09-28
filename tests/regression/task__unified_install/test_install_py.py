@@ -18,6 +18,7 @@ import tempfile
 import importlib.util
 import json
 import re
+import shlex
 from pathlib import Path
 from unittest import mock
 
@@ -1220,7 +1221,9 @@ def test_real_codex_install_with_fake_cli_enables_plugin_hooks_and_cache(tmp_pat
     )
     fake_codex.chmod(0o755)
     codex_install_root = tmp_path / ".codex" / "harness"
-    config_path = tmp_path / ".codex" / "config.toml"
+    config_home = tmp_path / (".codex" if reload_ok else "codex home 'quoted' $literal; extra")
+    config_path = config_home / "config.toml"
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
     monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
     monkeypatch.setenv("CODEX_LOG", str(log))
     monkeypatch.setattr(module, "CODEX_INSTALL_ROOT", codex_install_root)
@@ -1243,6 +1246,12 @@ def test_real_codex_install_with_fake_cli_enables_plugin_hooks_and_cache(tmp_pat
     assert result.ok is reload_ok, result.summary
     if not reload_ok:
         assert "native daemon refresh result" in result.summary
+        assert "same CODEX_HOME" in result.summary
+        retry = result.summary.split("retry: ", 1)[1]
+        assert shlex.split(retry) == [
+            "python3", "install.py", "--codex-only", "--force",
+            "--config-path", str(config_path.resolve()),
+        ]
         return
     lines = log.read_text().splitlines()
     assert "--version" in lines

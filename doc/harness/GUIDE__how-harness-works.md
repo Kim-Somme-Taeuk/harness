@@ -1696,6 +1696,7 @@ host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit�
 - `--force`는 비교를 건너뛰고 항상 다시 동기화한다. payload 비교는 설정·레지스트리 상태를 보지 않는다. Claude 기본 실행은 그래도 marketplace와 plugin cache를 갱신하고, marketplace update가 실패하면(예: marketplace 누락) full install로 넘어가 marketplace 재등록, plugin 설치, MCP 재등록을 한다. 그 밖의 레지스트리 drift(`claude mcp` 항목, Codex config.toml/hook trust)는 payload가 STALE인 실행(기본 실행 포함)에서는 함께 다시 쓰이지만, payload가 SYNCHRONIZED로 판정된 기본 실행은 이를 건드리지 않으므로 그 경우에는 `--force`로만 고쳐진다(`install.py:1133-1148, 1654-1697, 1762-1778, 1820-1872, 1953-1980`).
 - pytest 안에서(`PYTEST_CURRENT_TEST`) 실제 `~/.claude`/`~/.codex`는 건드리지 않는다.
 - Codex 설치 후에는 native `config/batchWrite`의 빈 edits와 `reloadUserConfig: true`로 기존 세션의 hook을 다시 읽힌다. 파일과 trust만 갱신하면 기존 세션은 이전 hook을 유지할 수 있다. 로컬 daemon endpoint가 없으면 다음 세션에서 로드하고, 별도 config 경로에는 기본 daemon을 재로드하지 않는다. 재로드 실패 시 payload는 이미 설치된 상태지만 설치 결과는 실패다. daemon 문제를 해결한 뒤 `python3 install.py --codex-only --force`로 재시도한다. [native hook 요구사항](REQ__codex-native-hook-binding.md) 참조.
+  재시도에서도 기존 `CODEX_HOME`과 명시한 `--config-path`를 유지한다. 설치기가 출력하는 재시도 명령은 설정 경로를 shell quoting하여 포함한다.
 - Claude cache에는 오래된 `2.3.0-h*` 디렉터리가 쌓인다(Claude Code는 `+`를 `-`로 표시한다).
 
 ### 11.2 `install_verified.py`(Phase 7.8)

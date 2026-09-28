@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+import ctypes
+import errno
 import hashlib
 import importlib.util
 import json
@@ -152,6 +154,8 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize("failure_mode", ["bad_accept", "rpc_error", "timeout", "close", "malformed", "oversized", "failed_status", "masked", "fragmented", "nonobject", "missingresult", "exhausted"])
     if "success_mode" in metafunc.fixturenames:
         metafunc.parametrize("success_mode", ["success", "ping", "notification"])
+    if "peer_failure" in metafunc.fixturenames:
+        metafunc.parametrize("peer_failure", ["mismatch", "unsupported", "syscall_error"])
 
 
 def test_native_reload_sends_only_empty_config_refresh(tmp_path, success_mode):
@@ -333,9 +337,11 @@ def test_native_reload_checks_connected_peer_owner(tmp_path, monkeypatch):
     module = _installer()
     path = tmp_path / "peer.sock"
     real_socket = socket.socket
+    peer_option = getattr(socket, "SO_PEERCRED", 12345)
+    monkeypatch.setattr(module.socket, "SO_PEERCRED", peer_option, raising=False)
     class ForeignPeerSocket(real_socket):
         def getsockopt(self, level, option, *args):
-            if level == socket.SOL_SOCKET and option == socket.SO_PEERCRED:
+            if level == socket.SOL_SOCKET and option == peer_option:
                 return struct.pack("3i", os.getpid(), os.getuid() + 1, os.getgid())
             return super().getsockopt(level, option, *args)
     with real_socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
@@ -344,6 +350,64 @@ def test_native_reload_checks_connected_peer_owner(tmp_path, monkeypatch):
         monkeypatch.setattr(module.socket, "socket", ForeignPeerSocket)
         with TestCase().assertRaisesRegex(ValueError, "peer has a different owner"):
             module._reload_codex_daemon_hooks(str(path), timeout=0.1)
+        with endpoint.accept()[0] as peer:
+            peer.settimeout(0.1)
+            assert peer.recv(1) == b"", "unverified peer received handshake bytes"
+
+
+def _mock_getpeereid(monkeypatch, module, uid, *, syscall_error=False):
+    calls = []
+
+    def getpeereid(fd, uid_pointer, gid_pointer):
+        assert os.fstat(fd)
+        calls.append(fd)
+        if syscall_error:
+            ctypes.set_errno(errno.EACCES)
+            return -1
+        ctypes.cast(uid_pointer, ctypes.POINTER(ctypes.c_uint))[0] = uid
+        ctypes.cast(gid_pointer, ctypes.POINTER(ctypes.c_uint))[0] = os.getgid()
+        return 0
+
+    def libc(name, *, use_errno):
+        assert name is None
+        assert use_errno is True
+        return SimpleNamespace(getpeereid=getpeereid)
+
+    monkeypatch.delattr(module.socket, "SO_PEERCRED", raising=False)
+    monkeypatch.setattr(module.ctypes, "CDLL", libc)
+    return calls
+
+
+def test_native_reload_without_so_peercred_verifies_getpeereid(tmp_path, monkeypatch):
+    module = _installer()
+    calls = _mock_getpeereid(monkeypatch, module, os.getuid())
+    with _daemon(tmp_path) as (path, requests):
+        module._reload_codex_daemon_hooks(path, timeout=1)
+    assert len(calls) == 1
+    assert requests[-1]["method"] == "config/batchWrite"
+
+
+def test_native_reload_without_so_peercred_fails_before_handshake(tmp_path, monkeypatch, peer_failure):
+    module = _installer()
+    calls = _mock_getpeereid(
+        monkeypatch, module, os.getuid() + 1,
+        syscall_error=peer_failure == "syscall_error",
+    )
+    if peer_failure == "unsupported":
+        monkeypatch.setattr(module.ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace())
+    path = tmp_path / "unverified.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+        endpoint.bind(str(path))
+        endpoint.listen(1)
+        expected = ValueError if peer_failure == "mismatch" else OSError
+        with TestCase().assertRaises(expected) as failure:
+            module._reload_codex_daemon_hooks(str(path), timeout=0.1)
+        if peer_failure == "syscall_error":
+            assert failure.exception.errno == errno.EACCES
+        with endpoint.accept()[0] as peer:
+            peer.settimeout(0.1)
+            assert peer.recv(1) == b"", "unverified peer received handshake bytes"
+    assert len(calls) == (0 if peer_failure == "unsupported" else 1)
 
 
 def test_explicit_config_matching_codex_home_refreshes_that_daemon(tmp_path, monkeypatch):

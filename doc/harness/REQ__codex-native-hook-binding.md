@@ -15,10 +15,14 @@ supported; connection time, message size and notification count are bounded.
 A failed discovery with an existing control endpoint, malformed daemon metadata,
 or failed reload makes installation report failure after payload publication.
 When no local endpoint exists, hooks load in the next session. Installing to a
-custom config path reports that a new session must use that config and never
-refreshes the default daemon on its behalf.
+config path different from the runtime's `CODEX_HOME/config.toml` (default
+`~/.codex/config.toml`) reports that a new session must use that config and never
+refreshes an unrelated daemon. An explicit path matching the runtime home does
+reload that daemon.
 Publication is retained after a reload failure; rollback is not automatic.
 After fixing the daemon, retry with `python3 install.py --codex-only --force`.
+Retain the original `CODEX_HOME` and any explicit `--config-path`; the installer
+includes the shell-quoted configuration path in its retry command.
 The ordinary synchronized-payload fast path does not repeat installation or
 repair configuration and must not be used as evidence that a failed reload
 has recovered.
