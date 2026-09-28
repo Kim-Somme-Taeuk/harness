@@ -458,7 +458,7 @@ TASK.json 유효?
 | 그 밖의 예외 | `"<tool> failed: <e>"`만 |
 | 핸들러의 거부(예: task_start의 focus 거부, closed 과제 거부) | 예외가 아니라 `_err`가 돌려주는 data: `task_dir`, `status`, `next_action` 등 |
 
-주의: `call_tool`은 핸들러가 낸 `ValueError`를 원인과 관계없이 selector 오류 모양으로 포장한다. 그래서 goal 오류(`no active goal`, `goal is terminal…`, `goal completion blocked by unfinished or unverified child tasks: …`)도 selector 오류 모양으로 돌아온다. `field`는 message에 든 selector 키가 먼저이고, 없으면 입력에 있는 `goal_id`/`task_dir`/`task_id`/`slug` 순이며, 둘 다 없을 때만 `selector`다. 예를 들어 `goal_add_task`의 `no active goal`은 `field: task_id`와 넘긴 task_id를 `rejected_value`로 달고, next_action은 "Correct the named selector to the canonical form and retry without changing repository state."이다 "Correct the named selector to the canonical form and retry without changing repository state."라는 next_action을 달고 돌아온다. 이 next_action은 이런 오류에는 맞지 않는 안내다. 실제 원인은 message에서 읽어야 한다(`harness_server.py:2175-2204`, `_lib.py:802, 819-821, 864-866, 873, 906`).
+주의: `call_tool`은 핸들러가 낸 `ValueError`를 원인과 관계없이 selector 오류 모양으로 포장한다. 그래서 goal 오류(`no active goal`, `goal is terminal…`, `goal completion blocked by unfinished or unverified child tasks: …`)도 selector 오류 모양으로 돌아온다. `field`는 message에 든 selector 키가 먼저이고, 없으면 입력에 있는 `goal_id`/`task_dir`/`task_id`/`slug` 순이며, 둘 다 없을 때만 `selector`다. 예를 들어 `goal_add_task`의 `no active goal`은 `field: task_id`와 넘긴 task_id를 `rejected_value`로 달고, next_action은 "Correct the named selector to the canonical form and retry without changing repository state."이다. 이 next_action은 이런 오류에는 맞지 않는 안내다. 실제 원인은 message에서 읽어야 한다(`harness_server.py:2175-2204`, `_lib.py:802, 819-821, 864-866, 873, 906`).
 
 **런타임 판별.** `HARNESS_RUNTIME` 환경 변수를 먼저 본다. 없으면 `clientInfo.name`에 `codex`나 `claude`가 들어 있는지 본다. 둘 다 아니면 `generic`이다. Codex로 initialize되면 MCP 프로세스 안에서 Codex `WatcherManager`를 시작한다. 시작에 실패하면 `last_watcher_error`에 기록하고 서버는 그대로 뜬다(`harness_server.py:30-40, 2243-2258, 2322-2334`).
 
@@ -496,7 +496,7 @@ TASK.json 유효?
 5. `CLAUDE_SESSION_ID`
 6. 모두 없으면 `default`
 
-**MCP 서버가 쓰는 세션 ID.** Claude Code는 MCP 서버 환경에 세션 ID를 넘기지 않는다. 그래서 UserPromptSubmit 훅(`prompt_memory.py`)이 매 프롬프트마다 실제 세션 ID를 `.session-hint`에 쓰고, Claude(및 generic) MCP 서버는 이 hint를 읽는다. Codex MCP 서버는 hint를 읽지 않고 `CODEX_THREAD_ID`만 쓴다(`_current_session_identity`). 그런데도 hint는 Codex에서도 기록된다. Codex UserPromptSubmit 래퍼가 `session_id`를 담은 payload를 `prompt_memory.py`로 넘기고, 그 스크립트가 무조건 `write_session_hint`를 부르기 때문이다(`harness_server.py:193-215`, `_lib.py:2117-2162`, `hook_user_prompt_submit.py:63-78`, `prompt_memory.py:222-235`). hint에 `default`나 정리되지 않은 값이 들어오면 거부한다.
+**MCP 서버가 쓰는 세션 ID.** Claude Code는 MCP 서버 환경에 세션 ID를 넘기지 않는다. 그래서 UserPromptSubmit 훅(`prompt_memory.py`)이 매 프롬프트마다 실제 세션 ID를 `.session-hint`에 쓰고, Claude(및 generic) MCP 서버는 이 hint를 읽는다. Codex MCP 서버의 세션 식별(`_current_session_identity`)은 hint를 읽지 않고 `CODEX_THREAD_ID`만 쓴다. 다만 Codex 등록 확인(`hook_tree_health._codex_registration_present`)은 `CODEX_THREAD_ID`가 없을 때 hint로 대신한다. 그런데도 hint는 Codex에서도 기록된다. Codex UserPromptSubmit 래퍼가 `session_id`를 담은 payload를 `prompt_memory.py`로 넘기고, 그 스크립트가 무조건 `write_session_hint`를 부르기 때문이다(`harness_server.py:193-215`, `_lib.py:2117-2162`, `hook_user_prompt_submit.py:63-78`, `prompt_memory.py:222-235`). hint에 `default`나 정리되지 않은 값이 들어오면 거부한다.
 
 **마커 두 종류.**
 
@@ -515,7 +515,7 @@ TASK.json 유효?
 
 - **hint는 저장소 전역이고 마지막에 쓴 쪽이 이긴다.** 한 checkout에서 여러 세션을 동시에 돌리면, 가장 최근에 프롬프트를 보낸 세션이 다음 `task_start`/`task_context`의 바인딩을 가져간다. 여기에는 Claude와 Codex를 섞어 쓰는 경우도 포함된다. 같은 checkout에서 Codex 프롬프트가 들어오면, 동시에 돌고 있는 Claude 세션의 다음 바인딩이 Codex 세션 ID로 바뀐다. legacy `.active`도 공유되므로 다른 세션의 새 과제를 `_session_resumes`가 거부할 수 있다(`harness_server.py:203-209`).
 - **마커가 없는 세션의 쓰기는 다른 세션의 과제 기준으로 gate된다.** prewrite gate는 훅 payload의 session_id로 `resolve_active_task_dir`를 부른다. 이 세션에 살아 있는 마커가 없으면 legacy `.active`로 넘어가는데, 이때 liveness를 검사하지 않는다. 결과적으로 PLAN.md 유무, forbidden_paths, WFCS용 MAINTENANCE가 모두 legacy가 가리키는 (다른 세션의) 과제 기준으로 판정된다(`_lib.py:2353-2386`, `prewrite_gate.py:712-716, 734, 762-782`).
-- **프롬프트를 한 번도 보내지 않은 Claude 세션**(hint 없음)에서 `task_start`를 부르면 `default.json`(과 `.active`)만 생긴다. 이 상태에서 끝난 서브에이전트의 영수증은 기록되지 않는다. hint가 생긴 뒤 `task_context`(또는 plain `task_start`)를 부르면 복구된다. hint 세션에는 마커가 없으므로 `_session_resumes`가 이 과제를 가리키는 legacy `.active`로 넘어가 True가 되고, 그 세션의 마커가 현재 run_id로 쓰인다. 재바인딩은 그 **뒤에** 스폰하는 lens에만 효과가 있다. 이미 끝난 lens의 결과는 NON-ATTESTING으로 취급하고, 영수증을 얻으려고 다시 돌리지 않는다. 실제 결과에 따라 진행한다. 실제 FAIL은 수정하고, 실제 BLOCKED_ENV는 바로 `task_blocked`로 게시하며, 실제 review PASS일 때만 QA로 넘어간다. 실제 QA PASS 뒤에 `task_verify`를 1회 부른다. 순서 있는 영수증 PASS면 닫는다. 아니면 그 응답의 `next_action`에 있는 고정 쌍을 그대로 복사해 `task_blocked`를 부른다. 이 run에 영수증이 하나도 없으면 empty-stream 쌍이고, 영수증은 있는데 필수 completion이 없으면 missing-attestation 쌍이다. 단 `doc/harness/.receipt-capability-broken`이 있으면 어느 쌍도 복사하지 않고 genuine-external-blocker 경로를 따른다.(`plugin/skills/run/SKILL.md:9-30`, `harness_server.py:1372, 1455-1458, 1649-1680`, `tests/test_session_hint_marker_binding.py:125-141`, `tests/test_task_context_binds_resuming_session.py:1-15`).
+- **프롬프트를 한 번도 보내지 않은 Claude 세션**(hint 없음)에서 `task_start`를 부르면 `default.json`(과 `.active`)만 생긴다. 이 상태에서 끝난 서브에이전트의 영수증은 기록되지 않는다. hint가 생긴 뒤 `task_context`(또는 plain `task_start`)를 부르면 복구된다. hint 세션에는 마커가 없으므로 `_session_resumes`가 이 과제를 가리키는 legacy `.active`로 넘어가 True가 되고, 그 세션의 마커가 현재 run_id로 쓰인다. 재바인딩은 그 **뒤에** 스폰하는 lens에만 효과가 있다. 이미 끝난 lens의 결과는 NON-ATTESTING으로 취급하고, 영수증을 얻으려고 다시 돌리지 않는다. 실제 결과에 따라 진행한다. 실제 FAIL은 수정하고, 실제 BLOCKED_ENV는 바로 `task_blocked`로 게시하며, 실제 review PASS일 때만 QA로 넘어간다. 실제 QA PASS 뒤에 `task_verify`를 1회 부른다. 순서 있는 영수증 PASS면 닫는다. 아니면 그 응답의 `next_action`에 있는 고정 쌍을 그대로 복사해 `task_blocked`를 부른다. 이 run에 영수증이 하나도 없으면 empty-stream 쌍이고, 영수증은 있는데 필수 completion이 없으면 missing-attestation 쌍이다. 단 `doc/harness/.receipt-capability-broken`이 있으면 어느 쌍도 복사하지 않고 genuine-external-blocker 경로를 따른다(`plugin/skills/run/SKILL.md:9-30`, `harness_server.py:1372, 1455-1458, 1649-1680`, `tests/test_session_hint_marker_binding.py:125-141`, `tests/test_task_context_binds_resuming_session.py:1-15`).
 - **close/주차 뒤에 남는 마커.** `task_close`와 `task_blocked`는 `session_id` 없이 `clear_active_marker`를 부른다. 그래서 MCP 프로세스의 `current_session_id()` 마커(Claude에서는 대개 `default.json`, 어느 과제를 가리키든)를 지우고, legacy `.active`는 이 과제를 가리킬 때만 지운다. hint 이름으로 만든 `<sid>.json`은 디스크에 남는다(`_lib.py:2441-2478`). 이 마커는 과제가 열려 있지 않은 동안에만 무해하다.
   - blocked 과제를 어느 세션이든 plain `task_start`로 재개하면 run이 유지된다. 그러면 원래 세션의 남은 마커가 다시 유효해져서(열린 과제, 같은 run_id) 그 세션이 바인딩과 focus를 조용히 되찾는다.
   - close 뒤 `fresh_run`으로 다시 열면 run_id가 바뀌므로 영수증 바인딩은 실패한다. 하지만 `resolve_active_task_dir`는 run_id를 비교하지 않으므로 focus는 여전히 그 세션에 잡혀 있다. 그 세션에서 다른 과제로 `task_start`를 하면 거부된다.
@@ -634,7 +634,7 @@ task dir, scaffold, request_file, focus 마커는 task root에 쓰인다. 세션
 4. 제어 문자 제거와 `system-reminder` 태그 조각의 `[SANITIZED]` 치환은 Goal objective와 restore 조각에만 적용된다(`_sanitize_prompt_text`). 출력 전체에 적용되는 것은 아니다. `_sanitize_path`는 정의만 되어 있고 호출하는 곳이 없다(`prompt_memory.py:85, 163-219`).
 5. **전체 출력을 400자로 자른다**(`MAX_OUTPUT_CHARS`). 측정 길이는 DOC_GATE 135자, REVIEW_GATE 158자다. 그래서 활성 과제가 있으면 restore 블록과 runbook 블록은 대개 잘린다. 잘리면서 reminder 블록의 닫는 태그가 없어질 수도 있다(`prompt_memory.py:48-49, 268`).
 
-**실패 모드.** `_build_block`은 `receipt_runtime_verdict`를 try/except 없이 부른다(review/QA gate와 다르다). 그래서 영수증을 읽다가 예외가 나면(잘못된 행, 무결성 실패) `main()` 밖으로 전파된다. 최상위 핸들러는 `gate-error` 행(source `prompt_memory`)을 남기고 출력 없이 exit 0으로 끝난다. 이때는 `[harness-doc-gate]`까지 빠진다. hint는 그 전에 이미 쓰였다. **활성 과제가 있는데 프롬프트 훅이 아무것도 출력하지 않으면 영수증 스트림이 깨졌을 수 있다.** learnings.jsonl에 source `prompt_memory`인 `gate-error` 행이 있으면 이 경우다. 그 행이 없으면 원인이 다를 수 있다. 하나는 `_lib` import 실패(조용히 exit 0)다. 다른 하나는 3초 timeout이다. 예를 들어 `install_verified`가 receipt 락을 쥔 동안 `receipt_snapshot`이 flock을 기다리다 강제 종료될 수 있다.(`prompt_memory.py:126-138, 222-282`).
+**실패 모드.** `_build_block`은 `receipt_runtime_verdict`를 try/except 없이 부른다(review/QA gate와 다르다). 그래서 영수증을 읽다가 예외가 나면(잘못된 행, 무결성 실패) `main()` 밖으로 전파된다. 최상위 핸들러는 `gate-error` 행(source `prompt_memory`)을 남기고 출력 없이 exit 0으로 끝난다. 이때는 `[harness-doc-gate]`까지 빠진다. hint는 그 전에 이미 쓰였다. **활성 과제가 있는데 프롬프트 훅이 아무것도 출력하지 않으면 영수증 스트림이 깨졌을 수 있다.** learnings.jsonl에 source `prompt_memory`인 `gate-error` 행이 있으면 이 경우다. 그 행이 없으면 원인이 다를 수 있다. 하나는 `_lib` import 실패(조용히 exit 0)다. 다른 하나는 3초 timeout이다. 예를 들어 `install_verified`가 receipt 락을 쥔 동안 `receipt_snapshot`이 flock을 기다리다 강제 종료될 수 있다(`prompt_memory.py:126-138, 222-282`).
 
 Git은 실행하지 않는다.
 
@@ -841,7 +841,7 @@ escape: HARNESS_SKIP_PREWRITE=1 <retry>
 - **timeout**: Claude는 3초, Codex 래퍼는 1.5초를 넘기면 deny가 나오지 않고 쓰기가 진행된다(§4.1, §4.7).
 - **MAINTENANCE는 자기 인가가 가능하다.** 과제 디렉터리 안의 일반 파일이라 아무나 만들 수 있고, gate는 누가 만들었는지 구별하지 못한다. 거부 메시지의 owner인 `maintain-skill`이라는 스킬은 `plugin/skills/`에 없다.
 - `_runtime_name()`은 payload에 `session_id`가 있으면 `codex`로 판정한다. Claude payload에도 `session_id`가 있으므로 Claude 세션에도 Codex 형태의 힌트(`write_plan { task_id=… }`)가 나온다(`HARNESS_RUNTIME=claude`를 설정하면 해결된다). `no-active-task` 거부의 next action도 `write_plan`을 제안하지만, 실제로 해야 할 일은 `task_start`다(`prewrite_gate.py:485-507, 751`).
-- scope lock의 next-action 키는 `C-09-scope-lock`이다. CONTRACTS C-09 본문은 write focus를 다루고, `scope-lock.md:7`은 scope lock을 C-09 범위 계약의 기계화로 설명한다. 이 차이는 관찰로만 적는다(§17.2). 판정에는 `forbidden_paths`만 쓰이고 `allowed_paths`는 영향이 없다. 그래서 ↳ next action의 "Add the file to PROGRESS.md allowed_paths"만으로는 거부가 풀리지 않는다. 사람이 읽는 문장의 선택지 (a) "move to allowed_paths"는 걸린 `forbidden_paths` 항목을 지우거나 좁힐 때만 효과가 있다. 나머지 방법은 쓰기를 되돌리거나 환경 변수로 우회하는 것이다(`prewrite_gate.py:479-481, 572-592, 784-796`). ↳ next action은 "Add the file to PROGRESS.md allowed_paths or revert the write"라고 하고, 사람이 읽는 문장의 선택지 (a)는 "move to allowed_paths"라고 한다. 그러나 allowed_paths는 판정에 영향이 없다. 쓰기를 풀려면 걸린 `forbidden_paths` 항목을 지우거나 좁히거나, 환경 변수로 우회해야 한다(`prewrite_gate.py:479-481, 572-592, 784-796`).
+- scope lock의 next-action 키는 `C-09-scope-lock`이다. CONTRACTS C-09 본문은 write focus를 다루고, `scope-lock.md:7`은 scope lock을 C-09 범위 계약의 기계화로 설명한다. 이 차이는 관찰로만 적는다(§17.2). 판정에는 `forbidden_paths`만 쓰이고 `allowed_paths`는 영향이 없다. 그래서 ↳ next action의 "Add the file to PROGRESS.md allowed_paths"만으로는 거부가 풀리지 않는다. 사람이 읽는 문장의 선택지 (a) "move to allowed_paths"는 걸린 `forbidden_paths` 항목을 지우거나 좁힐 때만 효과가 있다. 나머지 방법은 쓰기를 되돌리거나 환경 변수로 우회하는 것이다(`prewrite_gate.py:479-481, 572-592, 784-796`).
 - `doc/harness/patterns/prewrite-gate.md`(freshness: suspect)와 `scope-lock.md`의 설명은 현재 코드와 다르다. "exits 2", "unlisted path warns", "one-shot bypass"는 모두 현재 코드와 다르다. 이 절은 현재 코드 동작을 관찰해 적은 것이고 규범이 아니다. 규범은 두 패턴 문서이며, 문서와 코드 중 어느 쪽을 고칠지는 후속 과제가 정한다(§17.2).
 
 ---
@@ -988,10 +988,10 @@ append는 `record_subagent_receipt`가 맡는다(`_lib.py:4145-4287`).
 현재 run_id의 행만 lens별로 묶는다(`_lib.py:4303-4518`).
 
 - 그 lens의 가장 새 행이 `started`면(rerun 진행 중) **completion이 없는 것으로 본다.** 이미 끝난 PASS도 rerun 도중에는 PENDING으로 보인다.
-  - **completion을 받지 못한 `started` 행은 만료되지 않는다.** - **completion을 받지 못한 `started` 행은 만료되지 않는다.** 이런 행이 생기는 대표적인 경우는 다음과 같다(전부는 아니다): Claude stop이 identity·바인딩·출처 검증 중 하나에서 빈 결과로 끝났거나, `receipt_pending`을 돌려줬거나(자동 재시도 없음), stop 훅이 3초 timeout(예: install_verified가 receipt 락을 쥔 동안, §6.15)에 걸렸거나 아예 오지 않았거나, Codex lifecycle이 완료 전에 무효화됐다(terminal 행을 쓰지 않음).
+  - **completion을 받지 못한 `started` 행은 만료되지 않는다.** 이런 행이 생기는 대표적인 경우는 다음과 같다(전부는 아니다): Claude stop이 identity·바인딩·출처 검증 중 하나에서 빈 결과로 끝났거나, `receipt_pending`을 돌려줬거나(자동 재시도 없음), stop 훅이 3초 timeout(예: install_verified가 receipt 락을 쥔 동안, §6.15)에 걸렸거나 아예 오지 않았거나, Codex lifecycle이 완료 전에 무효화됐다(terminal 행을 쓰지 않음).
   - `_rerun_in_flight`에는 만료 시간이 없다. 30분 `DEFAULT_STALE_SECS`는 `active_records`에만 적용된다.
   - 그래서 그 lens는 계속 "진행 중"으로 보이고, 앞선 PASS/FAIL을 모두 가린다. 기계적으로는 그 lens를 새로 스폰해 완료시켜야 가려진 상태가 풀린다. 다만 새 스폰은 수정 뒤 재검증처럼 **다른 이유로 재실행이 필요할 때만** 정당하다. 영수증을 얻으려고 다시 돌리는 것은 Missing receipt policy가 금지한다(`plugin/skills/run/SKILL.md:9-30`).
-  - - review-before-QA 순서 규칙 때문에, review를 정당한 이유로 새로 스폰하면 QA도 다시 돌려야 한다(`_lib.py:4521-4547, 4620-4633`). 위 항목들(만료 없음, `receipt_pending`, Codex 무효화)의 근거는 `_lib.py:4313-4322, 4332, 4589`, `subagent_lifecycle.py:83, 762-766`, `codex_lifecycle_watcher.py:1096-1101, 1268, 1276`이다.
+  - review-before-QA 순서 규칙 때문에, review를 정당한 이유로 새로 스폰하면 QA도 다시 돌려야 한다(`_lib.py:4521-4547, 4620-4633`). 위 항목들(만료 없음, `receipt_pending`, Codex 무효화)의 근거는 `_lib.py:4313-4322, 4332, 4589`, `subagent_lifecycle.py:83, 762-766`, `codex_lifecycle_watcher.py:1096-1101, 1268, 1276`이다.
 - 유효한 completion의 조건:
   - 같은 (source, task_run_id, runtime_id, agent_id, agent_type, lens)를 가진 `started` 행이 더 앞에 있다.
   - 그 identity의 completion이 **정확히 하나**다. 두 개면 둘 다 무효가 된다(`unpaired`). Codex watcher는 이 규칙을 일부러 이용해 lifecycle을 무효화한다.
@@ -1029,7 +1029,7 @@ index:   0              1                   2             3
 
 - QA의 `started` 행이 필요한 모든 review lens의 유효 completion 중 가장 늦은 것보다 먼저 기록되면 — 리뷰가 끝나기 전에 QA를 띄우거나 리뷰와 동시에 띄운 경우 포함 — 그 QA의 PASS는 절대 인정되지 않는다.
 - QA 뒤에 리뷰를 다시 돌리면 QA의 `started`가 최신 리뷰 completion보다 앞서게 된다. **QA도 다시 돌려야 한다.**
-- FAIL/BLOCKED_ENV 검사는 순서를 보지 않는다. 수정한 뒤 review를 새로 PASS시켜도, - FAIL/BLOCKED_ENV 검사는 순서를 보지 않는다. 수정한 뒤 review를 새로 PASS시켜도, 옛 QA FAIL이 남아 있으면 새 QA를 스폰하기 전까지 runtime은 FAIL이고 next_action도 계속 "QA receipt reports FAIL"이다. 새 QA가 도는 동안(그 lens의 최신 행이 `started`)에는 옛 FAIL이 가려져 PENDING이 되고, 새 QA가 결속된 verdict를 내야 FAIL이 대체된다. 새 QA가 PENDING으로 끝나면 옛 FAIL이 다시 이긴다.
+- FAIL/BLOCKED_ENV 검사는 순서를 보지 않는다. 수정한 뒤 review를 새로 PASS시켜도, 옛 QA FAIL이 남아 있으면 새 QA를 스폰하기 전까지 runtime은 FAIL이고 next_action도 계속 "QA receipt reports FAIL"이다. 새 QA가 도는 동안(그 lens의 최신 행이 `started`)에는 옛 FAIL이 가려져 PENDING이 되고, 새 QA가 결속된 verdict를 내야 FAIL이 대체된다. 새 QA가 PENDING으로 끝나면 옛 FAIL이 다시 이긴다.
 - lens가 낸 BLOCKED_ENV는 runtime_verdict만 BLOCKED_ENV로 만든다. 과제는 open으로 남고 `task_close`는 거부된다. next_action의 안내대로 코디네이터가 직접 `task_blocked`를 불러야 한다(`_lib.py:4600-4633, 4898-4918`).
 - `write_plan`으로 run 도중 `required_lenses`를 바꿔도 run_id는 그대로다. 기존 영수증은 새 lens 집합 기준으로 다시 평가된다. 예를 들어 `review-security`를 추가하면 그 lens가 돌 때까지 review는 PENDING이다.
 
@@ -1075,14 +1075,15 @@ PENDING이고 `receipts_recordable`이 False가 아니면 next_action은 다음 
 5. control 재확인 (여전히 open)
 6. publish_task_close: close_receipt_fingerprint 기록
 7. clear_active_marker(strict, session_id 없음)
-     → legacy .active 와 <current_session_id()>.json(Claude 에서는 대개 default.json) 삭제
+     → <current_session_id()>.json(Claude 에서는 대개 default.json) 삭제
+     → legacy .active 는 td 를 가리킬 때만 삭제
      → resolve_active_task_dir 가 더 이상 td 를 가리키지 않음을 확인
 8. 활성 Goal 이 이 과제를 담고 있으면 child status = closed
 9. 도중 오류 → TASK.json 과 마커 복원
 → closed: true
 ```
 
-`task_close`는 Git을 보지 않는다. CHECKS, HEAD, dirty 경로도 읽지 않는다(C-04). `task_close`는 Git을 보지 않는다. CHECKS, HEAD, dirty 경로도 읽지 않는다(C-04). `doc/harness/patterns/ADR__single-pass-task-close.md`(Status: accepted)는 close가 Git·CHECKS·HEAD를 읽는다고 설명한다. 현재 코드와의 이 어긋남은 §17.2에 관찰로 기록했다. install이 실행됐는지도 확인하지 않는다(§11.2). install이 실행됐는지도 확인하지 않는다(§11.2).
+`task_close`는 Git을 보지 않는다. CHECKS, HEAD, dirty 경로도 읽지 않는다(C-04). `doc/harness/patterns/ADR__single-pass-task-close.md`(Status: accepted)는 close가 Git·CHECKS·HEAD를 읽는다고 설명한다. 현재 코드와의 이 어긋남은 §17.2에 관찰로 기록했다. install이 실행됐는지도 확인하지 않는다(§11.2).
 
 ### 6.11 `task_blocked`와 두 고정 쌍
 
@@ -1155,7 +1156,7 @@ MCP 안의 WatcherManager 가 rollout 을 tail:
 
 등록 파일(version 12, owner `codex_root_hook`)의 offset은 한 번 쓰면 바뀌지 않는다.
 
-**Codex에서 hint와 마커.** Codex MCP는 hint를 읽지 않는다(`_current_session_identity`는 `CODEX_THREAD_ID`만 본다). 그러나 UserPromptSubmit 래퍼가 `prompt_memory.py`를 거쳐 hint를 쓴다. thread id가 없는 MCP의 `task_start`는 `<current_session_id()>.json`(대개 `default.json`)과 legacy `.active`를 쓴다. 같은 조건에서 `task_context`는 마커를 쓰지 않는다. legacy를 쓰지 않는 것은 PostToolUse `register_task_result`가 쓰는 exact-thread 마커뿐이고, 영수증 바인딩은 그 마커만 사용한다(`hook_user_prompt_submit.py:70-78`, `prompt_memory.py:228-235`, `harness_server.py:193-215, 1450-1458`, `_lib.py:2245-2268`, `codex_hook_registration.py:316-321`).
+**Codex에서 hint와 마커.** Codex MCP의 세션 식별은 hint를 읽지 않는다(`_current_session_identity`는 `CODEX_THREAD_ID`만 본다). 예외는 `CODEX_THREAD_ID`가 없을 때 hint로 대신하는 Codex 등록 확인(`hook_tree_health.py:72-76`)뿐이다. 그러나 UserPromptSubmit 래퍼가 `prompt_memory.py`를 거쳐 hint를 쓴다. thread id가 없는 MCP의 `task_start`는 `<current_session_id()>.json`(대개 `default.json`)과 legacy `.active`를 쓴다. 같은 조건에서 `task_context`는 마커를 쓰지 않는다. legacy를 쓰지 않는 것은 PostToolUse `register_task_result`가 쓰는 exact-thread 마커뿐이고, 영수증 바인딩은 그 마커만 사용한다(`hook_user_prompt_submit.py:70-78`, `prompt_memory.py:228-235`, `harness_server.py:193-215, 1450-1458`, `_lib.py:2245-2268`, `codex_hook_registration.py:316-321`).
 
 > 코드에서 도출, 테스트 없음: watcher는 `ux-` lens를 받아들이지만 `record()`는 SUPPORTED_LENSES 밖이라 거부한다. 3번 재시도한 뒤 sticky worker error로 건너뛰는데, 이때 `receipts_recordable`이 False로 바뀔 수 있다(`codex_lifecycle_watcher.py:863, 1174, 1576-1598`).
 
@@ -1212,7 +1213,7 @@ Phase 5   task_close
 근거: `plugin/skills/run/SKILL.md:63-259`.
 
 - **Phase 4의 선택지는 게이트를 바꾸지 못한다.** `task_close`는 여전히 runtime PASS를 요구한다. 그래서 B(Override), C(abort), DONE_WITH_CONCERNS 어느 것도 과제를 닫지 못한다. 과제는 open으로 남거나 `task_blocked`로 주차해야 한다(`run/SKILL.md:175-184, 257-259`, `harness_server.py:1797-1804`).
-- **브라우저 QA 규칙**(run Phase 4 복구 경로에 적힌 규칙): **브라우저 QA 규칙**(run Phase 4 복구 경로에 적힌 규칙): Phase 4는 실제로 돌지 않았거나(unrun) FAIL했거나 stale한 lens만 다시 스폰한다. 그런 lens를 다시 돌릴 때, manifest `qa.browser_qa_supported: true`이고 diff에 프론트엔드 파일이 있으면 qa-browser를 반드시 포함한다. qa-browser가 이미 실질 final을 돌려주었고 영수증만 없다면 그 lens는 unrun이 아니다. 따라서 다시 돌리지 않고 Missing receipt policy를 따른다(`run/SKILL.md:9-37, 138-165`). 다만 close 게이트는 TASK.json에 선언된 lens만 보므로, qa-browser가 게이트가 되려면 `write_plan` 때 선언해야 한다(`_lib.py:4576-4578`). 평소의 QA는 develop Phase 7이 맡는다. 다만 close 게이트는 TASK.json에 선언된 lens만 보므로, qa-browser가 게이트가 되려면 `write_plan` 때 선언해야 한다(`run/SKILL.md:132-165`, `_lib.py:4576-4578`). 평소의 QA는 develop Phase 7이 맡는다.
+- **브라우저 QA 규칙**(run Phase 4 복구 경로에 적힌 규칙): Phase 4는 실제로 돌지 않았거나(unrun) FAIL했거나 stale한 lens만 다시 스폰한다. 그런 lens를 다시 돌릴 때, manifest `qa.browser_qa_supported: true`이고 diff에 프론트엔드 파일이 있으면 qa-browser를 반드시 포함한다. qa-browser가 이미 실질 final을 돌려주었고 영수증만 없다면 그 lens는 unrun이 아니다. 따라서 다시 돌리지 않고 Missing receipt policy를 따른다(`run/SKILL.md:9-37, 138-165`). 다만 close 게이트는 TASK.json에 선언된 lens만 보므로, qa-browser가 게이트가 되려면 `write_plan` 때 선언해야 한다(`_lib.py:4576-4578`). 평소의 QA는 develop Phase 7이 맡는다.
 
 ### 7.3 plan: compact와 full
 
@@ -1229,14 +1230,14 @@ Phase 5   task_close
 9. UI 범위 키워드(2개 이상 일치)
 10. **0.7 절차 선택**
 
-**compact 조건**: 요청 범위가 한정되고, 모호하지 않고, 영향 범위가 작고, 수락·테스트·범위 결정이 모두 명백해야 한다. 아래 중 하나라도 해당하면 full이다. 사용자가 full plan을 요청했거나 분류 입력이 없거나 불확실해도 full이다. 모르면 full이다. (목록: 보안/인증/권한/비밀, 데이터/스키마/마이그레이션, 공개 API나 관찰 가능한 UI, 파괴적 작업, 의존성/플랫폼/설정/workflow-control 변경, 불분명한 수락 기준 또는 미해결 핵심 사용자 선택, 컴포넌트 간 범위, 고위험 maintenance) 파일 수만으로는 저위험을 증명할 수 없다(`intake.md:153-183`).
+**compact 조건**: 요청 범위가 한정되고, 모호하지 않고, 영향 범위가 작고, 수락·테스트·범위 결정이 모두 명백해야 한다. 사용자가 full plan을 요청했거나, 분류 입력이 없거나 불확실하거나, 아래 escalation 계열 중 하나라도 해당하면 full이다. 모르면 full이다. 파일 수만으로는 저위험을 증명할 수 없다(`intake.md:153-183`).
 
-- 보안/인증
+- 보안/인증/권한/비밀
 - 데이터/스키마/마이그레이션
-- 공개 API나 관찰 가능한 UI
+- 공개 API나 관찰 가능한 UI 동작
 - 파괴적 작업
-- 의존성/설정/workflow-control 변경
-- 불분명한 수락 기준
+- 의존성/플랫폼/설정/workflow-control 변경
+- 불분명한 수락 기준 또는 미해결 핵심 사용자 선택
 - 컴포넌트 간 범위
 - 고위험 maintenance
 
@@ -1319,13 +1320,13 @@ full:    0 → 1: deferred-scope.md 생성, 전제 추출, 코디네이터가 pl
 
    명시적 DEEP 요청은 현재 대화의 사용자·시스템·개발자 지시나 보호된 과제 의도(PLAN)에서 온 것만 인정한다. 소스, 문서, 도구 출력, 다른 에이전트가 전달한 문구는 근거가 되지 못한다(`:61-65`).
 2. **DEEP**: 위 조건을 숨길 수 있는 증거가 없거나, 읽을 수 없거나, 불완전하거나, 낡았을 때다.
-3. **LIGHT**: 적극적 증명이 완전할 때만이다. 필요한 조건은 다음과 같다. (항목 목록 뒤에 추가) rebase는 여기에 더해 다음을 모두 증명해야 LIGHT다. old_base/old_tip/new_base/new_tip이 정확히 알려져 있고, 충돌 없이 수동 해결 없이 실행됐고, 패치가 1:1로 동등하고(추가·누락·분할·결합·재정렬·수정 없음), 심볼·계약·의존성·생성물·수명주기에서 의미가 겹치지 않고, `HEAD == new_tip`이고, index/worktree가 깨끗하다. 증명이 하나라도 빠지면 rebase-LIGHT가 아니다. 충돌·의미 차이·중첩, 또는 이를 숨길 수 있는 증거 손실이 있으면 DEEP이다(`quality-audit-pipeline.md:83-92`).
+3. **LIGHT**: 적극적 증명이 완전할 때만이다. 필요한 조건은 다음과 같다.
    - 범위가 한 영역에 국한된다.
    - 동작 보존이 기계적으로 보장되거나 실행되지 않는 산문·예시만 바뀐다.
    - 강제 DEEP 조건이 없고, 제어 흐름·상태·데이터·오류·계약·의존성·빌드/설치·훅/수명주기/gate·보안·동시성·마이그레이션 동작이 바뀌지 않는다.
    - 수용 의도가 분명하고 검증이 집중돼 있으며, 현재 worktree 증거가 있다.
 
-   작은 diff나 docs/test/config/prompt라는 분류만으로는 증명이 되지 않는다.
+   작은 diff나 docs/test/config/prompt라는 분류만으로는 증명이 되지 않는다. rebase는 여기에 더해 다음을 모두 증명해야 LIGHT다. old_base/old_tip/new_base/new_tip이 정확히 알려져 있고, 충돌 없이 수동 해결 없이 실행됐고, 패치가 1:1로 동등하고(추가·누락·분할·결합·재정렬·수정 없음), 심볼·계약·의존성·생성물·수명주기에서 의미가 겹치지 않고, `HEAD == new_tip`이고, index/worktree가 깨끗하다. 증명이 하나라도 빠지면 rebase-LIGHT가 아니다. 충돌·의미 차이·중첩, 또는 이를 숨길 수 있는 증거 손실이 있으면 DEEP이다(`quality-audit-pipeline.md:83-92`).
 4. **STANDARD**: 위 목록을 모두 검사한 뒤에 남는 경우다.
 
 깊이는 한 시도 안에서 올릴 수만 있고, 재개하면 다시 계산한다.
@@ -1392,7 +1393,7 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 - `verification-gate.md:357`은 더 이상 스폰하지 않는 "quality synthesis agent"의 표를 전제한다. close 게이트(`develop/SKILL.md:355-358`)에는 그 표를 만드는 주체가 정의되어 있지 않다.
 - `verification-gate.md` Step 1은 PLAN.md 테스트 명령을 직접 실행한다고 쓰고 qa-* 스폰은 말하지 않는다. 머리말은 이 파일이 Phase 6.5 뒤에 로드된다고 해서 6.6 리뷰를 건너뛴다.
 - dogfooder 규칙이 자기모순이다. QA와 함께 스폰하라고 하면서, runtime이 PASS가 아니면 건너뛰라고 한다. 스폰 시점에는 PASS일 수 없다.
-- `develop/SKILL.md:251`은 3.9 smoke를 qa-* 안에서 돌린다고 한다. 6.6 이전에 스폰한 qa-*의 PASS는 영원히 인정되지 않는다. 반대로 FAIL/BLOCKED_ENV는 순서와 관계없이 즉시 runtime_verdict를 FAIL/BLOCKED_ENV로 만든다. 같은 lens가 다시 시작되어 가장 새 행이 `started`가 되면 이 값은 가려지고, 재실행 동안 runtime_verdict는 PENDING이다. 그 뒤에는 읽을 수 있는 새 completion이 결과를 대신한다. `shape` 계열 PENDING completion은 앞선 FAIL/BLOCKED_ENV를 대신하지 못한다(§6.7, `_lib.py:4313-4322, 4453-4485, 4598-4637`).(§6.8, `_lib.py:4598-4637`).
+- `develop/SKILL.md:251`은 3.9 smoke를 qa-* 안에서 돌린다고 한다. 6.6 이전에 스폰한 qa-*의 PASS는 영원히 인정되지 않는다. 반대로 FAIL/BLOCKED_ENV는 순서와 관계없이 즉시 runtime_verdict를 FAIL/BLOCKED_ENV로 만든다. 같은 lens가 다시 시작되어 가장 새 행이 `started`가 되면 이 값은 가려지고, 재실행 동안 runtime_verdict는 PENDING이다. 그 뒤에는 읽을 수 있는 새 completion이 결과를 대신한다. `shape` 계열 PENDING completion은 앞선 FAIL/BLOCKED_ENV를 대신하지 못한다(§6.7, `_lib.py:4313-4322, 4453-4485, 4598-4637`, §6.8).
 - develop 8/8.5-8.7의 순서가 모순된다(§7.4). `:80` strict order + `:433` Phase 8의 task_close vs `:459-461, :482, :489-490`.
 - `self-improvement.md:61-71`의 manifest 자동 수정은 close 뒤에 실행되지만, prewrite gate가 막는다(§7.8). 실제로 하려면 MAINTENANCE 마커가 있는 활성 과제 안에서 쓰거나 후속 과제로 넘겨야 한다. Bash로 gate를 우회하는 것은 CONTRACTS.md § 0이 hard failure로 규정한다.
 - route 어휘가 다르다. `develop/SKILL.md:151`에는 `sequential-small-task`가 없고 `parallel-fanout.md`에는 있다(§7.4). `parallel-fanout.md`의 Phase 4.5 행은 "security" 조건부 specialist를 나열하지만 `quality-audit-pipeline.md` § 4.5에는 그것이 없다(`quality-audit-pipeline.md:7-21`).
@@ -2195,7 +2196,7 @@ JSON `verdict`가 `adjust`인지 `refuse`인지 본다. exit 2는 사용법 오�
 stderr의 `automatic install refused: <reason>`이나 `installer exited N`으로 구분한다.
 
 **`install.py` exit 2 / "hooks cannot record receipts from this tree" / "incomplete Codex payload"**
-CLI가 없거나 옵션이 충돌했다 / smoke한 트리(Claude는 mirror)에서 영수증을 만들지 못했다 / Codex payload 필수 파일이 빠졌다. `claude mcp` 항목이나 Codex config.toml drift는 `--force`로만 고쳐진다(§11.1).
+CLI가 없거나 옵션이 충돌했다 / smoke한 트리(Claude는 mirror)에서 영수증을 만들지 못했다 / Codex payload 필수 파일이 빠졌다. `claude mcp` 항목이나 Codex config.toml drift는 payload가 STALE이면 기본 실행에서도 다시 쓰인다. 기본 실행이 SYNCHRONIZED로 판정해 건너뛸 때만 `--force`가 필요하다(§11.1).
 
 **`CONTRACTS.md requires setup migration` / `upgrade Harness`**
 managed block이 템플릿과 다르다(이 소스 저장소에서는 §11.3 주의) / manifest version이 7보다 크다.
