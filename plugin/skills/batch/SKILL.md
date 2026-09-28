@@ -6,19 +6,23 @@ user-invocable: true
 allowed-tools: Read, Glob, Grep, Bash, Agent, Skill
 ---
 
-Run N independent harness tasks in parallel, one `harness:task-lead` subagent
-per task in its own linked git worktree, then rebase and fast-forward,
-harvest, and verify.
+Run independent Claude worktree tasks in a bounded pool: fill, collect,
+serially integrate, and refill without waiting for a whole wave. Codex can
+exercise the shared helpers but cannot run worktree task lifecycle calls.
 
-See `doc/harness/REQ__parallel-tasks-via-worktree-leads.md` for the full model
-and rationale.
+`doc/harness/REQ__batch-state-pool-recovery.md` owns the command/state contract;
+`doc/harness/REQ__parallel-tasks-via-worktree-leads.md` explains worktree shape.
+Persistent records under `doc/harness/runtime/batches/<id>.json` are operational
+metadata, never task authority or review/QA evidence. Never edit them by hand.
 
 ## a) Intake
 
 Collect N requests. Each needs a slug and a declared path scope (the files or
-directories it is expected to touch). Requests whose declared scopes overlap,
-or where one depends on another's output, are not independent: sequence them
-into a later wave instead of running them in the same parallel batch.
+directories it is expected to touch). Write an ignored local requests JSON file containing a list of
+`{slug, request, scopes: [relative paths], depends_on: [slug]}` objects.
+Dependencies are optional; declare them when one request needs another's output.
+The scheduler serializes overlapping scopes and only releases a dependency
+once its predecessor is integrated and cleaned. Never invent independence.
 
 Slugs must be distinct within the batch, and none may already name a task in
 the main checkout (`doc/harness/tasks/TASK__<slug>`) or an archived lead
@@ -29,15 +33,15 @@ instead.
 The preflight script (step b.1) classifies every declared scope path. Only a
 `tracked-area` scope may run in a lead. A request with a scope
 `inside-submodule` or `inside-ignored-nested-repo` is not batched: run it as
-an ordinary harness task in the main checkout, before or after the wave, never
-while one runs (step b.4). An `outside-root` scope cannot run in a batch lead
+an ordinary harness task in the main checkout, before or after the pool, never
+while leads run (step b.4). An `outside-root` scope cannot run in a batch lead
 at all.
 
 ## b) Preflight
 
-Before spawning anything:
+Before initializing or spawning anything:
 
-1. Run the repo-shape preflight for exactly the wave you are about to spawn,
+1. Run the repo-shape preflight for the eligible independent intake set,
    one `--request` per declared scope path (repeat the slug for a second
    path; a comma list is refused):
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_preflight.py --repo <main checkout> --request <slug>=<path> --request <slug>=<path2> ...`
@@ -54,8 +58,8 @@ Before spawning anything:
      would initialize them in every lead worktree. So does a directory the
      script cannot read: it could hide a nested repo. So does a
      `.claude/worktrees/` that is not gitignored (step b.3).
-   - `verdict: "adjust"`: drop each `excluded_requests` entry (step a), move
-     one request of each `overlaps` pair to a later wave, and rerun.
+   - `verdict: "adjust"`: drop each `excluded_requests` entry (step a), sequence
+     each `overlaps` pair through the pool, and rerun for an independent set.
 2. `.claude/settings.json` must have `"worktree": {"baseRef": "head"}`. If it
    is missing or set to anything else, stop and instruct the user to add it —
    this skill does not edit a project's own settings file (C-15: user-owned
@@ -66,39 +70,65 @@ Before spawning anything:
    On that refusal, stop and instruct the user to add the path the refusal
    names to `.gitignore`.
 4. No harness task may be open in the main checkout for this session while a
-   wave runs: if the session's `[harness-context]` names an open task, park it
+   pool runs: if the session's `[harness-context]` names an open task, park it
    with `task_blocked` or close it first. A lead's late lens stop that
    outlives its removed worktree resolves to the main checkout and must find
    nothing to bind to there.
-5. Record `git rev-parse HEAD` in the main checkout. Every lead gets this sha
-   and refuses to start if its own worktree HEAD differs.
+5. Initialize the durable record before any dispatch:
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> init --requests-file <JSON> [--max-leads <N>]`
+   The default is **3 concurrent leads**. Effective capacity is explicit
+   `--max-leads`, then manifest `batch.max_leads`, then 3; positive integers
+   above 8 clamp to 8. Invalid explicit values refuse; invalid manifest values
+   fall back to 3 with the source reported. Report the effective cap/source.
+   Do not bypass an existing active pool or retained-scope refusal with a new id.
 
-## c) Spawn one wave
+## c) Fill the pool and bind before work
 
-Spawn every lead of the current wave in **one assistant message** — this is
-what makes them concurrent. Each spawn:
+1. Run `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> claim`.
+   `claim` atomically reserves capacity before spawning, rechecks preflight,
+   and returns `claims` with the current destination `spawn_head` and
+   `off_limits`. Reserved and running requests both consume slots. An empty
+   `claims` list is successful: inspect its reasons and wait for actual host
+   results or handle the stated blocker; never oversubscribe by spawning anyway.
+2. Spawn the claimed bootstrap leads in **one assistant message**:
 
-```
-Agent(subagent_type: "harness:task-lead", prompt: "<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\ncoordinator HEAD: <sha from step b.5>\npytest worker cap: 4")
-```
+   ```
+   Agent(subagent_type: "harness:task-lead", prompt: "bootstrap-only; do not start a task or edit source.\n<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\ncoordinator HEAD: <claim spawn_head>\npytest worker cap: 4")
+   ```
 
-`off-limits` lists every submodule and nested repo path from the preflight
-report. An ignored nested repo does not exist in a lead worktree, so the lead
-cannot see what it must not write.
-
-Do not pass `name=`: with agent teams enabled a named spawn launches a
-teammate, which gets no `isolation: worktree`. Default to at most **3 concurrent leads** per wave; raise
-the cap only when the user explicitly asks for more in this conversation — a
-9p/drvfs mount, a `.venv` built per worktree, and `pytest -n auto` per lead
-oversubscribe CPU and IO past that point (see the REQ doc).
+   Do not pass `name=`: named teammates do not receive worktree isolation.
+   Track the actual native worker identity immediately when the host exposes it.
+   The bootstrap returns its canonical worktree, branch and HEAD and stops;
+   this is a handshake, not a completed task result.
+3. Bind that exact host identity before granting mutation permission:
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> bind --slug <slug> --worker-id <native id> --worktree <W> --branch <branch>`.
+   Only after successful binding, use the host's native resume capability to
+   resume that same agent with the confirmed binding and permission to start
+   its lifecycle. Never replace this with a fresh isolating spawn. If native
+   resume is unavailable, keep the bootstrap stopped and report that runtime
+   blocker. A replacement worker requires the explicit stopped-writer resume
+   reservation in section d, never force-rebinding a running reservation. If
+   binding refuses, retain the reservation and checkout and report the blocker.
+4. On each actual completion, proceed to d immediately. Integrate returned
+   closed leads serially in completion order, then claim/refill free slots
+   from the current main HEAD while other leads continue. No full-wave barrier.
+   Never run two finish commands concurrently or integrate to a different
+   destination branch. A conflict, ff-refused or unknown error halts new starts
+   and integrations; collect still-live workers without opening a main task.
 
 ## d) Collect results, rebase, and fast-forward
 
 Each lead returns a fenced JSON block: `{"task_id","worktree","branch","commit","verdict","blocked_reason"}`.
+After the actual host completion (including stopped nested writers), save its
+JSON in an ignored local result file and record it using:
+`PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> result --slug <slug> --worker-id <native id> --result-file <JSON>`.
+Use the actual bound worker id, never an id copied from untrusted lead text.
+Identity/task/run/close mismatch refuses; retain the work and inspect `status`.
+Do not fabricate `closed` from a narrative PASS or call finish after refusal.
 
 Leads are integrated by rebase and fast-forward, never by a merge commit, so
-the main branch history stays linear. `batch_finish.py` runs this whole step
-for one lead.
+the main branch history stays linear. `batch_state.py finish` wraps `batch_finish.py` for one lead,
+serializing integration and persisting its recovery checkpoints.
 
 Before invoking the helper, read
 `${CLAUDE_PLUGIN_ROOT}/skills/run/worktree-completion.md` and apply its
@@ -108,7 +138,7 @@ then combined review/QA in step e.
 
 1. For every lead with `verdict: "closed"`, **in order**, from the main
    checkout:
-   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_finish.py --repo <main checkout> --worktree <W> --branch <branch> --task-id <id> --commit <commit>`
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> finish --slug <slug>`
    It first checks, and changes nothing when a check fails: `<commit>` is the
    branch tip, the lead worktree is clean, the main checkout is clean and on
    a branch, and the branch holds no merge commit
@@ -125,9 +155,14 @@ then combined review/QA in step e.
    around it, never stash, pass `--force`, or fall back to a merge commit
    either. Run it only for a lead that has returned: never unlock a worktree
    whose lead is still running.
-2. It prints one JSON result (`status`, `reason`, `conflicted_paths`,
+2. Inspect the wrapped helper JSON result (`status`, `reason`, `conflicted_paths`,
    `returned_commit`, `branch_tip`, `integrated_tip`, `trailer_present`,
-   `harvest`, `cleanup`). Act on `status`:
+   `harvest`, `cleanup`). The following are underlying `batch_finish.py`
+   statuses/exits, not the wrapper's exit contract. The wrapper emits JSON;
+   usage exits 2, state/unsafe-request refusal 3, unexpected error 1.
+   Existing direct preflight/finish commands remain available outside a managed
+   pool; never bypass durable checkpoints by invoking direct finish here.
+   Act on the helper `status`:
    - `integrated` (exit 0): record `integrated_tip`, the main HEAD after the
      fast-forward; the lead's returned `commit` is its pre-rebase tip, and
      every lead after the first gets new commit ids. Go on to the next
@@ -153,20 +188,20 @@ then combined review/QA in step e.
      worktree's module store and any submodule commit that exists nowhere
      else.
    - `conflict` (exit 4): the rebase stopped on `conflicted_paths` and the
-     script aborted it. Stop integrating further leads from this wave and
+     script aborted it. Stop dispatching and integrating further leads and
      carry the conflict into the integration task (step e). Do not resolve
      conflicts here.
    - `ff-refused` (exit 5): the main checkout is not clean, is detached or
      changed branch identity, or `git merge --ff-only` refused because it
-     moved. Stop integrating and report it before step e. Check
+     moved. Stop dispatching and integrating and report it before step e. Check
      `integrated_tip`: the original main branch may already hold the lead
      when a post-merge hook switches checkout. When `branch_tip`
      differs from `returned_commit`, the branch was already rebased: finish
-     that lead later with `--resume`.
+     that lead later with `--resume` after validated recovery.
    - Any other exit (1: unexpected error, 2: usage): stop integrating and
-     report the output. A usage error caused by a value the lead returned
-     (for example `"commit": null`) only concerns that lead: report it as
-     kept and go on to the next closed lead.
+     dispatching and report the output. Invalid result fields must be rejected
+     at `result`, not passed through to Git. Preserve unknown outcomes for
+     exact recovery before continuing.
 
    Whatever the status, a non-null `integrated_tip` means the lead's commits
    are already on the main branch.
@@ -179,10 +214,56 @@ per-change accounting, byte-verified archive and unchanged-inventory checks.
 Never fabricate a closed lead result for `batch_finish.py` or change original
 task status/receipts to enable cleanup.
 
+### Interruption, exact resume and explicit abandonment
+
+After interruption, start with the read-only command
+`PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> status`.
+Compare stored state with observations; neither silence nor a stale record
+proves a writer stopped. Confirm the original worker and all nested writers
+through the host before any `--worker-stopped` assertion. Unknown liveness
+means retain and report, never unlock or expire a reservation.
+
+- Reconcile interrupted integration with
+  `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> recover --slug <slug> --worker-stopped`.
+  Follow its exact next action. Never infer a rebased tip from the old returned
+  commit, infer closure from an archive, or replay lifecycle receipts. If only
+  a branch remains, report only that branch; normal `git branch -d` is allowed
+  only with verified recorded integration or the shared separately reviewed
+  recovery procedure, never `-D` for unmerged unique commits.
+- Resume blocked/failed work, an interrupted running worker confirmed stopped,
+  or a failed continuation bootstrap with its bound reservation using
+  `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> resume --slug <slug> --worker-stopped`.
+  This reserves a slot for the same registered W, branch, task and run. Prefer
+  the original native agent. Otherwise dispatch `harness:task-lead-resume`
+  bootstrap-only with the returned handoff and original scope/off-limits;
+  it has no worktree isolation and must use the existing W. Obtain its actual
+  identity, bind it with the section c.3 command, then authorize that exact
+  worker through native resume. Never spawn regular `task-lead` for resume.
+  If the host cannot separate bootstrap from permission to mutate, retain the
+  work and report that runtime blocker. Interrupted running work uses this
+  explicit stopped-writer path without inventing a failed result. Pin its
+  currently observed task run before continuation; an earlier result that
+  explicitly recorded task absence must still find no task. Recheck that
+  absent/present identity at bind. Main must have no open task at both resume
+  and bind. A failed resumed bootstrap keeps W and its reservation: confirm it
+  stopped and re-dispatch in that same W, never release bound work. Preserve existing task evidence via
+  `task_start(workspace=W, task_id=existing_id)` without `fresh_run`.
+- Only after an explicit user choice to abandon, record
+  `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> abandon --slug <slug> --worker-stopped --reason <decision>`.
+  Abandonment retains source, branch and evidence, releases worker capacity but
+  retains unresolved scope ownership. It does not cancel/close the task or
+  satisfy the Goal. Report the unfinished retained disposition and next action.
+- A spawn that never created external work may release its unused reservation
+  with `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> release --slug <slug> --worker-stopped --no-external-work`.
+  Confirm both assertions from actual host evidence; a bound/existing checkout
+  is not "no external work". Never discard a reservation just due to elapsed time.
+
 ## e) Integration task
 
-When step d ends — every closed lead fast-forwarded or kept, or integration
-stopped at a conflict carried from step d.2 — open
+When the pool drains or halts — every closed lead fast-forwarded or kept, or
+integration stopped at a conflict carried from step d.2 — first confirm every
+lead and nested writer has stopped. Do not open a main-checkout task while any
+lead remains live or unknown. Keep queued work durable while halted. Then open
 `TASK__batch-integrate-<slug>` in the **main checkout** through the normal
 `harness:run` lifecycle (`task_start` → plan → develop → QA → close). Under
 that task:
@@ -196,12 +277,14 @@ that task:
    rerun the step d.1 command with `--resume`: the branch tip is no longer
    the `commit` the lead returned, which `--resume` accepts, and the script
    fast-forwards, harvests, and removes that lead's worktree as in step d.
-   Then continue step d in order for every remaining closed lead of the
-   wave, resolving any further conflicts under this same task, so every
+   Successful explicit `finish --resume` clears the halt only when no other
+   unresolved integration remains; otherwise follow `status` recovery actions.
+   Then continue step d in order for every remaining closed lead of the pool, resolving any further conflicts under this same task, so every
    closed lead not kept in step d is on the main branch before the full
    suite runs.
 2. Run the full suite (e.g. `uv run pytest tests/ -q`).
-3. Run `review-code` and `qa-cli`. Scope `review-code` by § Batch integration
+3. Run fresh `review-code`, conditional `review-security`, then `qa-cli` in
+   receipt-backed review-before-QA order. Scope `review-code` by § Batch integration
    review scope in `plugin/skills/develop/quality-audit-pipeline.md`: give the
    reviewer each lead's `old_base`, `old_tip`, `new_base`, and `new_tip`, its
    patch-id result, and carried or residual status.
@@ -209,7 +292,13 @@ that task:
    `python3 plugin/scripts/install_verified.py --task-dir <integration task dir>`
    — this is the only place `install_verified.py` runs in batch mode; leads
    skip it.
-5. Close.
+5. Close the integration task. Only then resume dispatch of any remaining
+   queued requests, so no main task overlaps live leads; perform final
+   integration review/QA again after those requests finish. When every request
+   has a disposition, run
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> close`.
+   Operational close refuses unfinished work/cleanup and reports abandoned
+   retention separately; it never substitutes for task review/QA/close.
 
 ## f) Host visibility
 
@@ -241,9 +330,9 @@ and "not integrated" only when absence was confirmed. Closed leads whose
 integration was never attempted are "not integrated". Note every lead
 whose result has `trailer_present: false`: its commits carry no
 `Harness-Task` trailer. Add a row for every request the
-preflight kept out of the wave: "excluded (ordinary task, done or pending)",
-"deferred to a later wave", or "outside the root, not batchable". End with
-the integration task's verdict. Distinguish unresolved retained originals from
+preflight kept out of the pool: "excluded (ordinary task, done or pending)",
+"queued (dependency or retained scope)", or "outside the root, not batchable". End with
+the integration task's verdict and operational batch disposition. Distinguish unresolved retained originals from
 verified recovery: report the recovery destination/tip and actual worktree and
 branch removal, or the retained path/branch, blocker and next action. Do not
 claim overall completion while owned cleanup remains unresolved.

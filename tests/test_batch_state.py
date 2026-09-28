@@ -1,0 +1,595 @@
+"""Intent-based, real-Git checks for the durable batch coordinator CLI."""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from test_batch_finish import _git, _head, _main, _write
+
+SCRIPT = Path(__file__).resolve().parents[1] / "plugin/scripts/batch_state.py"
+RUN = "0198c349-5800-7000-8000-000000000001"
+
+
+def pytest_generate_tests(metafunc):
+    cases = {
+        "capacity": [(None, None, 3), ("2", None, 2), ("99", None, 8),
+                     (None, "2", 2), (None, "true", 3), (None, "'2'", 3),
+                     (None, "0", 3), ("1", "4", 1)],
+        "bad_cap": ["0", "-1", "true", "2.5"],
+        "bad_requests": [[], [{"slug": "../bad", "request": "x", "scopes": ["x"]}],
+                         [{"slug": "a", "request": "x", "scopes": ["x"], "depends_on": ["missing"]}],
+                         [{"slug": "a", "request": "x", "scopes": ["x"], "depends_on": ["a"]}]],
+        "unsafe": ["symlink", "hardlink", "directory", "schema", "duplicate"],
+        "mismatch": ["worker", "task_id", "worktree", "branch", "run_id", "commit"],
+        "stage": ["rebase", "integrated", "harvested"],
+        "archive_corrupt": [False, True],
+    }
+    for name, values in cases.items():
+        if name in metafunc.fixturenames:
+            metafunc.parametrize(name, values)
+
+
+class Pool:
+    def __init__(self, tmp_path, monkeypatch, batch="pool"):
+        self.repo = _main(tmp_path, monkeypatch)
+        self.tmp = tmp_path
+        self.batch = batch
+        ignore = self.repo / ".gitignore"
+        ignore.write_text(ignore.read_text() + "doc/harness/runtime/\n")
+        _git("add", ".gitignore", cwd=self.repo)
+        _git("commit", "-qm", "ignore operational state", cwd=self.repo)
+
+    @property
+    def state(self):
+        return self.repo / "doc/harness/runtime/batches" / (self.batch + ".json")
+
+    def argv(self, *args):
+        return [sys.executable, str(SCRIPT), "--repo", str(self.repo),
+                "--batch-id", self.batch, *map(str, args)]
+
+    def cli(self, *args, ok=True):
+        result = subprocess.run(self.argv(*args), capture_output=True, text=True)
+        if ok:
+            assert result.returncode == 0, (args, result.stdout, result.stderr)
+        else:
+            assert result.returncode != 0, (args, result.stdout)
+        if result.returncode == 2:
+            return {}
+        body = json.loads(result.stdout)
+        assert isinstance(body, dict) and "status" in body, body
+        return body
+
+    def init(self, requests=None, cap=None, ok=True):
+        path = self.tmp / (self.batch + "-requests.json")
+        path.write_text(json.dumps(requests if requests is not None else [request("a")]))
+        return self.cli("init", "--requests-file", path,
+                        *([] if cap is None else ["--max-leads", cap]), ok=ok)
+
+    def claim(self):
+        return self.cli("claim")["claims"]
+
+    def bind(self, slug="a", worker="worker-a"):
+        worktree = self.repo / ".claude/worktrees" / slug
+        branch = "worktree-" + slug
+        _git("worktree", "add", "-qb", branch, str(worktree), cwd=self.repo)
+        self.cli("bind", "--slug", slug, "--worker-id", worker,
+                 "--worktree", worktree, "--branch", branch)
+        return worktree, branch
+
+    def result(self, slug, actual_worktree, actual_branch, verdict="blocked", worker="worker-a", **extra):
+        body = {"verdict": verdict, "task_id": "TASK__" + slug,
+                "worktree": str(actual_worktree), "branch": actual_branch,
+                "commit": _head(actual_worktree) if verdict == "closed" else None, **extra}
+        path = self.tmp / (slug + "-result.json")
+        path.write_text(json.dumps(body))
+        return ["result", "--slug", slug, "--worker-id", worker, "--result-file", path]
+
+
+def request(slug, scope=None, dependencies=()):
+    return {"slug": slug, "request": "Implement " + slug,
+            "scopes": [scope or slug + ".txt"], "depends_on": list(dependencies)}
+
+
+def task(worktree, slug="a", closed=False):
+    directory = worktree / "doc/harness/tasks" / ("TASK__" + slug)
+    control = {"run_id": RUN, "execution_mode": "standard",
+               "required_lenses": ["review-code", "qa-cli"],
+               "close_receipt_fingerprint": None}
+    if closed:
+        # Same isolated fixture mechanism as test_prewrite_gate_dormant:
+        # task_control_status validates the exact missing receipt-stream bytes.
+        control["close_receipt_fingerprint"] = "sha256:" + hashlib.sha256(
+            b"RECEIPTS.jsonl\0<missing>\0").hexdigest()
+    _write(directory / "TASK.json", json.dumps(control))
+    _write(directory / "PLAN.md", "# Fixture task\n")
+    return directory
+
+
+def complete(pool, slug="a", worker="worker-a"):
+    worktree, branch = pool.bind(slug, worker)
+    _write(worktree / (slug + ".txt"), slug + "\n")
+    _git("add", "-A", cwd=worktree)
+    _git("commit", "-qm", slug, "--trailer", "Harness-Task: TASK__" + slug, cwd=worktree)
+    directory = task(worktree, slug, closed=True)
+    pool.cli(*pool.result(slug, worktree, branch, "closed", worker, run_id=RUN))
+    return worktree, branch, directory
+
+
+def test_init_idempotence_and_conflicting_intake(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    first = pool.state.read_bytes()
+    data = json.loads(first)
+    assert data["schema_version"] == 1
+    assert data["requests"][0]["task_id"] == "TASK__a"
+    pool.init()
+    assert pool.state.read_bytes() == first
+    pool.init([request("different")], ok=False)
+    assert pool.state.read_bytes() == first
+
+
+def test_cap_precedence_and_types(tmp_path, monkeypatch, capacity):
+    explicit, manifest, expected = capacity
+    pool = Pool(tmp_path, monkeypatch)
+    if manifest is not None:
+        _write(pool.repo / "doc/harness/manifest.yaml", "version: 7\nbatch:\n  max_leads: " + manifest + "\n")
+        _git("add", "-A", cwd=pool.repo)
+        _git("commit", "-qm", "capacity", cwd=pool.repo)
+    pool.init([request("r" + str(i)) for i in range(10)], cap=explicit)
+    assert len(pool.claim()) == expected
+    assert pool.claim() == []
+
+
+def test_invalid_explicit_cap(tmp_path, monkeypatch, bad_cap):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init(cap=bad_cap, ok=False)
+    assert not pool.state.exists()
+
+
+def test_invalid_intake(tmp_path, monkeypatch, bad_requests):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init(bad_requests, ok=False)
+    assert not pool.state.exists()
+
+
+def test_duplicate_cycle_and_oversized_intake(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    for requests in ([request("a"), request("a")],
+                     [request("a", dependencies=["b"]), request("b", dependencies=["a"])],
+                     [request("r" + str(i)) for i in range(101)]):
+        pool.init(requests, ok=False)
+        assert not pool.state.exists()
+
+
+def test_unsafe_or_corrupt_state_refuses_mutation(tmp_path, monkeypatch, unsafe):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    before = pool.state.read_bytes()
+    other = tmp_path / "state-copy"
+    other.write_bytes(before)
+    if unsafe in ("symlink", "hardlink", "directory"):
+        pool.state.unlink()
+        if unsafe == "symlink":
+            pool.state.symlink_to(other)
+        elif unsafe == "hardlink":
+            os.link(other, pool.state)
+        else:
+            pool.state.mkdir()
+    else:
+        data = json.loads(before)
+        if unsafe == "schema":
+            data["schema_version"] = 999
+        else:
+            data["requests"].append(data["requests"][0].copy())
+        pool.state.write_text(json.dumps(data))
+    pool.cli("claim", ok=False)
+    assert other.read_bytes() == before
+
+
+def test_reservations_dependencies_overlap_and_release(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init([request("a", "src"), request("overlap", "src/child"),
+               request("dependent", dependencies=["a"]), request("free")], cap="2")
+    claims = pool.claim()
+    assert {row["slug"] for row in claims} == {"a", "free"}
+    assert all(row["spawn_head"] == _head(pool.repo) and "off_limits" in row for row in claims)
+    assert pool.claim() == []
+    pool.cli("release", "--slug", "free", "--worker-stopped", ok=False)
+    pool.cli("release", "--slug", "free", "--worker-stopped", "--no-external-work")
+    assert [row["slug"] for row in pool.claim()] == ["free"]
+    pool.cli("close", ok=False)
+
+
+def test_concurrent_claims_never_overbook(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init([request("r" + str(i)) for i in range(12)], cap="3")
+    jobs = [subprocess.Popen(pool.argv("claim"), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True) for _ in range(6)]
+    claims = []
+    for job in jobs:
+        out, err = job.communicate(timeout=30)
+        assert job.returncode in (0, 3), (out, err)
+        body = json.loads(out)
+        if job.returncode == 0:
+            claims.extend(body["claims"])
+    assert len(claims) == len({row["slug"] for row in claims}) == 3
+
+
+def test_other_active_pool_refuses_dispatch(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    pool.batch = "other"
+    # Intake may itself refuse; if accepted it must not dispatch.
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps([request("b")]))
+    result = subprocess.run(pool.argv("init", "--requests-file", path), capture_output=True, text=True)
+    assert result.returncode in (0, 3), result.stderr
+    if result.returncode == 0:
+        pool.cli("claim", ok=False)
+
+
+def test_bind_checks_starting_commit_and_registration(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    pool.cli("bind", "--slug", "a", "--worker-id", "w", "--worktree", pool.repo,
+             "--branch", "main", ok=False)
+    worktree = pool.repo / ".claude/worktrees/a"
+    _git("worktree", "add", "-qb", "worktree-a", str(worktree), cwd=pool.repo)
+    _write(worktree / "a.txt", "premature edit\n")
+    _git("add", "-A", cwd=worktree)
+    _git("commit", "-qm", "premature", cwd=worktree)
+    pool.cli("bind", "--slug", "a", "--worker-id", "w", "--worktree", worktree,
+             "--branch", "worktree-a", ok=False)
+
+
+def test_result_identity_is_bound_to_worker_and_task(tmp_path, monkeypatch, mismatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree, closed=True)
+    before = (directory / "TASK.json").read_bytes()
+    args = {"task_id": "TASK__foreign", "worktree": str(pool.repo), "branch": "main",
+            "run_id": "0198c349-5800-7000-8000-000000000002", "commit": "HEAD"}
+    kwargs = {mismatch: args[mismatch]} if mismatch != "worker" else {}
+    pool.cli(*pool.result("a", worktree, branch, "closed",
+                         "other-worker" if mismatch == "worker" else "worker-a", **kwargs), ok=False)
+    assert (directory / "TASK.json").read_bytes() == before
+    assert worktree.exists()
+
+
+def test_closed_label_without_valid_fingerprint_refuses(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    pool.cli(*pool.result("a", worktree, branch, "closed"), ok=False)
+    task(worktree, closed=True)
+    _write(directory / "RECEIPTS.jsonl", "{}\n")
+    pool.cli(*pool.result("a", worktree, branch, "closed"), ok=False)
+
+
+def test_blocked_resume_preserves_exact_worktree_task_and_run(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    _write(directory / "BLOCKED.md", "Waiting for dependency\n")
+    _write(worktree / "a.txt", "uncommitted work\n")
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    pool.cli(*pool.result("a", worktree, branch))
+    state = pool.state.read_bytes()
+    pool.cli("status")
+    assert pool.state.read_bytes() == state
+    pool.cli("resume", "--slug", "a", ok=False)
+    handoff = pool.cli("resume", "--slug", "a", "--worker-stopped")
+    assert str(worktree) in json.dumps(handoff)
+    pool.cli("bind", "--slug", "a", "--worker-id", "replacement",
+             "--worktree", worktree, "--branch", branch)
+    pool.cli(*pool.result("a", worktree, branch), ok=False)
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before
+    assert (worktree / "a.txt").read_text() == "uncommitted work\n"
+
+
+def test_abandon_retains_source_evidence_and_scope_across_batches(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    _write(worktree / "a.txt", "retained work\n")
+    original = (directory / "TASK.json").read_bytes()
+    pool.cli(*pool.result("a", worktree, branch))
+    pool.cli("abandon", "--slug", "a", "--reason", "user choice", ok=False)
+    pool.cli("abandon", "--slug", "a", "--reason", "user choice", "--worker-stopped")
+    assert worktree.exists() and _git("branch", "--list", branch, cwd=pool.repo)
+    assert (directory / "TASK.json").read_bytes() == original
+    assert (worktree / "a.txt").read_text() == "retained work\n"
+    report = json.dumps(pool.cli("status"))
+    assert "abandon" in report and str(worktree) in report
+    pool.cli("close")
+    pool.batch = "next"
+    pool.init([request("collision", "a.txt"), request("free")])
+    assert [row["slug"] for row in pool.claim()] == ["free"]
+
+
+def test_finished_dependency_refills_from_current_head_and_closes(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init([request("a"), request("b", dependencies=["a"])], cap="1")
+    assert [row["slug"] for row in pool.claim()] == ["a"]
+    worktree, branch, _ = complete(pool)
+    assert pool.claim() == []
+    pool.cli("finish", "--slug", "a")
+    assert not worktree.exists()
+    assert not _git("branch", "--list", branch, cwd=pool.repo)
+    next_claim = pool.claim()
+    assert next_claim[0]["slug"] == "b"
+    assert next_claim[0]["spawn_head"] == _head(pool.repo)
+    complete(pool, "b", "worker-b")
+    pool.cli("finish", "--slug", "b")
+    pool.cli("close")
+    assert (pool.repo / "a.txt").exists() and (pool.repo / "b.txt").exists()
+    assert _git("rev-list", "--merges", "HEAD", cwd=pool.repo) == ""
+
+
+def test_close_proof_is_rechecked_before_finish(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch, directory = complete(pool)
+    old_head = _head(pool.repo)
+    _write(directory / "RECEIPTS.jsonl", "{}\n")
+    pool.cli("finish", "--slug", "a", ok=False)
+    assert _head(pool.repo) == old_head and worktree.exists()
+    assert _git("branch", "--list", branch, cwd=pool.repo)
+
+
+def test_checkpoint_interruption_preserves_then_recovers(tmp_path, monkeypatch, capsys, stage):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, _, _ = complete(pool)
+    spec = importlib.util.spec_from_file_location("batch_state_intent_tests", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    import batch_finish
+    real_finish = batch_finish.finish
+
+    def interrupt(repo, args, checkpoint=None):
+        def callback(current_stage, result):
+            checkpoint(current_stage, result)
+            if current_stage == stage:
+                raise RuntimeError("simulated checkpoint interruption")
+        return real_finish(repo, args, checkpoint=callback)
+
+    monkeypatch.setattr(batch_finish, "finish", interrupt)
+    code = module.main(pool.argv("finish", "--slug", "a")[2:])
+    capsys.readouterr()
+    assert code != 0 and worktree.exists()
+    monkeypatch.setattr(batch_finish, "finish", real_finish)
+    pool.cli("recover", "--slug", "a", ok=False)
+    pool.cli("recover", "--slug", "a", "--worker-stopped")
+    # Recovery can finish immediately or establish a safe retry checkpoint.
+    if worktree.exists():
+        pool.cli("finish", "--slug", "a", "--resume")
+    assert not worktree.exists()
+    pool.cli("close")
+
+
+def test_process_death_after_cleanup_recovers_from_exact_archive(tmp_path, monkeypatch, archive_corrupt):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch, directory = complete(pool)
+    original_control = (directory / "TASK.json").read_bytes()
+    # Advance the destination first so the durable tip must be post-rebase.
+    returned_tip = _head(worktree)
+    _write(pool.repo / "main-only.txt", "destination advanced\n")
+    _git("add", "main-only.txt", cwd=pool.repo)
+    _git("commit", "-qm", "advance destination", cwd=pool.repo)
+    program = """
+import os, sys
+sys.path.insert(0, sys.argv.pop(1))
+import batch_state, batch_finish
+original = batch_finish._cleanup
+def cleanup_then_die(*args, **kwargs):
+    original(*args, **kwargs)
+    os._exit(91)
+batch_finish._cleanup = cleanup_then_die
+batch_state.main(sys.argv[1:])
+"""
+    result = subprocess.run([sys.executable, "-c", program, str(SCRIPT.parent),
+                             *pool.argv("finish", "--slug", "a")[2:]],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 91, (result.stdout, result.stderr)
+    persisted = pool.state.read_bytes()
+    pool.cli("status")
+    assert pool.state.read_bytes() == persisted
+    pool.cli("claim", ok=False)
+    integrated_tip = _head(pool.repo)
+    assert integrated_tip != returned_tip
+    assert not worktree.exists()
+    archive = pool.repo / "doc/harness/archive/batch/TASK__a"
+    assert (archive / "TASK.json").read_bytes() == original_control
+    if archive_corrupt:
+        (archive / "PLAN.md").write_text("tampered after harvest\n")
+        pool.cli("recover", "--slug", "a", "--worker-stopped", ok=False)
+        pool.cli("close", ok=False)
+        assert _head(pool.repo) == integrated_tip
+        assert (archive / "TASK.json").read_bytes() == original_control
+        return
+    pool.cli("recover", "--slug", "a", "--worker-stopped")
+    assert _head(pool.repo) == integrated_tip
+    assert not _git("branch", "--list", branch, cwd=pool.repo)
+    assert (archive / "TASK.json").read_bytes() == original_control
+    pool.cli("recover", "--slug", "a", "--worker-stopped")
+    pool.cli("close")
+
+
+def test_task_identity_collision_refuses_intake(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    task(pool.repo)
+    pool.init(ok=False)
+    assert not pool.state.exists()
+
+
+def test_resume_refuses_changed_task_generation_and_release_keeps_bound_work(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    pool.cli("release", "--slug", "a", "--worker-stopped", "--no-external-work", ok=False)
+    pool.cli(*pool.result("a", worktree, branch, run_id=RUN))
+    control = json.loads((directory / "TASK.json").read_text())
+    control["run_id"] = "0198c349-5800-7000-8000-000000000002"
+    (directory / "TASK.json").write_text(json.dumps(control))
+    pool.cli("resume", "--slug", "a", "--worker-stopped", ok=False)
+    assert worktree.exists()
+
+
+def test_writable_metadata_parent_refuses_mutation(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    metadata = pool.repo / "doc/harness"
+    original_mode = metadata.stat().st_mode & 0o777
+    metadata.chmod(0o777)
+    try:
+        pool.init(ok=False)
+        assert not pool.state.exists()
+    finally:
+        metadata.chmod(original_mode)
+
+
+def test_stopped_running_worker_resume_pins_existing_run_without_fabricated_result(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    _write(directory / "RECEIPTS.jsonl", "")
+    _write(worktree / "a.txt", "interrupted work\n")
+    evidence = {p.name: p.read_bytes() for p in directory.iterdir()}
+    pool.cli("resume", "--slug", "a", ok=False)
+    handoff = pool.cli("resume", "--slug", "a", "--worker-stopped")
+    assert str(worktree) in json.dumps(handoff)
+    assert RUN in json.dumps(handoff)
+    pool.cli("bind", "--slug", "a", "--worker-id", "replacement",
+             "--worktree", worktree, "--branch", branch)
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == evidence
+    assert (worktree / "a.txt").read_text() == "interrupted work\n"
+    pool.cli(*pool.result("a", worktree, branch), ok=False)
+    pool.cli(*pool.result("a", worktree, branch, worker="replacement", run_id=RUN))
+
+
+def test_stopped_pretask_running_resume_rechecks_absence_before_bind(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    pool.cli("resume", "--slug", "a", "--worker-stopped")
+    directory = task(worktree)
+    before = pool.state.read_bytes()
+    evidence = (directory / "TASK.json").read_bytes()
+    pool.cli("bind", "--slug", "a", "--worker-id", "replacement",
+             "--worktree", worktree, "--branch", branch, ok=False)
+    assert pool.state.read_bytes() == before
+    assert (directory / "TASK.json").read_bytes() == evidence
+
+
+def test_open_main_task_blocks_resume_without_mutation(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    pool.cli(*pool.result("a", worktree, branch, run_id=RUN))
+    main_task = task(pool.repo, "integration")
+    before = pool.state.read_bytes()
+    lead_evidence = (directory / "TASK.json").read_bytes()
+    main_evidence = (main_task / "TASK.json").read_bytes()
+    pool.cli("resume", "--slug", "a", "--worker-stopped", ok=False)
+    assert pool.state.read_bytes() == before
+    assert (directory / "TASK.json").read_bytes() == lead_evidence
+    assert (main_task / "TASK.json").read_bytes() == main_evidence
+
+
+def test_open_main_task_appearing_after_claim_blocks_bind(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree = pool.repo / ".claude/worktrees/a"
+    branch = "worktree-a"
+    _git("worktree", "add", "-qb", branch, str(worktree), cwd=pool.repo)
+    directory = task(pool.repo, "integration")
+    before = pool.state.read_bytes()
+    evidence = (directory / "TASK.json").read_bytes()
+    pool.cli("bind", "--slug", "a", "--worker-id", "worker-a",
+             "--worktree", worktree, "--branch", branch, ok=False)
+    assert pool.state.read_bytes() == before
+    assert (directory / "TASK.json").read_bytes() == evidence
+
+
+def test_open_main_task_appearing_after_resume_blocks_bind(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    task(worktree)
+    pool.cli(*pool.result("a", worktree, branch, run_id=RUN))
+    pool.cli("resume", "--slug", "a", "--worker-stopped")
+    directory = task(pool.repo, "integration")
+    before = pool.state.read_bytes()
+    evidence = (directory / "TASK.json").read_bytes()
+    pool.cli("bind", "--slug", "a", "--worker-id", "replacement",
+             "--worktree", worktree, "--branch", branch, ok=False)
+    assert pool.state.read_bytes() == before
+    assert (directory / "TASK.json").read_bytes() == evidence
+
+
+def test_pretask_blocked_result_refuses_unexpected_task_at_resume(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    pool.cli(*pool.result("a", worktree, branch))
+    directory = task(worktree)
+    before = pool.state.read_bytes()
+    evidence = (directory / "TASK.json").read_bytes()
+    pool.cli("resume", "--slug", "a", "--worker-stopped", ok=False)
+    assert pool.state.read_bytes() == before
+    assert (directory / "TASK.json").read_bytes() == evidence
+
+
+def test_failed_resume_bootstrap_keeps_bound_reservation_for_stopped_retry(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch = pool.bind()
+    directory = task(worktree)
+    pool.cli(*pool.result("a", worktree, branch, run_id=RUN))
+    pool.cli("resume", "--slug", "a", "--worker-stopped")
+    # Replacement bootstrap dies before bind. Its retained reservation must
+    # stay attached to the original source and cannot use unused-release.
+    before = pool.state.read_bytes()
+    evidence = (directory / "TASK.json").read_bytes()
+    report = json.dumps(pool.cli("status"))
+    assert pool.state.read_bytes() == before
+    assert str(worktree) in report and "resume" in report
+    assert "release" not in report
+    pool.cli("release", "--slug", "a", "--worker-stopped", "--no-external-work", ok=False)
+    pool.cli("resume", "--slug", "a", ok=False)
+    handoff = pool.cli("resume", "--slug", "a", "--worker-stopped")
+    assert str(worktree) in json.dumps(handoff) and RUN in json.dumps(handoff)
+    pool.cli("bind", "--slug", "a", "--worker-id", "retry-worker",
+             "--worktree", worktree, "--branch", branch)
+    assert (directory / "TASK.json").read_bytes() == evidence

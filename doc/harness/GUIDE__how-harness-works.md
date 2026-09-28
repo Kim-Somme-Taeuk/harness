@@ -67,7 +67,7 @@ invalidated_by_paths:
   - doc/CLAUDE.md
   - doc/harness/critics/
   - doc/harness/review-overlays/
-freshness_updated: 2026-09-28T11:32:40Z
+freshness_updated: 2026-09-28T13:28:11Z
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -1538,7 +1538,8 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 ```
 (a) intake: 요청마다 slug + 경로 scope
       - slug 재사용 금지 (tasks/TASK__<slug>, archive/batch/TASK__<slug>)
-      - scope 가 겹치거나 다른 요청 결과에 의존 → 다음 wave
+      - scope 겹침과 depends_on은 저장된 큐에서 순서를 지킨다
+      - batch_state.py --repo <main> --batch-id <id> init --requests-file <json>
 (b.1) batch_preflight.py --repo <main> --request <slug>=<path> ...
       verdict ok(0) → 진행 / adjust(1) → excluded 제거, 겹침 하나 미룸, 재실행
       refuse(1) → 중단, 보고 / 사용법 오류 exit 2 (JSON 없음)
@@ -1547,30 +1548,44 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 (b.3) batch_preflight.py 의 worktrees_ignore 확인: git 이 보는 경로에서 ignore 검사
       저장소 밖으로 나가는 .claude symlink 는 통과
 (b.4) main 에 이 세션의 열린 과제 없음 (task_blocked 로 주차하거나 close)
-(b.5) main HEAD 기록
-(c) 한 wave 의 lead 전부를 ONE message 로 스폰 (기본 최대 3, name= 금지)
+(b.5) batch_state.py claim: 빈 슬롯 예약, 현재 main HEAD와 off-limits 반환
+(c) 예약된 lead를 ONE message로 bootstrap-only 스폰 (기본 최대 3, name= 금지)
       Agent(subagent_type:"harness:task-lead",
             prompt: 요청 / slug / scope / off-limits / coordinator HEAD / pytest worker cap: 4)
-(d) closed lead 마다 순서대로:
-      python3 plugin/scripts/batch_finish.py --repo <main> --worktree <W> --branch <branch> --task-id <id> --commit <returned commit>
+      bootstrap 반환의 W/branch/HEAD와 native worker ID를 bind한 뒤 같은 agent를 재개
+      bind 전에는 소스 수정이나 task_start 금지
+(d) 결과를 result로 기록하고 closed lead를 반환 순서대로 하나씩:
+      python3 plugin/scripts/batch_state.py --repo <main> --batch-id <id> finish --slug <slug>
+      내부 batch_finish.py를 호출하고 Git 변경 전후 및 제거 전 checkpoint를 저장
       registered worktree / branch tip / clean / merge commit 없음 확인 → rebase → ff-only → harvest → 잠겼을 때만 unlock → remove → branch -d
       integrated(0) → 다음 lead / kept(3) → 이유와 남은 worktree·branch 보고, 다음 lead
-      conflict(4) → rebase abort 후 wave 중단, (e)에서 해결 / ff-refused(5) → 중단·보고
-      error(1) → 중단·보고 / usage(2) → 보고 (lead 반환값 오류면 그 lead만 kept)
+      conflict / ff-refused / error (wrapper exit 3) → 중단·보고, 필요한 복구는 (e)
+      독립 batch_finish.py의 exit 4/5/1과 구분; wrapper usage 오류는 exit 2
       integrated_tip 이 있으면 이미 main 통합됨. cleanup.removed 로 worktree 와 branch 잔여 구분
       최초 main symbolic ref 를 고정하고 rebase 뒤 checkout 변경을 거부. 통합 증명은 현재 HEAD 아닌 최초 branch ref 기준
       실패 후 통합 확인도 실패하면 reason 에 미확인으로 보고. null tip 만으로 미통합 판정하지 않음
       blocked/failed lead: worktree 와 branch 를 그대로 둔다
-(e) TASK__batch-integrate-<slug> 를 main 에서 harness:run 으로:
+      빈 슬롯은 claim으로 즉시 보충; 전체 wave 종료를 기다리지 않는다
+      중단 복구는 status → recover, blocked 작업은 resume → 기존 W의 agent 재개
+(e) 모든 lead와 nested writer가 멈춘 뒤 TASK__batch-integrate-<slug> 를 main 에서 harness:run 으로:
       남은 충돌 해결: W 에서 rebase 다시 → 해결 → git -C <W> add → GIT_EDITOR=true git -C <W> rebase --continue (멈추는 커밋마다 반복)
         → (d) 명령에 --resume 추가 → ff·harvest·제거, 이어서 남은 lead 도 (d) 순서대로 (남겨 둔 lead 는 제외)
         → full suite → review-code(residual 에서만 깊이 선택, 아래 carry 조건) + qa-cli
       → (harness 플러그인 소스 저장소일 때만) install_verified.py (batch 에서 유일하게 실행되는 곳, lead 는 생략) → close
+      큐에 남은 작업의 dispatch는 main 통합 과제를 닫은 뒤에만 재개
 (f) 사용자에게 branch/commit 으로만 확인하라고 안내
 (g) 보고 표: slug, branch, verdict, lead 가 반환한 commit(rebase 전), 통합된 tip(ff 뒤 main HEAD) 또는 'kept, unmerged'(사유 포함)·'not integrated', 제외/미룸/outside-root, 통합 결과
 ```
 
-근거: `batch/SKILL.md` a–g, `batch_finish.py`의 `_check`, `_rebase`, `_cleanup`, `finish`, REQ의 Integration helper.
+근거: `batch/SKILL.md` a–g, `batch_finish.py`의 `_check`, `_rebase`, `_cleanup`, `finish`, [배치 상태·풀·복구 요구사항](REQ__batch-state-pool-recovery.md).
+
+`batch.max_leads`와 명시적 `--max-leads`는 기본 3을 대체하며 상한은 8이다.
+예약·실행 중인 작업이 슬롯을 차지하고, 막힘·실패·정리 대기 작업은 파일 범위를
+계속 예약한다. 다른 배치의 남은 작업 범위도 검사한다. `status`는 실행 기록과
+현재 관측을 구분하는 읽기 전용 명령이며 PASS를 만들지 않는다. `abandon`은
+사용자가 명시한 포기 의도와 보존 위치만 기록하고, 소스 삭제나 Goal 완료로
+취급하지 않는다. 재개는 기존 agent 또는 isolation 없는 `task-lead-resume`으로
+같은 worktree·task·run을 사용한다.
 
 **통합 review-code 범위(Claude 전용).** 각 lead의 `old_base`, `old_tip`, `new_base`, `new_tip`, patch-id 결과와 carry/residual 여부를 리뷰어에게 넘긴다. rebase-LIGHT 증명, 동일 commit 수의 순서 있는 `git patch-id --stable` 일치, step d에서 멈추지 않은 rebase, harvested archive의 closed PASS(`close_receipt_fingerprint` 존재, BLOCKED.md 없음)가 모두 있어야 carry한다. 리뷰어가 carry를 확인하며, 하나라도 빠지면 residual이다. 충돌 해결·lead 간 겹침·미승계 범위·통합 수정의 residual만 깊이 판정에 쓰고 비어 있으면 LIGHT다. 리뷰 자체, review-before-QA, 전체 suite와 close 증거 요구는 유지된다. 중단된 미커밋 구현 복구에는 이 carry 증명이 없으므로 적용하지 않는다(`quality-audit-pipeline.md` Batch integration review scope).
 
@@ -1655,7 +1670,7 @@ host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit�
 - b.4의 이유: worktree가 제거된 뒤 늦게 도착한 lens SubagentStop은 cwd를 main으로 해석한다. main에 열린 과제가 있으면 그 과제에 기록될 수 있다.
 - helper는 잠긴 worktree만 unlock하고 remove 거부·예외 시 남아 있는 등록된 worktree에 원래 이유로 relock을 시도한다. 복원 실패도 원래 실패와 함께 보고한다. 실행 중인지 직접 판별하지 않으므로 코디네이터는 lead가 반환한 뒤에만 helper를 호출해야 한다(`batch_finish.py`의 `_cleanup`, REQ § Known limits).
 - preflight의 `worktrees_ignore`는 symlink를 푼 뒤 git이 보는 경로를 검사한다. 저장소 밖으로 나가는 경로는 통과하며, 안쪽 경로가 ignore되지 않았으면 refuse한다(`batch_preflight.py`의 `worktrees_ignore`).
-- preflight와 finish helper의 clean 검사는 `status.showUntrackedFiles=no`와 관계없이 미추적 파일을 포함한다. helper의 native worktree remove도 이 설정을 덮어써서 검사 이후 생긴 미추적 파일을 보호한다. preflight는 detached HEAD, rebase/merge 진행 중 상태, 남겨 둔 blocked worktree와 새 scope의 겹침은 잡지 못한다. finish helper는 main detached HEAD와 lead의 진행 중 rebase를 별도로 거부한다.
+- preflight와 finish helper의 clean 검사는 `status.showUntrackedFiles=no`와 관계없이 미추적 파일을 포함한다. helper의 native worktree remove도 이 설정을 덮어써서 검사 이후 생긴 미추적 파일을 보호한다. standalone preflight는 HEAD 작업 상태나 이전 배치 예약을 검사하지 않는다. 풀의 `batch_state.py claim`이 destination ref, 진행 중 Git 작업, 기록된 retained scope 겹침을 추가로 검사한다. finish helper는 main detached HEAD와 lead의 진행 중 rebase를 별도로 거부한다.
 - submodule(git 2.43): 한번 초기화하면 plain remove가 계속 거부된다. `--force`는 모듈 저장소를 지운다. `deinit`은 공유 `.git/config`를 다시 쓴다. merge는 submodule checkout을 갱신하지 않는다. 완전 지원은 미뤄졌다.
 - `batch_harvest.py` 단독 호출은 `HarvestError`만 잡지만 helper는 모든 harvest 예외를 `kept`로 보고하고 worktree를 남긴다. learnings append가 archive rename 뒤에 있어 append 실패 시 archive는 이미 존재할 수 있다. 통합 후 정리 실패는 `integrated_tip`과 `cleanup`으로 구별하고 원인을 고친 뒤 `--resume`한다. branch만 남았으면 `git branch -d`로 마친다.
 - helper는 시작 시 main의 symbolic ref를 기록하고 rebase 뒤 checkout이 detached되거나 다른 branch로 바뀌면 거부한다. 성공 확인과 merge 실패·timeout 뒤 통합 확인 모두 최초 branch ref를 기준으로 하며, 현재 HEAD에만 반영된 tip을 통합됐다고 보고하거나 그 근거로 lead를 정리하지 않는다. 실패 경로에서는 harvest·정리를 진행하지 않는다. 상태가 `error`여도 확인된 `integrated_tip`이 있으면 통합된 것이다. 확인 자체가 실패하면 `reason`에 통합 여부 미확인을 명시한다. null tip만으로 미통합이라고 보고하지 않는다.

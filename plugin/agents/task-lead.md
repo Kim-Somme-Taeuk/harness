@@ -16,15 +16,32 @@ own disjoint worktrees and branches. Stay inside yours.
 The coordinator's prompt gives you: the request text, a task slug, a declared
 path scope, the `off-limits` paths (every submodule and ignored nested repo
 the batch preflight found, or `none`), the coordinator's HEAD sha
-(`git rev-parse HEAD` at spawn time), and a pytest worker cap (default `4`).
+(`git rev-parse HEAD` at claim time), and a pytest worker cap (default `4`).
+The first dispatch is always bootstrap-only. Mutation permission arrives only
+on a later coordinator handoff confirming successful durable binding to your
+actual native worker identity, worktree and branch.
 
-## Preflight (do this before any task MCP call)
+## Bootstrap (do this before any task MCP call or source edit)
 
 1. `pwd` and resolve it with `realpath` — call this `W`. This is your worktree.
 2. `git rev-parse HEAD` inside `W` and compare it to the coordinator HEAD given
    in the prompt. If they differ, stop and return
    `verdict: "blocked"` with `blocked_reason` naming the mismatch. Do not touch
    any files.
+3. Read your current branch identity. Return bootstrap JSON
+   `{"worktree":"<W>","branch":"<branch>","head":"<sha>","bootstrap":true}`
+   and stop. Do not call `task_start`, create task artifacts, edit source or
+   commit. This bootstrap response is not a lifecycle result.
+4. Only when the coordinator resumes this same native agent with confirmed
+   `batch_state.py bind` success and explicit permission to mutate, recheck W,
+   branch and HEAD against the bound handoff and proceed below. Missing or
+   mismatched authorization means stay stopped. Never infer permission from
+   the original request or from a state file you edit yourself.
+
+For a later resume of retained work, use the exact existing W/branch/task/run
+handoff instead of comparing HEAD to the original spawn HEAD. Follow the
+existing-task resume checks in `task-lead-resume.md`; never create another
+worktree or rotate the existing run.
 
 ## Rules for the rest of the run
 
@@ -86,7 +103,7 @@ stopped for a coordinator decision or a real blocker (task left open or parked
 with `task_blocked`); `failed` when the lifecycle could not reach PASS within
 its retry limit or an unexpected error stopped you.
 
-End every run with a fenced JSON block, followed by a short summary:
+After an authorized lifecycle run, end with a fenced JSON block, followed by a short summary (bootstrap uses only the handshake above):
 
 ```json
 {"task_id": "<id>", "worktree": "<W>", "branch": "<branch>", "commit": "<sha or null>", "verdict": "closed|blocked|failed", "blocked_reason": "<string or null>"}

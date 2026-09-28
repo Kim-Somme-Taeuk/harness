@@ -62,7 +62,7 @@ def test_closed_resume_routes_to_disposal_without_repeating_lifecycle():
 def test_batch_loads_policy_before_helper_and_recovery_does_not_forge_closed():
     phase = _section(_text(REPO / "plugin/skills/batch/SKILL.md"), "d) Collect results, rebase, and fast-forward")
     reference = "${CLAUDE_PLUGIN_ROOT}/skills/run/worktree-completion.md"
-    command = "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_finish.py"
+    command = "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> finish"
     assert phase.index("Before invoking the helper, read") < phase.index(reference) < phase.index(command)
     assert 'For every lead with `verdict: "closed"`' in phase
     assert "rebase, fast-forward, harvest, remove, then combined review/QA" in phase
@@ -150,6 +150,11 @@ def test_real_codex_payload_projects_policy_and_resolves_caller_references(tmp_p
     spec.loader.exec_module(install)
     target = tmp_path / "harness"
     install._build_codex_payload(target, target)
+
+    # The durable wrapper and its integration/harvest dependencies ship in the
+    # real payload, with the same implementation exercised by the Git tests.
+    for script in ("batch_state.py", "batch_finish.py", "batch_harvest.py", "batch_preflight.py"):
+        assert (target / "scripts" / script).read_bytes() == (REPO / "plugin/scripts" / script).read_bytes()
 
     shared = target / "internal-skills/run/worktree-completion.md"
     expected = _text(SHARED).replace("${CLAUDE_PLUGIN_ROOT}", "${HARNESS_PLUGIN_ROOT}")

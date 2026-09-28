@@ -194,16 +194,17 @@ def test_root_claude_md_states_batch_focus_and_install_clauses():
     ) in body
 
 
-def test_batch_skill_runs_the_finish_helper_from_plugin_root_and_integrates_every_closed_lead():
+def test_batch_skill_routes_managed_finish_through_durable_state_and_integrates_closed_leads():
     body = _text(BATCH_SKILL)
     norm = _normalized(body)
     # User projects have no plugin/scripts/; the installed payload does.
-    assert "${claude_plugin_root}/scripts/batch_finish.py" in norm
+    assert "${claude_plugin_root}/scripts/batch_state.py" in norm
+    assert "python3 ${claude_plugin_root}/scripts/batch_finish.py" not in norm
     assert "python3 plugin/scripts/batch_finish.py" not in norm
     # batch_finish.py owns harvest; the skill no longer calls it directly.
     assert "scripts/batch_harvest.py" not in norm
     assert _normalized(
-        "--repo <main checkout> --worktree <W> --branch <branch> --task-id <id> --commit <commit>"
+        "--repo <main checkout> --batch-id <id> finish --slug <slug>"
     ) in norm
     # Claude Code keeps its agent lock after the lead returns; the helper
     # releases it only when the worktree is locked.
@@ -283,7 +284,7 @@ def test_batch_skill_gates_spawning_on_the_repo_shape_preflight():
             "exits 0 (`verdict: \"ok\"`) and steps b.2–b.5 hold",
             # Step g accounts for every request kept out of the wave.
             "excluded (ordinary task, done or pending)",
-            "deferred to a later wave",
+            "queued (dependency or retained scope)",
             "outside the root, not batchable",
         ),
         BATCH_SKILL,
@@ -346,3 +347,90 @@ def test_task_lead_never_touches_the_coordinator_goal_and_defines_verdicts():
     for verdict in ("`closed`", "`blocked`", "`failed`"):
         assert verdict in norm
     assert _normalized("`failed` when the lifecycle could not reach PASS") in norm
+
+
+def test_pool_reserves_and_binds_before_authorizing_exact_worker():
+    body = _text(BATCH_SKILL)
+    _assert_all(body, (
+        "init --requests-file <JSON> [--max-leads <N>]",
+        "claim` atomically reserves capacity before spawning",
+        "Reserved and running requests both consume slots",
+        "current destination `spawn_head`",
+        "bootstrap-only; do not start a task or edit source",
+        "bind --slug <slug> --worker-id <native id> --worktree <W> --branch <branch>",
+        "Only after successful binding",
+        "resume that same agent",
+        "Use the actual bound worker id",
+        "Identity/task/run/close mismatch refuses",
+        "--worker-stopped --no-external-work",
+        "Never discard a reservation just due to elapsed time",
+    ), BATCH_SKILL)
+    norm = _normalized(body)
+    assert norm.index("init --requests-file") < norm.index("claim` atomically")
+    assert norm.index("bootstrap-only; do not") < norm.index("bind --slug") < norm.index("Only after successful binding".lower())
+    _assert_all(_text(TASK_LEAD), (
+        "Do not call `task_start`, create task artifacts, edit source or commit",
+        "this same native agent with confirmed `batch_state.py bind` success",
+        "Never infer permission from the original request",
+    ), TASK_LEAD)
+
+
+def test_pool_capacity_refill_and_serial_integration_keep_lifecycle_gates():
+    _assert_all(_text(BATCH_SKILL), (
+        "default is **3 concurrent leads**",
+        "`--max-leads`, then manifest `batch.max_leads`, then 3",
+        "above 8 clamp to 8",
+        "Invalid explicit values refuse; invalid manifest values fall back to 3",
+        "serially in completion order",
+        "claim/refill free slots from the current main HEAD while other leads continue",
+        "No full-wave barrier",
+        "Never run two finish commands concurrently",
+        "only releases a dependency once its predecessor is integrated and cleaned",
+        "Do not open a main-checkout task while any lead remains live or unknown",
+        "`review-code`, conditional `review-security`, then `qa-cli`",
+        "receipt-backed review-before-QA order",
+        "before `task_close`",
+        "never substitutes for task review/QA/close",
+        "never bypass durable checkpoints by invoking direct finish here",
+    ), BATCH_SKILL)
+
+
+def test_resume_agent_reuses_exact_worktree_and_task_generation_without_isolation():
+    path = REPO / "plugin/agents/task-lead-resume.md"
+    meta = _frontmatter(path)
+    assert meta["name"] == "task-lead-resume"
+    assert meta["model"] == "inherit"
+    assert "isolation" not in meta
+    assert "tools" not in meta
+    _assert_all(_text(path), (
+        "Resolve W and enter that exact directory before task tools or nested agents",
+        "source and task mutations are not",
+        "binds your actual host worker identity",
+        "explicit mutation permission",
+        "task_start(workspace=W, task_id=existing_id)` without `fresh_run`",
+        "Require the same run id",
+        "Preserve receipts and evidence",
+        "never restart solely to manufacture a PASS",
+        "Never clean up your own worktree",
+    ), path)
+    _assert_all(_text(BATCH_SKILL), (
+        "Prefer the original native agent",
+        "harness:task-lead-resume",
+        "Never spawn regular `task-lead` for resume",
+        "resume --slug <slug> --worker-stopped",
+        "Confirm the original worker and all nested writers through the host",
+    ), BATCH_SKILL)
+
+
+def test_abandonment_retains_source_and_truthful_unfinished_disposition():
+    _assert_all(_text(BATCH_SKILL), (
+        "Only after an explicit user choice to abandon",
+        "abandon --slug <slug> --worker-stopped --reason <decision>",
+        "Abandonment retains source, branch and evidence",
+        "retains unresolved scope ownership",
+        "It does not cancel/close the task or satisfy the Goal",
+        "Report the unfinished retained disposition and next action",
+        "never `-D` for unmerged unique commits",
+        "Operational close refuses unfinished work/cleanup",
+        "reports abandoned retention separately",
+    ), BATCH_SKILL)

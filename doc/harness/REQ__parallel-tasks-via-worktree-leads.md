@@ -9,12 +9,13 @@ invalidated_by_paths:
   - plugin/scripts/_lib.py
   - plugin/scripts/batch_harvest.py
   - plugin/scripts/batch_finish.py
+  - plugin/scripts/batch_state.py
   - plugin/scripts/setup_finalize.py
   - plugin/scripts/batch_preflight.py
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-28T10:47:52Z
+freshness_updated: 2026-09-28T13:28:11Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -67,10 +68,17 @@ freshness_updated: 2026-09-28T10:47:52Z
   integration task in the main checkout that runs the full suite, review,
   QA, and — in the harness source repo — the verified install. Leads never
   run `install_verified.py`.
+- The coordinator persists requests, reservations, worker/worktree identity and
+  integration checkpoints through `batch_state.py`. It refills available slots
+  without waiting for a whole wave; dependent requests wait for confirmed
+  integration and cleanup. Bootstrap-only leads return identity before `bind`
+  permits their normal lifecycle. Exact restart, retained-scope reservations,
+  cap selection and abandonment semantics are owned by
+  [Batch state, bounded scheduling and recovery](REQ__batch-state-pool-recovery.md).
 - The coordinator procedure (intake, preflight, spawn, rebase/conflict path,
   harvest, integration) is owned by `plugin/skills/batch/SKILL.md`; the lead's
   rules and its JSON return shape by `plugin/agents/task-lead.md`.
-- While a wave runs, no harness task may be open in the main checkout for the
+- While any lead runs, no harness task may be open in the main checkout for the
   same session. A late lens stop from a lead whose worktree was already
   removed resolves its `cwd` up to the main checkout, and it must find no open
   task there to bind to.
@@ -441,13 +449,15 @@ Stop-gap rules (current):
 - Preflight cleanliness checks explicitly include untracked files in the
   main checkout, submodules and nested repos, overriding
   `status.showUntrackedFiles=no`.
-- Known limit: the preflight checks repository shape, scopes, and
+- Standalone preflight checks repository shape, scopes, and
   cleanliness, not HEAD state or earlier waves. A main checkout on a detached
   HEAD or in the middle of a rebase, merge, cherry-pick, revert, or bisect
   is not refused for that state (it gets `ok` when the tree is otherwise
   clean; unmerged entries still refuse as dirt), and kept blocked/failed lead
-  worktrees are not compared with the new wave's scopes; both are follow-ups.
-  At integration, `batch_finish.py` does refuse a detached main HEAD
+  worktrees are not compared with the new wave's scopes by that standalone script.
+  The pool's `batch_state.py claim` additionally checks destination branch,
+  in-progress Git operations and retained scopes across recorded batches.
+  At integration, `batch_finish.py` also refuses a detached main HEAD
   (`ff-refused`) before changing anything.
 
 Verified hazards (git 2.43, reproduced in the 2026-09-27 investigation):
@@ -529,7 +539,8 @@ stop-gap above applies.
   `{"path", "git_path", "status"}`, with status `ignored`, `not-ignored`,
   `outside-repo`, or `unchecked` (control root not `ok`, or check-ignore
   failed or `setup_finalize` could not be loaded, both of which refuse).
-- Default concurrency is 3 leads; more only on explicit user request. Each
+- Default concurrency is 3 leads; `batch.max_leads` or explicit `--max-leads`
+  selects a bounded cap under the linked pool requirement. Each
   worktree builds its own `.venv`, and on a 9p/drvfs mount pytest `-n auto` per
   lead oversubscribes CPU and IO, so leads pass `-n 4`.
 - Leads run the installed harness plugin, not the `plugin/` tree in their own

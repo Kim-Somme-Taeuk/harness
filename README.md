@@ -97,7 +97,8 @@ All under `plugin/agents/`. Narrow tool surface — each agent gets only what it
 | `developer` | Implements PLAN.md per AC |
 | `ac-worker` | Implements one AC's owned files; may split disjoint work one level deep on Claude |
 | `test-author` | Writes one AC's tests from PLAN.md intent inside its `Tests:` paths alongside the implementation lane |
-| `task-lead` | `harness:batch` lead: runs one whole task lifecycle inside its own `isolation: worktree` checkout and commits on its branch |
+| `task-lead` | `harness:batch` lead: bootstraps its `isolation: worktree` checkout, waits for durable worker binding, then runs one task lifecycle and commits on its branch |
+| `task-lead-resume` | Continues the exact retained worktree/task/run after worker binding; allocates no new checkout |
 | `defect-hunter` | Non-attesting evidence-only discovery: LIGHT runs 0, STANDARD 1 selected focus, and DEEP both focuses |
 | `code-reviewer` | Always runs fresh after discovery, independently sweeps the full scope, and is the sole `review-code` verdict authority |
 | `security-reviewer` | Conditional trust-boundary and exploitability specialist; sole `review-security` authority |
@@ -170,8 +171,9 @@ All under `plugin/scripts/`. Stdlib only.
 | `req_detector.py` | Detect observable behavior that needs a durable `REQ__*.md` | stdout |
 | `req_scaffold.py` | Create or update durable REQ scaffolds before observable source work | `doc/<area>/REQ__*.md` |
 | `install_verified.py` | Stateless trusted post-QA delivery wrapper; compares canonical payloads from an isolated verified snapshot and refreshes only stale runtimes | stdout / exit status |
-| `batch_preflight.py` | `harness:batch` intake/preflight: read-only repo-shape report — control-root shape, submodules, ignored nested repos, a post-checkout hook whose text mentions `submodule`, per-scope class, cleanliness of the main checkout plus every populated submodule and nested repo, whether `.claude/worktrees/` is gitignored at the path git sees (a `.claude` symlink leaving the repository passes), and scope overlap between requests; exits 0 only when those checks allow the wave | stdout (JSON) |
-| `batch_finish.py` | `harness:batch` coordinator step d for one closed lead: checks (returned commit is the branch tip, no merge commit, lead worktree clean, main checkout clean and on a branch), rebases in the lead worktree, fast-forwards the main checkout, harvests through `batch_harvest.py`, unlocks only a locked worktree, then `git worktree remove` and `git branch -d`, never `--force`; `--resume` for a lead resolved by hand in the integration task; status `integrated`/`kept`/`conflict`/`ff-refused` as exit 0/3/4/5 (`error`, exit 1, on an unexpected failure) | stdout (JSON) |
+| `batch_state.py` | Durable batch records, bounded pool claims, exact worker/result binding, serialized finish checkpoints, status/recovery, same-worktree resume and explicit retained abandonment; operational state never grants task PASS | `doc/harness/runtime/batches/` |
+| `batch_preflight.py` | `harness:batch` intake/preflight: read-only repo-shape report — control-root shape, submodules, ignored nested repos, a post-checkout hook whose text mentions `submodule`, per-scope class, cleanliness of the main checkout plus every populated submodule and nested repo, whether `.claude/worktrees/` is gitignored at the path git sees (a `.claude` symlink leaving the repository passes), and scope overlap between requests; exits 0 only when those checks allow the requested set | stdout (JSON) |
+| `batch_finish.py` | Integration helper (wrapped by `batch_state.py finish` for managed pools) for one closed lead: checks (returned commit is the branch tip, no merge commit, lead worktree clean, main checkout clean and on a branch), rebases in the lead worktree, fast-forwards the main checkout, harvests through `batch_harvest.py`, unlocks only a locked worktree, then `git worktree remove` and `git branch -d`, never `--force`; `--resume` for a lead resolved by hand in the integration task; status `integrated`/`kept`/`conflict`/`ff-refused` as exit 0/3/4/5 (`error`, exit 1, on an unexpected failure) | stdout (JSON) |
 | `batch_harvest.py` | `harness:batch` coordinator step: copies an integrated (rebased and fast-forwarded) lead worktree's gitignored task evidence and learnings into the main checkout before `git worktree remove`; refuses unregistered, not-yet-integrated, or detached-HEAD (mid-rebase) worktrees, links, non-regular files, and archive collisions | `doc/harness/archive/batch/`, `doc/harness/learnings.jsonl` |
 | `install_smoke.py` | Drives an installed runtime tree once — imports every registered hook module and checks a bound subagent produces a receipt row; run by `install.py` after each sync and on the default run's SYNCHRONIZED skip path | stdout / exit status |
 | `runbook_memory.py` | Capture approved runbooks and pending setup-command candidates | `doc/harness/runbooks.yaml` |
@@ -258,7 +260,7 @@ absolute path of a registered linked worktree whose task the call targets
 |-------|-------------|
 | `/harness:setup` | Bootstrap harness in target project |
 | `/harness:run` | Codex public entry for any repository-mutating workflow |
-| `/harness:batch` | Claude: run several independent tasks in parallel from one session, one worktree lead each, then rebase and fast-forward each lead and verify once |
+| `/harness:batch` | Claude: run a bounded worktree-lead pool from one session, persist/resume exact ownership, refill after serial rebase/fast-forward integration, then review and verify |
 
 Normal usage is `/harness:setup` once per repository. On Codex, `$harness:run`
 is implicitly selected for plain repository mutation and may also be invoked
@@ -280,7 +282,7 @@ plugin/
   mcp/harness_server.py         # 8-tool MCP server
   agents/                       # developer, defect-hunter, code/security reviewers, dogfooder, QA/UX lenses
   skills/                       # 5 user-facing + 4 review sub-skills
-  scripts/                      # _lib.py + 17 stdlib scripts
+  scripts/                      # stdlib helpers, including batch state/preflight/finish/harvest
 ```
 
 ## Development

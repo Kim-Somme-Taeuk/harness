@@ -38,6 +38,7 @@ def pytest_generate_tests(metafunc):
         "failure": ["timeout", "oserror"],
         "boundary": ["after-rebase", "before-merge", "merge-timeout"],
         "checkout": ["detached", "sibling"],
+        "checkpoint_stage": ["rebase", "integrated", "harvested"],
     }
     for name, values in cases.items():
         if name in metafunc.fixturenames:
@@ -506,14 +507,14 @@ def test_removal_refusal_relocks_with_the_original_reason(tmp_path, monkeypatch)
     main = _main(tmp_path, monkeypatch)
     lead = Lead(main, "sticky")
     lead.commit_files({"s.txt": "s\n"})
-    real_harvest = mod.batch_harvest.harvest
+    real_git = mod._git
 
-    def harvest_then_leave_a_file(repo, worktree, task_id):
-        summary = real_harvest(repo, worktree, task_id)
-        _write(Path(worktree) / "late-untracked.txt", "x\n")
-        return summary
+    def refuse_removal(cwd, *args):
+        if args[:2] == ("worktree", "remove"):
+            _write(lead.worktree / "late-untracked.txt", "x\n")
+        return real_git(cwd, *args)
 
-    monkeypatch.setattr(mod.batch_harvest, "harvest", harvest_then_leave_a_file)
+    monkeypatch.setattr(mod, "_git", refuse_removal)
     result = lead.finish()
     assert result["status"] == "kept", result
     assert "git worktree remove" in result["reason"]
@@ -529,19 +530,15 @@ def test_a_failed_relock_says_the_worktree_is_unlocked(tmp_path, monkeypatch):
     main = _main(tmp_path, monkeypatch)
     lead = Lead(main, "bare")
     lead.commit_files({"s.txt": "s\n"})
-    real_git, real_harvest = mod._git, mod.batch_harvest.harvest
-
-    def harvest_then_leave_a_file(repo, worktree, task_id):
-        summary = real_harvest(repo, worktree, task_id)
-        _write(Path(worktree) / "late-untracked.txt", "x\n")
-        return summary
+    real_git = mod._git
 
     def lock_fails(cwd, *args):
+        if args[:2] == ("worktree", "remove"):
+            _write(lead.worktree / "late-untracked.txt", "x\n")
         if args[:2] == ("worktree", "lock"):
             return subprocess.CompletedProcess(args, 128, "", "fatal: simulated")
         return real_git(cwd, *args)
 
-    monkeypatch.setattr(mod.batch_harvest, "harvest", harvest_then_leave_a_file)
     monkeypatch.setattr(mod, "_git", lock_fails)
     result = lead.finish()
     assert result["status"] == "kept", result
@@ -615,7 +612,8 @@ def test_cli_prints_one_json_result_with_distinct_exit_codes(tmp_path, monkeypat
     body = json.loads(integrated.stdout)
     assert body["status"] == "integrated"
     assert set(body) == set(mod._result(argparse.Namespace(
-        task_id="", branch="", commit="", resume=False), ""))
+        task_id="", branch="", commit="", resume=False), "")) | {"destination_ref"}
+    assert body["destination_ref"] == "refs/heads/main"
 
     conflict = clash.cli()
     assert conflict.returncode == 4
@@ -932,3 +930,79 @@ def test_removal_completed_before_exception_is_reported_without_deleting_branch(
     assert not result["cleanup"]["relocked"]
     assert not result["cleanup"]["branch_deleted"]
     assert _tip(main, lead.branch) == lead.commit
+
+
+def test_checkpoint_failure_stops_following_mutations_and_retains_source(
+    tmp_path, monkeypatch, checkpoint_stage,
+):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "checkpoint")
+    lead.commit_files({"change.txt": "lead work\n"})
+    original_main = _commit_on_main(main, "main-only.txt", "main work\n")
+    evidence = lead.worktree / "doc/harness/tasks" / lead.task_id / "PLAN.md"
+    original_evidence = evidence.read_bytes()
+    stages = []
+    snapshots = []
+
+    def checkpoint(stage, result):
+        stages.append(stage)
+        snapshots.append(result)
+        assert result["destination_ref"] == "refs/heads/main"
+        assert result["branch_tip"] == _head(lead.worktree) != lead.commit
+        assert not any(result["cleanup"].values())
+        assert result["integrated_tip"] == (None if stage == "rebase" else _head(main))
+        if stage == checkpoint_stage:
+            raise OSError("checkpoint persistence failed")
+
+    args = argparse.Namespace(
+        worktree=str(lead.worktree), branch=lead.branch, task_id=lead.task_id,
+        commit=lead.commit, resume=False,
+    )
+    result = mod.finish(str(main), args, checkpoint=checkpoint)
+
+    assert stages == ["rebase", "integrated", "harvested"][:stages.index(checkpoint_stage) + 1]
+    assert result["status"] == "error", result
+    assert "checkpoint persistence failed" in result["reason"]
+    rebased = _head(lead.worktree)
+    assert _tip(main, lead.branch) == rebased != lead.commit
+    assert _head(main) == (original_main if checkpoint_stage == "rebase" else rebased)
+    assert result["integrated_tip"] == (None if checkpoint_stage == "rebase" else rebased)
+    assert evidence.read_bytes() == original_evidence
+    assert (lead.worktree / "change.txt").read_text() == "lead work\n"
+    assert _lock_reason(main, lead.worktree) == LOCK_REASON
+    assert not any(result["cleanup"].values())
+    archive = main / "doc/harness/archive/batch" / lead.task_id
+    assert archive.exists() is (checkpoint_stage == "harvested")
+    if archive.exists():
+        assert (archive / "PLAN.md").read_bytes() == original_evidence
+    # Earlier checkpoint objects are snapshots, never live result dictionaries.
+    assert snapshots[0]["integrated_tip"] is None
+    assert not any(snapshots[0]["cleanup"].values())
+
+
+def test_checkpoint_receives_deep_copies_without_changing_successful_finish(tmp_path, monkeypatch):
+    main = _main(tmp_path, monkeypatch)
+    lead = Lead(main, "snapshot")
+    lead.commit_files({"change.txt": "lead work\n"})
+    stages = []
+
+    def checkpoint(stage, result):
+        stages.append(stage)
+        assert result["destination_ref"] == "refs/heads/main"
+        result["integrated_tip"] = "not a commit"
+        result["cleanup"]["removed"] = "mutated callback snapshot"
+        if result["harvest"] is not None:
+            result["harvest"].clear()
+
+    args = argparse.Namespace(
+        worktree=str(lead.worktree), branch=lead.branch, task_id=lead.task_id,
+        commit=lead.commit, resume=False,
+    )
+    result = mod.finish(str(main), args, checkpoint=checkpoint)
+    assert stages == ["rebase", "integrated", "harvested"]
+    assert result["status"] == "integrated", result
+    assert result["integrated_tip"] == _head(main) == lead.commit
+    assert result["harvest"]
+    assert result["cleanup"]["removed"] is True
+    assert result["cleanup"]["branch_deleted"] is True
+    assert not lead.worktree.exists()
