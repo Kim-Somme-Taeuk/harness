@@ -252,7 +252,9 @@ def main_boundary(repo, expected=None):
 
 
 def preflight(repo, item):
-    report = batch_preflight.preflight(repo, {item['slug']: item['scopes']})
+    requests = {item['slug']: item['scopes']}
+    require(not batch_preflight._globs_and_lists(repo, requests), 'scope names no existing path and looks like a glob or comma list')
+    report = batch_preflight.preflight(repo, requests)
     require(report['verdict'] == 'ok', 'preflight refused: ' + json.dumps(report))
     resolved = [x['resolved'] for x in report['scopes']]
     require('resolved_scopes' not in item or resolved == item['resolved_scopes'], 'scope resolution changed')
@@ -455,6 +457,8 @@ def execute(args, directory, records):
         return {'status': 'ok', 'claims': claims, 'reasons': reasons, 'max_leads': data['max_leads']}
     if args.command == 'close':
         require(all(x['status'] in {'integrated', 'abandoned'} for x in data['requests']), 'unfinished work or cleanup remains')
+        require(all(x['status'] == 'integrated' or not (x.get('checkpoint', {}).get('integrated_tip')
+                    or x.get('finish_result', {}).get('integrated_tip')) for x in data['requests']), 'integrated cleanup remains')
         require(not data['halted'], 'recovery remains unresolved')
         data['status'] = 'closed'
         save()
@@ -550,17 +554,17 @@ def execute(args, directory, records):
     elif args.command == 'abandon':
         require(args.worker_stopped and args.reason.strip(), 'abandon requires stopped assertion and reason')
         require(item['status'] != 'integrated', 'cannot abandon this state')
-        require(not item.get('checkpoint', {}).get('integrated_tip'), 'integrated cleanup requires recovery')
-        if item['status'] in {'integrating', 'recovery-required', 'kept'}:
+        require(not (item.get('checkpoint', {}).get('integrated_tip') or item.get('finish_result', {}).get('integrated_tip')), 'integrated cleanup requires recovery')
+        if item.get('checkpoint') or item['status'] in {'integrating', 'recovery-required', 'kept'}:
             checkpoint = item.get('checkpoint', {})
             main_boundary(repo, data['destination_ref'])
             require(checkpoint.get('destination_ref') == data['destination_ref'] and checkpoint.get('branch_tip'), 'unknown integration requires recovery')
-            require(item.get('finish_result', {}).get('status') in {'conflict', 'ff-refused', 'kept'}, 'unknown integration requires recovery')
             tip = bound(repo, item)
             require(tip == checkpoint['branch_tip'], 'branch changed; integration requires recovery')
             no_git_operation(item['worktree'])
             require(finish_helper._git(repo, 'merge-base', '--is-ancestor', tip, data['destination_ref']).returncode == 1,
                     'integrated or unknown outcome requires recovery')
+            require(item.get('finish_result', {}).get('status') in {'conflict', 'ff-refused', 'kept'}, 'unknown integration requires recovery')
             require(not item.get('finish_result', {}).get('integrated_tip') and checkpoint.get('stage') in {'started', 'rebase'}, 'post-effect cleanup requires recovery')
             control(item, closed=True)
         item.update(disposition='never-dispatched' if item['status'] == 'queued' else 'retained-work',
@@ -625,7 +629,13 @@ def execute(args, directory, records):
             require(checkpoint.get('run_id') == item.get('run_id') and checkpoint.get('close_fingerprint') == item.get('close_fingerprint'), 'checkpoint task identity mismatch')
             branch_tip = finish_helper._resolve_commit(repo, 'refs/heads/' + item['branch'])
             require(not branch_tip or branch_tip == tip, 'branch tip changed since checkpoint')
-            integrated = finish_helper._git(repo, 'merge-base', '--is-ancestor', tip, data['destination_ref']).returncode == 0
+            ancestry = finish_helper._git(repo, 'merge-base', '--is-ancestor', tip, data['destination_ref']).returncode
+            require(ancestry in {0, 1}, 'integration ancestry could not be determined')
+            integrated = ancestry == 0
+            if integrated:
+                checkpoint['integrated_tip'] = tip
+                if checkpoint.get('stage') in {'started', 'rebase'}:
+                    checkpoint['stage'] = 'integrated'
             if os.path.exists(item['worktree']):
                 require(bound(repo, item) == tip, 'worktree tip changed')
                 control(item, closed=True)

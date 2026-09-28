@@ -30,6 +30,7 @@ def pytest_generate_tests(metafunc):
         "archive_corrupt": [False, True],
         "bad_marker": ["wrong", "symlink", "hardlink", "directory", "ignored", "tracked"],
         "sync_failure": [False, True],
+        "literal_scope": ["literal[ab].txt", "literal*.txt", "literal,part.txt"],
     }
     for name, values in cases.items():
         if name in metafunc.fixturenames:
@@ -872,3 +873,121 @@ def test_native_remove_refusal_restores_retention_marker_then_retry_succeeds(tmp
     assert not worktree.exists()
     assert not _git("branch", "--list", branch, cwd=pool.repo)
     pool.cli("close")
+
+
+def test_process_death_after_ff_before_checkpoint_requires_integration_cleanup(tmp_path, monkeypatch):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, branch, directory = complete(pool)
+    evidence = (directory / "TASK.json").read_bytes()
+    returned_tip = _head(worktree)
+    _write(pool.repo / "main-only.txt", "force a distinct rebased tip\n")
+    _git("add", "main-only.txt", cwd=pool.repo)
+    _git("commit", "-qm", "advance destination", cwd=pool.repo)
+    program = """
+import os, subprocess, sys
+sys.path.insert(0, sys.argv.pop(1))
+import batch_state
+original_run = subprocess.run
+def die_after_successful_merge(command, *args, **kwargs):
+    result = original_run(command, *args, **kwargs)
+    if 'merge' in command and '--ff-only' in command:
+        assert result.returncode == 0, result.stderr
+        os._exit(91)
+    return result
+subprocess.run = die_after_successful_merge
+batch_state.main(sys.argv[1:])
+"""
+    result = subprocess.run([sys.executable, "-c", program, str(SCRIPT.parent),
+                             *pool.argv("finish", "--slug", "a")[2:]],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 91, (result.stdout, result.stderr)
+    integrated_tip = _head(pool.repo)
+    assert integrated_tip == _head(worktree) and integrated_tip != returned_tip
+    assert not (pool.repo / "doc/harness/archive/batch/TASK__a").exists()
+    pool.cli("recover", "--slug", "a", "--worker-stopped")
+    pool.cli("abandon", "--slug", "a", "--worker-stopped", "--reason", "cannot skip cleanup", ok=False)
+    pool.cli("close", ok=False)
+    assert worktree.exists() and (directory / "TASK.json").read_bytes() == evidence
+    pool.cli("finish", "--slug", "a", "--resume")
+    assert not worktree.exists()
+    assert not _git("branch", "--list", branch, cwd=pool.repo)
+    assert _head(pool.repo) == integrated_tip
+    assert (pool.repo / "doc/harness/archive/batch/TASK__a/TASK.json").read_bytes() == evidence
+    pool.cli("close")
+
+
+def test_nonexistent_glob_or_comma_scope_refuses_intake(tmp_path, monkeypatch, literal_scope):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init([request("a", literal_scope)], ok=False)
+    assert not pool.state.exists()
+
+
+def test_existing_literal_glob_or_comma_filename_is_valid_scope(tmp_path, monkeypatch, literal_scope):
+    pool = Pool(tmp_path, monkeypatch)
+    _write(pool.repo / literal_scope, "literal path\n")
+    _git("add", "-A", cwd=pool.repo)
+    _git("commit", "-qm", "literal filename", cwd=pool.repo)
+    pool.init([request("a", literal_scope)])
+    assert [row["slug"] for row in pool.claim()] == ["a"]
+
+
+def test_removed_literal_glob_or_comma_scope_refuses_claim(tmp_path, monkeypatch, literal_scope):
+    pool = Pool(tmp_path, monkeypatch)
+    path = pool.repo / literal_scope
+    _write(path, "literal path\n")
+    _git("add", "-A", cwd=pool.repo)
+    _git("commit", "-qm", "literal filename", cwd=pool.repo)
+    pool.init([request("a", literal_scope)])
+    path.unlink()
+    _git("add", "-A", cwd=pool.repo)
+    _git("commit", "-qm", "remove literal filename", cwd=pool.repo)
+    before = pool.state.read_bytes()
+    pool.cli("claim", ok=False)
+    assert pool.state.read_bytes() == before
+
+
+def test_recovery_merge_base_error_preserves_unknown_integration_and_halts_claim(tmp_path, monkeypatch, capsys):
+    pool = Pool(tmp_path, monkeypatch)
+    pool.init()
+    pool.claim()
+    worktree, _, directory = complete(pool)
+    evidence = (directory / "TASK.json").read_bytes()
+    program = """
+import os, subprocess, sys
+sys.path.insert(0, sys.argv.pop(1))
+import batch_state
+original_run = subprocess.run
+def die_after_merge(command, *args, **kwargs):
+    result = original_run(command, *args, **kwargs)
+    if 'merge' in command and '--ff-only' in command:
+        assert result.returncode == 0
+        os._exit(91)
+    return result
+subprocess.run = die_after_merge
+batch_state.main(sys.argv[1:])
+"""
+    crashed = subprocess.run([sys.executable, "-c", program, str(SCRIPT.parent),
+                              *pool.argv("finish", "--slug", "a")[2:]],
+                             capture_output=True, text=True, timeout=30)
+    assert crashed.returncode == 91, (crashed.stdout, crashed.stderr)
+    module = load_state_module()
+    original_run = subprocess.run
+    queries = []
+
+    def unavailable_ancestry(command, *args, **kwargs):
+        if "merge-base" in command:
+            queries.append(command)
+            return subprocess.CompletedProcess(command, 128, "", "fatal: ancestry unavailable")
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", unavailable_ancestry)
+    code = module.main(pool.argv("recover", "--slug", "a", "--worker-stopped")[2:])
+    output = capsys.readouterr().out
+    monkeypatch.setattr(subprocess, "run", original_run)
+    assert queries and code != 0, output
+    assert worktree.exists() and (directory / "TASK.json").read_bytes() == evidence
+    state = json.loads(pool.state.read_text())
+    assert state.get("halted") or state["requests"][0]["status"] == "integrating"
+    pool.cli("claim", ok=False)
