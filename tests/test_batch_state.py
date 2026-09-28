@@ -9,10 +9,28 @@ import subprocess
 import sys
 from pathlib import Path
 
-from test_batch_finish import _git, _head, _main, _write
-
 SCRIPT = Path(__file__).resolve().parents[1] / "plugin/scripts/batch_state.py"
 RUN = "0198c349-5800-7000-8000-000000000001"
+
+
+def _git(*args, **kwargs):
+    from test_batch_finish import _git as git
+    return git(*args, **kwargs)
+
+
+def _head(repo):
+    from test_batch_finish import _head as head
+    return head(repo)
+
+
+def _main(*args, **kwargs):
+    from test_batch_finish import _main as main
+    return main(*args, **kwargs)
+
+
+def _write(path, text):
+    from test_batch_finish import _write as write
+    return write(path, text)
 
 
 def pytest_generate_tests(metafunc):
