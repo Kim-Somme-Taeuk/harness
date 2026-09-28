@@ -3,7 +3,7 @@ name: batch
 description: Coordinator procedure for running several independent harness tasks in parallel from one session, one harness:task-lead per linked git worktree, rebased, fast-forwarded, and verified afterward.
 argument-hint: <N requests, each with a slug and declared path scope>
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Bash, Agent, Skill
+allowed-tools: Read, Glob, Grep, Bash, Agent, SendMessage, Skill
 ---
 
 Run independent Claude worktree tasks in a bounded pool: fill, collect,
@@ -93,18 +93,26 @@ Before initializing or spawning anything:
 2. Spawn the claimed bootstrap leads in **one assistant message**:
 
    ```
-   Agent(subagent_type: "harness:task-lead", prompt: "bootstrap-only; do not start a task or edit source.\n<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\ncoordinator HEAD: <claim spawn_head>\npytest worker cap: 4")
+   Agent(subagent_type: "harness:task-lead", prompt: "bootstrap-only; do not start a task or edit source.\n<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\ncoordinator HEAD: <claim spawn_head>\nmain checkout: <main checkout>\nbatch id: <id>\npytest worker cap: 4")
    ```
 
    Do not pass `name=`: named teammates do not receive worktree isolation.
    Track the actual native worker identity immediately when the host exposes it.
+   Before its final response, the lead runs
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> bootstrap --slug <slug> --worktree <W> --branch <branch>`.
+   Require `status: "bootstrapped"` and its marker path/payload. The helper
+   permits only `.harness-batch-bootstrap`, nonignored and untracked, containing
+   exact `{batch_id,slug,spawn_head}` reservation bytes; no source/task edits.
+   This operational marker preserves W under
+   [native cleanup](https://code.claude.com/docs/en/worktrees#clean-up-subagent-and-background-session-worktrees).
    The bootstrap returns its canonical worktree, branch and HEAD and stops;
-   this is a handshake, not a completed task result.
+   this is a handshake, not a completed task result. Retain the marker through
+   every unfinished or zero-source final; never stage or remove it in a lead.
 3. Bind that exact host identity before granting mutation permission:
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> bind --slug <slug> --worker-id <native id> --worktree <W> --branch <branch>`.
-   Only after successful binding, use the host's native resume capability to
-   resume that same agent with the confirmed binding and permission to start
-   its lifecycle. Never replace this with a fresh isolating spawn. If native
+   Only after successful binding, use native `SendMessage` addressed to that
+   exact bound agent ID to resume that same agent with the confirmed binding
+   and permission to start its lifecycle. Never replace this with a fresh isolating spawn. If native
    resume is unavailable, keep the bootstrap stopped and report that runtime
    blocker. A replacement worker requires the explicit stopped-writer resume
    reservation in section d, never force-rebinding a running reservation. If
@@ -140,7 +148,8 @@ then combined review/QA in step e.
    checkout:
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> finish --slug <slug>`
    It first checks, and changes nothing when a check fails: `<commit>` is the
-   branch tip, the lead worktree is clean, the main checkout is clean and on
+   branch tip, the lead worktree is clean except for the exact validated
+   retention marker, the main checkout is clean and on
    a branch, and the branch holds no merge commit
    (`git rev-list --merges "$(git rev-parse HEAD)..<branch>"` prints
    nothing), because a rebase would drop whatever a merge commit itself
@@ -153,7 +162,11 @@ then combined review/QA in step e.
    (`git worktree unlock <W>`), and runs `git worktree remove <W>` and
    `git branch -d <branch>`. The script never stashes or passes `--force`;
    around it, never stash, pass `--force`, or fall back to a merge commit
-   either. Run it only for a lead that has returned: never unlock a worktree
+   either. Managed finish preserves the marker through rebase and integration
+   failures and removes only that marker after the durable archive checkpoint,
+   immediately before ordinary worktree removal. Unknown marker bytes, links,
+   tracking or other dirty files refuse; standalone finish has no exemption.
+   Run it only for a lead that has returned: never unlock a worktree
    whose lead is still running.
 2. Inspect the wrapped helper JSON result (`status`, `reason`, `conflicted_paths`,
    `returned_commit`, `branch_tip`, `integrated_tip`, `trailer_present`,
@@ -238,7 +251,8 @@ means retain and report, never unlock or expire a reservation.
   bootstrap-only with the returned handoff and original scope/off-limits;
   it has no worktree isolation and must use the existing W. Obtain its actual
   identity, bind it with the section c.3 command, then authorize that exact
-  worker through native resume. Never spawn regular `task-lead` for resume.
+  worker through `SendMessage` to its exact bound agent ID. Never spawn regular
+  `task-lead` for resume. Keep its existing retention marker unchanged.
   If the host cannot separate bootstrap from permission to mutate, retain the
   work and report that runtime blocker. Interrupted running work uses this
   explicit stopped-writer path without inventing a failed result. Pin its
@@ -250,9 +264,16 @@ means retain and report, never unlock or expire a reservation.
   `task_start(workspace=W, task_id=existing_id)` without `fresh_run`.
 - Only after an explicit user choice to abandon, record
   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> abandon --slug <slug> --worker-stopped --reason <decision>`.
-  Abandonment retains source, branch and evidence, releases worker capacity but
-  retains unresolved scope ownership. It does not cancel/close the task or
-  satisfy the Goal. Report the unfinished retained disposition and next action.
+  Queued requests, including descendants of an abandoned dependency, may be
+  explicitly abandoned as never dispatched; never automatically cancel them.
+  Bound work requires stopped writers and a confirmed unintegrated destination
+  outcome with no pending Git operation. Unknown, post-effect or integrated
+  cleanup must remain recovery-required, not abandoned to clear a halt.
+  For retained work: abandonment retains source, branch and evidence, including
+  the marker, releases worker capacity but retains unresolved scope ownership.
+  Report the unfinished retained disposition and next action. Distinguish this
+  from never-dispatched abandonment. It does not cancel/close the task or
+  satisfy the Goal; neither disposition means completed implementation.
 - A spawn that never created external work may release its unused reservation
   with `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> release --slug <slug> --worker-stopped --no-external-work`.
   Confirm both assertions from actual host evidence; a bound/existing checkout
@@ -332,7 +353,9 @@ whose result has `trailer_present: false`: its commits carry no
 `Harness-Task` trailer. Add a row for every request the
 preflight kept out of the pool: "excluded (ordinary task, done or pending)",
 "queued (dependency or retained scope)", or "outside the root, not batchable". End with
-the integration task's verdict and operational batch disposition. Distinguish unresolved retained originals from
+the integration task's verdict and operational batch disposition. Label abandoned
+requests as retained work or never dispatched, never as completed implementation.
+Distinguish unresolved retained originals from
 verified recovery: report the recovery destination/tip and actual worktree and
 branch removal, or the retained path/branch, blocker and next action. Do not
 claim overall completion while owned cleanup remains unresolved.

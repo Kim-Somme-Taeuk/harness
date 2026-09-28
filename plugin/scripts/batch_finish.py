@@ -53,6 +53,7 @@ import copy
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 
@@ -76,6 +77,37 @@ IDENTITY_ENV = (
     "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
 )
 EXIT_CODES = {"integrated": 0, "error": 1, "kept": 3, "conflict": 4, "ff-refused": 5}
+RETENTION_MARKER = '.harness-batch-bootstrap'
+
+
+def retention_bytes(retention):
+    if (not isinstance(retention, dict) or set(retention) != {'batch_id', 'slug', 'spawn_head'}
+            or not all(isinstance(v, str) and v for v in retention.values())
+            or not COMMIT_RE.fullmatch(retention['spawn_head'])):
+        raise FinishError('invalid bootstrap retention contract')
+    return (json.dumps(retention, sort_keys=True) + '\n').encode()
+
+
+def validate_retention(worktree, retention):
+    expected = retention_bytes(retention)
+    path = os.path.join(worktree, RETENTION_MARKER)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o022
+                or handle.read(len(expected) + 1) != expected):
+            raise FinishError('unsafe or changed bootstrap retention marker')
+    if (_git_out(worktree, 'ls-files', '--', RETENTION_MARKER).strip()
+            or _git(worktree, 'check-ignore', '--no-index', '-q', '--', RETENTION_MARKER).returncode != 1):
+        raise FinishError('bootstrap retention marker must be untracked and nonignored')
+
+
+def lead_status(worktree, retention=None):
+    if retention is not None:
+        validate_retention(worktree, retention)
+    return [line for line in _status_lines(worktree)
+            if retention is None or line != '?? ' + RETENTION_MARKER]
 
 
 class FinishError(RuntimeError):
@@ -191,7 +223,7 @@ def _result(args, worktree: str) -> dict:
     }
 
 
-def _check(repo: str, worktree: str, args, result: dict) -> tuple[str, str]:
+def _check(repo: str, worktree: str, args, result: dict, retention=None) -> tuple[str, str]:
     """Run pre-rebase checks; return the original main ref and its commit."""
     try:
         resolved = resolve_registered_worktree(repo, worktree)
@@ -239,7 +271,7 @@ def _check(repo: str, worktree: str, args, result: dict) -> tuple[str, str]:
             f"{args.branch} holds merge commit(s) {', '.join(merges)}; a rebase would drop "
             "what a merge commit itself changed",
         )
-    dirty = _status_lines(worktree)
+    dirty = lead_status(worktree, retention)
     if dirty:
         raise Outcome("kept", f"the lead worktree is not clean ({len(dirty)} status entries)")
     dirty = _status_lines(repo)
@@ -315,7 +347,7 @@ def _removal_failure_note(repo: str, worktree: str, lock, cleanup: dict) -> str:
     return ""
 
 
-def _cleanup(repo: str, worktree: str, branch: str, result: dict) -> None:
+def _cleanup(repo: str, worktree: str, branch: str, result: dict, retention=None) -> None:
     cleanup = result["cleanup"]
     lock = _worktree_lock(repo, worktree)
     if lock is not None:
@@ -324,7 +356,21 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict) -> None:
             raise Outcome("kept", f"`git worktree unlock` failed: {_detail(unlocked)}")
         cleanup["unlocked"] = True
     try:
-        removed = _git(repo, "worktree", "remove", worktree)
+        if retention is not None:
+            validate_retention(worktree, retention)
+            os.unlink(os.path.join(worktree, RETENTION_MARKER))
+        try:
+            removed = _git(repo, "worktree", "remove", worktree)
+        finally:
+            # A removal refusal must keep the native retention predicate too.
+            marker = os.path.join(worktree, RETENTION_MARKER)
+            if retention is not None and os.path.isdir(worktree) and not os.path.lexists(marker):
+                if resolve_registered_worktree(repo, worktree):
+                    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, 'wb') as handle:
+                        handle.write(retention_bytes(retention))
+                        handle.flush()
+                        os.fsync(handle.fileno())
     except (Exception, KeyboardInterrupt) as exc:
         note = _removal_failure_note(repo, worktree, lock, cleanup)
         raise FinishError(f"{type(exc).__name__}: {exc}{note}") from exc
@@ -344,14 +390,17 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict) -> None:
     cleanup["branch_deleted"] = True
 
 
-def finish(repo_root: str, args, checkpoint=None) -> dict:
+def finish(repo_root: str, args, checkpoint=None, retention=None) -> dict:
     """Run step d for one lead; never raises, the result carries the status."""
     repo = os.path.realpath(repo_root)
     worktree = os.path.realpath(args.worktree)
     result = _result(args, worktree)
     ref = f"refs/heads/{args.branch}"
     try:
-        main_ref, main_head = _check(repo, worktree, args, result)
+        if retention is not None and checkpoint is None:
+            raise FinishError('retention cleanup requires a durable checkpoint callback')
+        main_ref, main_head = (_check(repo, worktree, args, result) if retention is None
+                               else _check(repo, worktree, args, result, retention))
         result["destination_ref"] = main_ref
         _rebase(repo, worktree, main_head, result)
         result["branch_tip"] = _resolve_commit(repo, ref)
@@ -391,9 +440,12 @@ def finish(repo_root: str, args, checkpoint=None) -> dict:
         _check_main_ref(repo, main_ref)
         if _resolve_commit(repo, ref) != result["integrated_tip"]:
             raise Outcome("kept", "lead branch changed before cleanup")
-        if _status_lines(worktree):
+        if lead_status(worktree, retention):
             raise Outcome("kept", "lead worktree became dirty before cleanup")
-        _cleanup(repo, worktree, args.branch, result)
+        if retention is None:
+            _cleanup(repo, worktree, args.branch, result)
+        else:
+            _cleanup(repo, worktree, args.branch, result, retention)
         result["status"] = "integrated"
     except Outcome as outcome:
         result["status"], result["reason"] = outcome.status, outcome.reason

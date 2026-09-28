@@ -1552,7 +1552,9 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 (c) 예약된 lead를 ONE message로 bootstrap-only 스폰 (기본 최대 3, name= 금지)
       Agent(subagent_type:"harness:task-lead",
             prompt: 요청 / slug / scope / off-limits / coordinator HEAD / pytest worker cap: 4)
-      bootstrap 반환의 W/branch/HEAD와 native worker ID를 bind한 뒤 같은 agent를 재개
+      bootstrap 명령으로 검증된 비추적 보존 표시를 만든 뒤 W/branch/HEAD 반환
+      native worker ID를 bind한 뒤 SendMessage로 같은 agent를 재개
+      표시만 source-clean 검사에서 제외하고, 증거를 디스크에 확정한 뒤 finish가 삭제
       bind 전에는 소스 수정이나 task_start 금지
 (d) 결과를 result로 기록하고 closed lead를 반환 순서대로 하나씩:
       python3 plugin/scripts/batch_state.py --repo <main> --batch-id <id> finish --slug <slug>

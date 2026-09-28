@@ -71,8 +71,10 @@ freshness_updated: 2026-09-28T13:28:11Z
 - The coordinator persists requests, reservations, worker/worktree identity and
   integration checkpoints through `batch_state.py`. It refills available slots
   without waiting for a whole wave; dependent requests wait for confirmed
-  integration and cleanup. Bootstrap-only leads return identity before `bind`
-  permits their normal lifecycle. Exact restart, retained-scope reservations,
+  integration and cleanup. Bootstrap-only leads create the validated retention
+  marker and return identity before `bind` permits their normal lifecycle. The
+  marker preserves otherwise unchanged native worktrees and ignored task evidence
+  until durable harvest; it is never staged or treated as task authority. Exact restart, retained-scope reservations,
   cap selection and abandonment semantics are owned by
   [Batch state, bounded scheduling and recovery](REQ__batch-state-pool-recovery.md).
 - The coordinator procedure (intake, preflight, spawn, rebase/conflict path,

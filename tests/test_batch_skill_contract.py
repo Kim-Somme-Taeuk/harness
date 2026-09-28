@@ -434,3 +434,48 @@ def test_abandonment_retains_source_and_truthful_unfinished_disposition():
         "Operational close refuses unfinished work/cleanup",
         "reports abandoned retention separately",
     ), BATCH_SKILL)
+
+
+def test_native_bootstrap_retention_precedes_bind_and_exact_worker_message():
+    assert "SendMessage" in _frontmatter(BATCH_SKILL)["allowed-tools"].split(", ")
+    norm = _normalized(_text(BATCH_SKILL))
+    bootstrap = "bootstrap --slug <slug> --worktree <w> --branch <branch>"
+    assert norm.index(bootstrap) < norm.index("bind --slug") < norm.index("native `sendmessage`")
+    _assert_all(_text(BATCH_SKILL), (
+        'Require `status: "bootstrapped"`',
+        "exact `{batch_id,slug,spawn_head}` reservation bytes",
+        "Only after successful binding, use native `SendMessage` addressed to that exact bound agent ID",
+        "Retain the marker through every unfinished or zero-source final",
+        "never stage or remove it in a lead",
+    ), BATCH_SKILL)
+    lead = _normalized(_text(TASK_LEAD))
+    assert lead.index(bootstrap) < lead.index("return bootstrap json") < lead.index("`batch_state.py bind`") < lead.index("`sendmessage`")
+    _assert_all(_text(TASK_LEAD), (
+        "sole permitted pre-bind write",
+        "Keep `.harness-batch-bootstrap` through all final returns, including blocked, failed and task-only/zero-source closed results",
+        "Never stage, edit or remove it",
+        "git add <intended paths>` excluding `.harness-batch-bootstrap`",
+        "without a dummy or empty commit",
+    ), TASK_LEAD)
+
+
+def test_resume_preserves_marker_and_managed_finish_removes_only_after_harvest():
+    path = REPO / "plugin/agents/task-lead-resume.md"
+    _assert_all(_text(path), (
+        "Preserve any existing `.harness-batch-bootstrap` marker exactly as supplied",
+        "never stage, replace or remove it",
+        "do not rerun new-worktree `bootstrap`",
+        "Keep it even for unfinished or zero-source results",
+        "Continue only on the coordinator's `SendMessage` to this exact bound agent ID",
+        "with successful binding and explicit mutation permission",
+    ), path)
+    _assert_all(_text(BATCH_SKILL), (
+        "Managed finish preserves the marker through rebase and integration failures",
+        "removes only that marker after the durable archive checkpoint, immediately before ordinary worktree removal",
+        "Unknown marker bytes, links, tracking or other dirty files refuse",
+        "standalone finish has no exemption",
+    ), BATCH_SKILL)
+    _assert_all(_text(TASK_LEAD), (
+        "It grants no PASS or task authority",
+        "managed finish removes it only after durable evidence harvest, immediately before worktree removal",
+    ), TASK_LEAD)

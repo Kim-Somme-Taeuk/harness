@@ -178,6 +178,8 @@ def validate(data, repo, batch_id):
             result = item['result']
             require(isinstance(result, dict) and result.get('verdict') in {'closed', 'blocked', 'failed'}, 'invalid stored result')
             require(all(result.get(k) == item.get(k) for k in ('task_id', 'worktree', 'branch')), 'stored result identity mismatch')
+        if 'retention' in item:
+            require(item['retention'] == retention_contract(batch_id, item), 'invalid retention identity')
         if item['status'] in {'returned', 'integrating', 'integrated', 'kept', 'recovery-required'}:
             require(isinstance(item.get('result'), dict) and item['result'].get('verdict') == 'closed'
                     and isinstance(item.get('run_id'), str) and isinstance(item.get('close_fingerprint'), str), 'missing closed result identity')
@@ -235,12 +237,16 @@ def cap(repo, explicit):
     return 3, 'default'
 
 
-def main_boundary(repo, expected=None):
-    ref = finish_helper._git(repo, 'symbolic-ref', '-q', 'HEAD').stdout.strip()
-    require(ref.startswith('refs/heads/') and (expected is None or expected == ref), 'detached or changed destination branch')
+def no_git_operation(repo):
     for marker in ('rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_LOG', 'BISECT_START'):
         path = finish_helper._git_out(repo, 'rev-parse', '--git-path', marker).strip()
         require(not os.path.exists(path if os.path.isabs(path) else os.path.join(repo, path)), 'Git operation in progress')
+
+
+def main_boundary(repo, expected=None):
+    ref = finish_helper._git(repo, 'symbolic-ref', '-q', 'HEAD').stdout.strip()
+    require(ref.startswith('refs/heads/') and (expected is None or expected == ref), 'detached or changed destination branch')
+    no_git_operation(repo)
     require(not finish_helper._status_lines(repo), 'destination checkout is dirty')
     return ref, finish_helper._resolve_commit(repo, ref)
 
@@ -317,18 +323,46 @@ def fingerprint(path):
     return 'sha256:' + hashlib.sha256(json.dumps(batch_harvest._tree_entries(path), sort_keys=True).encode()).hexdigest()
 
 
+def sync_harvest(repo, archive):
+    """Make copied evidence and its publication directory entries durable."""
+    def sync(path, directory=False):
+        safe(path, directory)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if directory else os.O_NONBLOCK))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    for root, dirs, files in os.walk(archive, topdown=False):
+        for name in files:
+            sync(os.path.join(root, name))
+        sync(root, True)
+    learnings = os.path.join(repo, 'doc/harness/learnings.jsonl')
+    if os.path.lexists(learnings):
+        sync(learnings)
+    parent = os.path.dirname(archive)
+    while parent != os.path.dirname(repo):
+        sync(parent, True)
+        parent = os.path.dirname(parent)
+
+
+def retention_contract(batch_id, item):
+    return dict(batch_id=batch_id, slug=item['slug'], spawn_head=item['spawn_head'])
+
+
 def active_pool(records, batch_id):
     require(not any(key != batch_id and any(x['status'] in LIVE for x in data['requests']) for key, data in records.items()), 'another batch has an active pool')
 
 
 def held(records, target):
-    return [x for data in records.values() for x in data['requests'] if x is not target and x['status'] not in FREE]
+    return [x for data in records.values() for x in data['requests'] if x is not target and x['status'] not in FREE
+            and x.get('disposition') != 'never-dispatched']
 
 
 def observation(repo, item):
     result = {'next_action': {'queued': 'claim', 'reserved': 'bind or explicitly release unused reservation', 'running': 'await worker result', 'returned': 'finish', 'integrated': 'none', 'abandoned': 'retained work requires explicit disposition'}.get(item['status'], 'recover or resume with stopped worker assertion')}
     if item['status'] == 'abandoned' and not item.get('worktree'):
-        result['next_action'] = 'unknown external work retained; explicit disposition required'
+        result['next_action'] = ('never dispatched; no external work retained' if item.get('disposition') == 'never-dispatched'
+                                 else 'unknown external work retained; explicit disposition required')
     if item['status'] == 'reserved' and item.get('worktree'):
         result['next_action'] = 'bind same-worktree bootstrap; after failed bootstrap confirm worker stopped and resume same reservation'
     if item.get('worktree'):
@@ -375,7 +409,7 @@ def execute(args, directory, records):
     if args.command == 'status':
         return {'status': 'ok', 'batch': data, 'observed': {x['slug']: observation(repo, x) for x in data['requests']}}
     require(data['status'] == 'open', 'batch is closed')
-    if args.command in {'claim', 'resume', 'finish'}:
+    if args.command in {'claim', 'resume', 'finish', 'bind', 'bootstrap'}:
         unresolved = [x for x in data['requests'] if x['status'] in {'integrating', 'recovery-required'}]
         require(not unresolved or (args.command == 'finish' and args.resume
                 and all(x['slug'] == args.slug for x in unresolved)), 'unresolved integration requires targeted recovery')
@@ -424,11 +458,40 @@ def execute(args, directory, records):
         require(not data['halted'], 'recovery remains unresolved')
         data['status'] = 'closed'
         save()
-        return {'status': 'closed', 'disposition': 'retained-abandonment' if any(x['status'] == 'abandoned' for x in data['requests']) else 'integrated', 'batch': data}
+        abandoned = [x for x in data['requests'] if x['status'] == 'abandoned']
+        disposition = ('retained-abandonment' if any(x.get('disposition') != 'never-dispatched' for x in abandoned)
+                       else 'never-dispatched-abandonment' if abandoned else 'integrated')
+        return {'status': 'closed', 'disposition': disposition, 'batch': data}
     item = next((x for x in data['requests'] if x['slug'] == args.slug), None)
     require(item is not None, 'unknown slug')
+    if args.command == 'bootstrap':
+        require(not data['halted'] and item['status'] == 'reserved' and not item.get('resuming'), 'bootstrap requires fresh unhalted reservation')
+        no_main_task(repo)
+        require(os.path.isabs(args.worktree), 'bootstrap requires absolute worktree')
+        worktree = os.path.realpath(args.worktree)
+        candidate = dict(item, worktree=worktree, branch=args.branch)
+        require(bound(repo, candidate) == item['spawn_head'], 'bootstrap HEAD differs from reservation')
+        for other in held(records, item):
+            require(other.get('worktree') != worktree and other.get('branch') != args.branch, 'worktree/branch already owned')
+        require(not os.path.lexists(os.path.join(worktree, 'doc/harness/tasks', item['task_id'])), 'bootstrap started task before binding')
+        payload = retention_contract(batch_id, item)
+        marker = os.path.join(worktree, finish_helper.RETENTION_MARKER)
+        if os.path.lexists(marker):
+            require(not finish_helper.lead_status(worktree, payload), 'bootstrap modified source before binding')
+        else:
+            require(not finish_helper._status_lines(worktree), 'bootstrap modified source before binding')
+            require(not finish_helper._git_out(worktree, 'ls-files', '--', finish_helper.RETENTION_MARKER).strip()
+                    and finish_helper._git(worktree, 'check-ignore', '--no-index', '-q', '--', finish_helper.RETENTION_MARKER).returncode == 1,
+                    'bootstrap marker must be untracked and nonignored')
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(finish_helper.retention_bytes(payload))
+                handle.flush()
+                os.fsync(handle.fileno())
+        return {'status': 'bootstrapped', 'marker': marker, 'payload': payload, 'worktree': worktree, 'branch': args.branch, 'spawn_head': item['spawn_head']}
     if args.command == 'bind':
         require(item['status'] == 'reserved', 'bind requires reservation')
+        require(not data['halted'], 'batch halted; recover before authorizing worker')
         no_main_task(repo)
         require(args.worker_id and len(args.worker_id) <= 256 and os.path.isabs(args.worktree), 'invalid worker/worktree')
         require(finish_helper._git(repo, 'check-ref-format', '--branch', args.branch).returncode == 0, 'invalid branch')
@@ -436,13 +499,19 @@ def execute(args, directory, records):
         for other in held(records, item):
             require(other.get('worktree') != worktree and other.get('branch') != args.branch and other.get('worker_id') != args.worker_id, 'worktree/branch/worker already owned')
         candidate = dict(item, worktree=worktree, branch=args.branch, worker_id=args.worker_id)
+        marker = os.path.join(worktree, finish_helper.RETENTION_MARKER)
+        if os.path.lexists(marker):
+            candidate['retention'] = retention_contract(batch_id, item)
+            finish_helper.validate_retention(worktree, candidate['retention'])
         if item.get('resuming'):
             require(worktree == item['worktree'] and args.branch == item['branch'], 'resume must use original worktree and branch')
             bound(repo, candidate)
             resume_control(candidate)
+            if item.get('retention'):
+                finish_helper.validate_retention(worktree, item['retention'])
         else:
             require(bound(repo, candidate) == item['spawn_head'], 'bootstrap HEAD differs from reservation')
-            require(not finish_helper._status_lines(worktree), 'bootstrap modified source before binding')
+            require(not finish_helper.lead_status(worktree, candidate.get('retention')), 'bootstrap modified source before binding')
             require(not os.path.exists(os.path.join(worktree, 'doc/harness/tasks', item['task_id'])), 'bootstrap started task before binding')
         item.update(candidate)
         item['status'] = 'running'
@@ -454,6 +523,8 @@ def execute(args, directory, records):
             require(result.get(key) == item[key], f'result {key} mismatch')
         require(result.get('worker_id', args.worker_id) == args.worker_id, 'result worker mismatch')
         tip = bound(repo, item)
+        if item.get('retention'):
+            finish_helper.validate_retention(item['worktree'], item['retention'])
         commit = result.get('commit')
         require(commit is None or (isinstance(commit, str) and finish_helper.COMMIT_RE.fullmatch(commit)), 'invalid result commit')
         if result['verdict'] == 'closed':
@@ -478,9 +549,23 @@ def execute(args, directory, records):
         item.pop('spawn_head', None)
     elif args.command == 'abandon':
         require(args.worker_stopped and args.reason.strip(), 'abandon requires stopped assertion and reason')
-        require(item['status'] not in {'queued', 'integrated', 'integrating'}, 'cannot abandon this state')
+        require(item['status'] != 'integrated', 'cannot abandon this state')
         require(not item.get('checkpoint', {}).get('integrated_tip'), 'integrated cleanup requires recovery')
-        item.update(status='abandoned', abandonment_reason=args.reason, worker_stopped=True)
+        if item['status'] in {'integrating', 'recovery-required', 'kept'}:
+            checkpoint = item.get('checkpoint', {})
+            main_boundary(repo, data['destination_ref'])
+            require(checkpoint.get('destination_ref') == data['destination_ref'] and checkpoint.get('branch_tip'), 'unknown integration requires recovery')
+            require(item.get('finish_result', {}).get('status') in {'conflict', 'ff-refused', 'kept'}, 'unknown integration requires recovery')
+            tip = bound(repo, item)
+            require(tip == checkpoint['branch_tip'], 'branch changed; integration requires recovery')
+            no_git_operation(item['worktree'])
+            require(finish_helper._git(repo, 'merge-base', '--is-ancestor', tip, data['destination_ref']).returncode == 1,
+                    'integrated or unknown outcome requires recovery')
+            require(not item.get('finish_result', {}).get('integrated_tip') and checkpoint.get('stage') in {'started', 'rebase'}, 'post-effect cleanup requires recovery')
+            control(item, closed=True)
+        item.update(disposition='never-dispatched' if item['status'] == 'queued' else 'retained-work',
+                    status='abandoned', abandonment_reason=args.reason, worker_stopped=True)
+        data['halted'] = any(x['status'] in {'integrating', 'recovery-required'} for x in data['requests'])
     elif args.command == 'resume':
         require(args.worker_stopped and (item['status'] in {'blocked', 'failed', 'running'}
                 or (item['status'] == 'reserved' and item.get('resuming') and item.get('worktree'))),
@@ -514,9 +599,13 @@ def execute(args, directory, records):
                 archive = result['harvest']['archived']
                 control(item, base=archive, closed=True)
                 result['archive_fingerprint'] = fingerprint(archive)
+                sync_harvest(repo, archive)
             item['checkpoint'] = result
             save()
-        result = finish_helper.finish(repo, SimpleNamespace(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], commit=item['result']['commit'], resume=args.resume), checkpoint=checkpoint)
+        options = {'checkpoint': checkpoint}
+        if item.get('retention'):
+            options['retention'] = item['retention']
+        result = finish_helper.finish(repo, SimpleNamespace(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], commit=item['result']['commit'], resume=args.resume), **options)
         item['finish_result'] = result
         item['status'] = 'integrated' if result['status'] == 'integrated' else 'kept'
         if result['status'] in {'conflict', 'ff-refused', 'error'}:
@@ -579,12 +668,12 @@ def main(argv=None):
     init.add_argument('--max-leads')
     for name in ('status', 'claim', 'close'):
         commands.add_parser(name)
-    for name in ('bind', 'result', 'finish', 'recover', 'resume', 'abandon', 'release'):
+    for name in ('bootstrap', 'bind', 'result', 'finish', 'recover', 'resume', 'abandon', 'release'):
         command = commands.add_parser(name)
         command.add_argument('--slug', required=True)
         if name in {'bind', 'result'}:
             command.add_argument('--worker-id', required=True)
-        if name == 'bind':
+        if name in {'bootstrap', 'bind'}:
             command.add_argument('--worktree', required=True)
             command.add_argument('--branch', required=True)
         if name == 'result':

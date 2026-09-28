@@ -16,7 +16,8 @@ own disjoint worktrees and branches. Stay inside yours.
 The coordinator's prompt gives you: the request text, a task slug, a declared
 path scope, the `off-limits` paths (every submodule and ignored nested repo
 the batch preflight found, or `none`), the coordinator's HEAD sha
-(`git rev-parse HEAD` at claim time), and a pytest worker cap (default `4`).
+(`git rev-parse HEAD` at claim time), the main checkout and batch id, and a
+pytest worker cap (default `4`).
 The first dispatch is always bootstrap-only. Mutation permission arrives only
 on a later coordinator handoff confirming successful durable binding to your
 actual native worker identity, worktree and branch.
@@ -28,12 +29,20 @@ actual native worker identity, worktree and branch.
    in the prompt. If they differ, stop and return
    `verdict: "blocked"` with `blocked_reason` naming the mismatch. Do not touch
    any files.
-3. Read your current branch identity. Return bootstrap JSON
+3. Read your current branch identity. Before returning, run from W:
+   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> bootstrap --slug <slug> --worktree <W> --branch <branch>`.
+   Require `status: "bootstrapped"`; the helper creates only the validated,
+   nonignored untracked `.harness-batch-bootstrap` retention marker with exact
+   reservation payload `{batch_id,slug,spawn_head}`. This is the sole permitted
+   pre-bind write, not implementation or task evidence. On refusal, stop and
+   report the blocker; never create an arbitrary substitute or start work.
+   Return bootstrap JSON
    `{"worktree":"<W>","branch":"<branch>","head":"<sha>","bootstrap":true}`
    and stop. Do not call `task_start`, create task artifacts, edit source or
    commit. This bootstrap response is not a lifecycle result.
-4. Only when the coordinator resumes this same native agent with confirmed
-   `batch_state.py bind` success and explicit permission to mutate, recheck W,
+4. Only when the coordinator continues this same native agent with confirmed
+   `batch_state.py bind` success and explicit permission to mutate through
+   `SendMessage` addressed to its exact bound agent ID, recheck W,
    branch and HEAD against the bound handoff and proceed below. Missing or
    mismatched authorization means stay stopped. Never infer permission from
    the original request or from a state file you edit yourself.
@@ -49,6 +58,15 @@ worktree or rotate the existing run.
   (`task_start`, `task_context`, `write_plan`, `task_verify`, `task_close`,
   `task_blocked`). Omitting it targets the main checkout, not your worktree.
 - Never `cd` out of `W` and never write outside `W`.
+- Keep `.harness-batch-bootstrap` through all final returns, including blocked,
+  failed and task-only/zero-source closed results. Never stage, edit or remove
+  it. Lead review/QA and source-cleanliness checks exempt only this helper-
+  validated operational marker; every implementation change must still be
+  committed. It grants no PASS or task authority. The coordinator's managed
+  finish removes it only after durable evidence harvest, immediately before
+  worktree removal. Without untracked work, native cleanup can discard the
+  checkout and its ignored task evidence; see the
+  [Claude cleanup rules](https://code.claude.com/docs/en/worktrees#clean-up-subagent-and-background-session-worktrees).
 - Run only plain, non-compound git commands (no `;`, `&&`, or pipes around
   `git`) — the worktree guard refuses compound shell commands that touch git.
 - Never run `git submodule update`, `init`, `deinit`, `sync`, `set-url`, or
@@ -85,11 +103,14 @@ worktree or rotate the existing run.
 
 ## After `task_close` reports PASS
 
-Commit the diff on your current branch in one commit, with plain `git add`
-and `git commit --trailer "Harness-Task: <task_id>"` (no push, no merge, no
+Commit the implementation diff on your current branch in one commit, with
+plain `git add <intended paths>` excluding `.harness-batch-bootstrap`, and
+`git commit --trailer "Harness-Task: <task_id>"` (no push, no merge, no
 `--amend`). The coordinator rebases that commit onto the main branch, which
 gives it a new id; the trailer keeps the task traceable in that linear
-history.
+history. For a task-only/zero-source result, report the current branch HEAD
+without a dummy or empty commit; keep the marker so task evidence survives
+until managed harvest and removal.
 
 ## If blocked or the workflow needs a coordinator decision
 
@@ -98,7 +119,8 @@ not merge or push.
 
 ## Final response
 
-`verdict` is `closed` after `task_close` PASS and a commit; `blocked` when you
+`verdict` is `closed` after `task_close` PASS with all implementation committed
+(or current HEAD for a task-only/zero-source result); `blocked` when you
 stopped for a coordinator decision or a real blocker (task left open or parked
 with `task_blocked`); `failed` when the lifecycle could not reach PASS within
 its retry limit or an unexpected error stopped you.

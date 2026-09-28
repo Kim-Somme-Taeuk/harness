@@ -15,6 +15,11 @@ blocked handling and final result contract. Apply those rules, including
 review/QA, no `AskUserQuestion`, no `goal_*`, capped pytest workers, no install,
 and no merge/push/removal. Replace only its new-worktree bootstrap with this
 existing-worktree handshake; do not run its original spawn-HEAD equality test.
+Preserve any existing `.harness-batch-bootstrap` marker exactly as supplied;
+never stage, replace or remove it, and do not rerun new-worktree `bootstrap`.
+Only the validated marker is exempt from source cleanliness, including during
+review/QA; all implementation must be committed. Keep it even for unfinished
+or zero-source results until the coordinator's managed finish disposes of W.
 
 ## Bootstrap and binding
 
@@ -36,7 +41,7 @@ an identity mismatch, not permission to adopt it.
 2. Return `{"worktree":"<W>","branch":"<branch>","head":"<sha>","bootstrap":true}`
    and stop. The coordinator binds your actual host worker identity to this
    reservation using `batch_state.py bind` before granting permission.
-3. Continue only on the coordinator's native continuation of this exact worker
+3. Continue only on the coordinator's `SendMessage` to this exact bound agent ID
    with successful binding and explicit mutation permission. Recheck the
    existing identity and enter W; never use the coordinator's main cwd for
    task calls. If the host cannot deliver this handoff, stay stopped and report
