@@ -242,8 +242,7 @@ the commit hash and pre-close conditional verified-delivery result in the comple
 
 Before writing DONE, assert:
 - primary task is closed
-- owned temporary worktrees and disposable branches are integrated and removed;
-  unresolved disposal is remaining coordinator work, reported with blocker and next action
+- owned temporary worktree disposition is complete under the shared rule
 - runtime_verdict is PASS or task is BLOCKED
 - post-close self-improvement has run
 - if this was a native Goal child task, the Goal is done/blocked/stopped/budgeted
