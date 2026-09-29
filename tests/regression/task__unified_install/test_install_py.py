@@ -1247,8 +1247,9 @@ def test_real_codex_install_with_fake_cli_enables_plugin_hooks_and_cache(tmp_pat
     assert result.ok is reload_ok, result.summary
     if not reload_ok:
         assert "native daemon refresh result" in result.summary
-        assert "same CODEX_HOME" in result.summary
-        retry = result.summary.split("retry: ", 1)[1]
+        assert "same CODEX_HOME" in result.recovery
+        assert "verify: codex app-server daemon version" in result.recovery
+        retry = result.recovery.split("retry: ", 1)[1]
         assert shlex.split(retry) == [
             "python3", "install.py", "--codex-only", "--force",
             "--config-path", str(config_path.resolve()),
