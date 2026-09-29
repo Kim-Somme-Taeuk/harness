@@ -14,15 +14,32 @@ supported; connection time, message size and notification count are bounded.
 
 A failed discovery with an existing control endpoint, malformed daemon metadata,
 or failed reload makes installation report failure after payload publication.
-When no local endpoint exists, hooks load in the next session. Installing to a
+Discovery diagnostics name `codex app-server daemon version`, its exit code,
+and stderr (stdout when stderr is empty, or an explicit no-output indication).
+The installer distinguishes an absent endpoint, a dangling control symlink,
+a non-socket entry, and a socket entry whose discovery failed; a socket entry
+does not prove the daemon is reachable. Only `FileNotFoundError` when inspecting
+the control path itself means absence. Permission and other inspection errors
+remain failures and retain the discovery diagnostics. A dangling link remains
+a failed refresh, rather than being treated as a daemon-free installation.
+When no local endpoint exists, hooks load in the next session and discovery
+diagnostics remain visible. Installing to a
 config path different from the runtime's `CODEX_HOME/config.toml` (default
 `~/.codex/config.toml`) reports that a new session must use that config and never
 refreshes an unrelated daemon. An explicit path matching the runtime home does
 reload that daemon.
 Publication is retained after a reload failure; rollback is not automatic.
-After fixing the daemon, retry with `python3 install.py --codex-only --force`.
+On a discovery or reload failure, the recovery instructions first tell the user
+to repair the Codex daemon installation and, when applicable, container mounts
+in the same shell/runtime. They then require a successful
+`codex app-server daemon version` before retrying
+`python3 install.py --codex-only --force`. A missing executable reported by
+Codex is a runtime installation problem; reinstalling Harness alone does not
+repair it. The installer does not automatically start, restart, install or
+delete daemon resources or claim a particular container mount caused the error.
 Retain the original `CODEX_HOME` and any explicit `--config-path`; the installer
-includes the shell-quoted configuration path in its retry command.
+includes the shell-quoted configuration path in its retry command. This complete
+recovery instruction replaces the generic force-retry footer for these failures.
 The ordinary synchronized-payload fast path does not repeat installation or
 repair configuration and must not be used as evidence that a failed reload
 has recovered.
