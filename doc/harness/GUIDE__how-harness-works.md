@@ -530,7 +530,7 @@ TASK.json 유효?
 3. 그 뒤 PostToolUse 훅이 `register_task_result`로 도구 결과를 파싱한다. 과제가 열려 있고 run_id가 같은지 확인한 다음, legacy 없이(`publish_legacy=False`) exact-thread 마커를 쓰고 watcher를 등록한다.
 4. 서로 충돌하는 열린 과제가 있으면 마커 대신 binding-conflict fence를 쓰고 등록을 무효화한다.
 
-영수증 바인딩은 exact-thread 마커만 사용한다. default/legacy 마커는 권한이 아니다.
+영수증 바인딩은 exact-thread 마커만 사용한다. default/legacy 마커는 권한이 아니다. 충돌 기록이 남은 복구 경로에서는 exact main 환경 identity가 있어도 바인딩을 PostToolUse까지 미룬다. 정확한 성공 결과가 모든 이전 등록을 무효화한 뒤 충돌 기록을 해제하고 현재 rollout 위치부터 새로 등록한다.
 
 ### 3.8 workspace: control root와 task root
 

@@ -99,6 +99,13 @@ None can rebind while multiple generations remain open; once task state leaves e
 of them live, a valid result for that sole generation may recover authority.
 Recovery holds all relevant task receipt locks in canonical path order through state
 revalidation, marker publication, and registration refresh.
+Any published conflict fence continues to revoke pre-conflict registrations even
+after competing tasks are parked. Ordinary watcher restoration cannot acknowledge
+that history. Only a successful exact task result for the sole surviving
+generation may recover: invalidate all surviving registrations before clearing
+acknowledged fences, then register at the current rollout offset. Interruption or
+failed invalidation leaves the fences in force; ambiguity-interval events cannot
+be replayed into receipts.
 
 An explicit workspace binding additionally requires the successful task result
 to echo the exact requested canonical workspace and the target to be a

@@ -2326,6 +2326,10 @@ def _binding_conflicts_overflow(marker):
     )
 
 
+def _has_binding_conflict_fence(marker):
+    return "conflicts" in marker or marker.get("conflicts_overflow") is True
+
+
 class _BindingConflictOverflow(RuntimeError):
     pass
 
@@ -2372,6 +2376,20 @@ def write_binding_conflict_fence(repo_root, session_id, conflicts, *, overflow=F
         **({"conflicts_overflow": True} if overflow else {}),
         "updated": now_iso(),
     })
+
+
+def clear_binding_conflict_fence(repo_root, session_id):
+    """Acknowledge a fence only after the caller revokes all registrations."""
+    if not _trusted_control_writer(marker=True):
+        raise _control_writer_error("binding recovery requires the task-control runtime", marker=True)
+    sid = sanitize_session_id(session_id)
+    if sid != session_id or sid == "default":
+        raise ValueError("invalid exact session id")
+    marker = read_active_session_marker(repo_root, sid)
+    if _binding_conflicts_overflow(marker):
+        raise _BindingConflictOverflow("overflow requires a new coordinator")
+    if _has_binding_conflict_fence(marker):
+        _publish_session_marker(repo_root, sid, {"session_id": sid, "updated": now_iso()})
 
 
 def active_task_binding_matches(repo_root, task_dir, control=None, session_id=None):

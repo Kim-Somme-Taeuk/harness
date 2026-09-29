@@ -36,7 +36,7 @@ sys.path.insert(0, SCRIPTS_DIR)
 from _lib import (  # type: ignore
     _REVIEW_DETAIL_MAX_BYTES,
     _read_regular_text_file,
-    _live_binding_conflicts, _BindingConflictOverflow, read_active_session_marker,
+    _has_binding_conflict_fence, read_active_session_marker,
     _infer_receipt_lens,
     active_session_transaction,
     extract_qa_verdict,
@@ -708,6 +708,9 @@ def invalidate_registration(repo_root: str, thread_id: str) -> bool:
 def _registration_binding_matches(
     repo_root: str, thread_id: str, task_id: str, run_id: str,
 ) -> bool:
+    if any(_has_binding_conflict_fence(read_active_session_marker(root, thread_id))
+           for root in workspace_roots(repo_root)):
+        return False
     if not task_id or not run_id:
         return True
     binding = _active_task_binding_for_session(repo_root, thread_id)
@@ -1023,14 +1026,9 @@ def _require_task_binding(
         raise _BindingUnavailable("binding unavailable")
     if expected_generation is not None:
         roots = workspace_roots(repo_root)
-        try:
-            for root in roots:
-                conflicts = _live_binding_conflicts(read_active_session_marker(root, root_id), roots)
-                if any(item["task_dir"] != binding["task_dir"] or item["run_id"] != binding["run_id"]
-                       for item in conflicts):
-                    raise _BindingUnavailable("conflicting workspace fence")
-        except _BindingConflictOverflow as exc:
-            raise _BindingUnavailable("coordinator conflict fence overflow") from exc
+        if any(_has_binding_conflict_fence(read_active_session_marker(root, root_id))
+               for root in roots):
+            raise _BindingUnavailable("unacknowledged coordinator conflict fence")
         if any(root != repo_root and _active_task_binding_for_session(root, root_id)
                for root in roots):
             raise _BindingUnavailable("conflicting workspace bindings")

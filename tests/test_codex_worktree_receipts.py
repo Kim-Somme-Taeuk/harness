@@ -413,9 +413,12 @@ def test_three_successful_results_remain_fenced_after_only_one_is_parked(tmp_pat
         assert result.get("isError"), result
         assert hook.read_active_session_marker(str(main), LEAD) == before
         (main / "doc/harness/tasks/TASK__c/BLOCKED.md").write_text("blocked\n")
-        # The one surviving exact task can still resume via eager main focus.
+        # A sole survivor can produce a result, but eager focus preserves fences.
         result = _call(main, "task_context", {"task_id": "TASK__a"})
         assert not result.get("isError"), result
+        assert not hook.resolve_session_task_binding(str(main), LEAD)
+        assert "conflicts" in hook.read_active_session_marker(str(main), LEAD)
+        assert hook.register_task_result(_task_hook_payload(main, tasks[0]))
         assert hook.resolve_session_task_binding(str(main), LEAD)["task_dir"] == tasks[0]["task_dir"]
 
 
@@ -490,34 +493,90 @@ def test_overflow_elsewhere_blocks_old_worktree_registration_recovery(tmp_path, 
         raise AssertionError("overflow fence elsewhere retained receipt authority")
 
 
-def test_partial_fence_publication_blocks_until_only_same_binding_remains(tmp_path, monkeypatch):
+def test_partial_fence_recovery_discards_ambiguous_history_and_old_generation(tmp_path, monkeypatch):
     from test_codex_hook_wrappers import _load as load_hook
-    from test_codex_lifecycle_watcher import _write_exact_session_binding
+    from test_codex_lifecycle_watcher import (
+        _write_exact_session_binding, _spawn_events, _delivery, _child_events,
+        _write_jsonl, _rollout_path, _snapshot,
+    )
     import codex_lifecycle_watcher as watcher
     hook = load_hook("codex_hook_registration")
     main, lead, _ = worktrees(tmp_path)
+    home = tmp_path / "codex"
     monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
-    native_tree(tmp_path / "codex", main)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    _, lead_rollout, _ = native_tree(home, main)
     task_id, run_id = _write_exact_session_binding(lead, LEAD)
     assert watcher.ensure(str(lead), LEAD, session_cwd=str(main), task_id=task_id, run_id=run_id)
-    generation = watcher._registration_generation(watcher.registrations(str(lead))[0])
-    current = {"task_dir": str(lead / "doc/harness/tasks" / task_id), "task_id": task_id, "run_id": run_id}
+    old = watcher.registrations(str(lead))[0]
+    old_generation = watcher._registration_generation(old)
+    current = {"task_dir": str(lead / "doc/harness/tasks" / task_id), "task_id": task_id,
+               "run_id": run_id, "workspace": str(lead)}
     other = _conflict_task(main, "TASK__other")
-    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
-    marker.parent.mkdir(parents=True)
-    marker.write_text(json.dumps({"session_id": LEAD, "conflicts": [current, other]}))
-    payload = json.dumps({"cwd": str(main), "thread_id": LEAD}).encode()
-    with mock.patch.object(hook, "_ensure_with_deadline", return_value=True) as ensure:
-        assert not hook.restore_watcher_registration(payload)
-        ensure.assert_not_called()
-        try:
-            watcher._require_task_binding(str(lead), LEAD, generation, str(main))
-        except watcher._BindingUnavailable:
-            pass
-        else:
-            raise AssertionError("partial fence publication retained conflicting receipt authority")
-        (main / "doc/harness/tasks/TASK__other/BLOCKED.md").write_text("blocked\n")
-        assert watcher._require_task_binding(str(lead), LEAD, generation, str(main))["task_dir"] == current["task_dir"]
-        assert hook.restore_watcher_registration(payload)
-        ensure.assert_called_once()
+    with mock.patch.object(hook, "invalidate_registration", side_effect=RuntimeError("interrupted")):
+        assert not hook.register_task_result(_task_hook_payload(main, other))
+    assert "conflicts" in hook.read_active_session_marker(str(main), LEAD)
+    assert hook.resolve_session_task_binding(str(lead), LEAD)
+    assert watcher.registrations(str(lead))[0]["offset"] == old["offset"]
+
+    def append(events):
+        with lead_rollout.open("a") as handle:
+            for event in events:
+                handle.write(json.dumps(event) + "\n")
+
+    final = "VERDICT: PASS\nPassed."
+    delivery = _delivery("/root/lead/qa_cli", final)
+    delivery["payload"]["recipient"] = "/root/lead"
+    append(_spawn_events(LEAD, LENS, "qa_cli", "/root/lead/qa_cli", "call_ambiguous_lens") + [delivery])
+    (main / "doc/harness/tasks/TASK__other/BLOCKED.md").write_text("blocked\n")
+    assert not hook.restore_watcher_registration(json.dumps({"cwd": str(main), "thread_id": LEAD}).encode())
+    assert not watcher.ensure(str(lead), LEAD, session_cwd=str(main), task_id=task_id, run_id=run_id)
+    try:
+        watcher._require_task_binding(str(lead), LEAD, old_generation, str(main))
+    except watcher._BindingUnavailable:
+        pass
+    else:
+        raise AssertionError("parked conflict revived a surviving registration")
+    recovery = json.loads(_task_hook_payload(main, current))
+    recovery["tool_input"] = {"workspace": str(lead)}
+    recovery = json.dumps(recovery).encode()
+    real_invalidate = hook.invalidate_registration
+    with mock.patch.object(hook, "invalidate_registration", side_effect=lambda root, thread: False if root == str(lead) else real_invalidate(root, thread)), mock.patch.object(hook, "clear_binding_conflict_fence", wraps=hook.clear_binding_conflict_fence) as clear:
+        assert not hook.register_task_result(recovery)
+        clear.assert_not_called()
+    assert "conflicts" in hook.read_active_session_marker(str(main), LEAD)
+    assert not hook.restore_watcher_registration(json.dumps({"cwd": str(lead), "thread_id": LEAD}).encode())
+    assert hook.register_task_result(recovery, budget_seconds=3)
+    new = watcher.registrations(str(lead))[0]
+    assert new["offset"] == lead_rollout.stat().st_size > old["offset"]
+    assert "conflicts" not in hook.read_active_session_marker(str(main), LEAD)
+    try:
+        watcher._require_task_binding(str(lead), LEAD, old_generation, str(main))
+    except watcher._RegistrationChanged:
+        pass
+    else:
+        raise AssertionError("recovery preserved an ambiguous old offset")
+
+    receipts = []
+    def observe(registration):
+        return watcher.watch(str(lead), LEAD, str(lead_rollout), registration["offset"],
+            session_cwd=str(main), task_id=task_id, run_id=run_id, idle_seconds=0.5,
+            expected_generation=watcher._registration_generation(registration))
+    with mock.patch.object(watcher, "record_subagent_receipt", side_effect=lambda _, receipt: receipts.append(receipt) or receipt), mock.patch.object(watcher, "receipt_snapshot", side_effect=lambda _: _snapshot(receipts)):
+        assert observe(old) == 0
+        assert observe(new) == 0
+        assert receipts == []
+        fresh_id = "019f82a6-ce64-75a3-b01d-92f7b0b4fe71"
+        fresh_path = "/root/lead/qa_cli_fresh"
+        child = _child_events(LEAD, fresh_id, fresh_path, str(main), final)
+        child[0]["payload"]["session_id"] = ROOT
+        child[0]["payload"]["source"]["subagent"]["thread_spawn"]["depth"] = 2
+        child[4]["payload"]["author"] = "/root/lead"
+        _write_jsonl(_rollout_path(home, fresh_id), child)
+        delivery = _delivery(fresh_path, final)
+        delivery["payload"]["recipient"] = "/root/lead"
+        append(_spawn_events(LEAD, fresh_id, "qa_cli_fresh", fresh_path, "call_fresh_lens") + [delivery])
+        assert observe(new) == 0
+    assert [receipt["event"] for receipt in receipts] == ["started", "completed"]
+    assert receipts[-1]["verdict"] == "PASS"
+    assert all(receipt["agent_id"] == fresh_path for receipt in receipts)

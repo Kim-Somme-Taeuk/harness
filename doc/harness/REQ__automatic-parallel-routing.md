@@ -68,6 +68,9 @@ unbound or sibling evidence. A workspace argument or prompt is not identity. Exp
 thread identity defer binding to trusted native PostToolUse. Main calls with an
 exact environment identity retain eager binding, with cross-workspace exclusion
 checked under shared session locks before publication.
+Conflict-history recovery also defers exact-main binding to a successful native
+task result: invalidate every old registration before acknowledging fences,
+then create a fresh checkpoint; parking another task alone restores no authority.
 Missing native capabilities are reported explicitly; they never authorize
 fabricated receipts, concurrent ownership of one task binding, or an early close.
 For native shared-cwd edits, the prewrite gate resolves a validated linked

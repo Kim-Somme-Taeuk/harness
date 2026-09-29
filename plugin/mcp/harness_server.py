@@ -94,6 +94,7 @@ from _lib import (  # type: ignore
     current_session_id,
     active_task_binding_matches,
     active_session_transaction, read_active_session_marker, resolve_session_task_binding,
+    _has_binding_conflict_fence,
     resolve_active_task_dir, active_marker_snapshot, restore_active_marker_snapshot,
     receipt_runtime_verdict,
     receipt_review_verdict, required_review_lenses,
@@ -1140,7 +1141,7 @@ def _task_resume_next_action(status: str) -> str:
 # ── Tool handlers ────────────────────────────────────────────────────────
 
 
-def _with_codex_main_focus(args: dict, operation: Callable[[dict], dict]) -> dict:
+def _with_codex_main_focus(args: dict, operation: Callable[..., dict]) -> dict:
     """Serialize eager process-owned main focus with all worktree hook binds."""
     if _server_runtime() != "codex" or args.get("workspace") is not None:
         return operation(args)
@@ -1159,9 +1160,12 @@ def _with_codex_main_focus(args: dict, operation: Callable[[dict], dict]) -> dic
             return _err("Codex workspace registration changed")
         for root in sorted(roots[1:]):
             locks.enter_context(active_session_transaction(root))
+        fenced = False
         for root in roots:
+            marker = read_active_session_marker(root, session_id)
+            fenced = fenced or _has_binding_conflict_fence(marker)
             try:
-                conflicts = _codex_live_conflicts(root, read_active_session_marker(root, session_id))
+                conflicts = _codex_live_conflicts(root, marker)
             except RuntimeError:
                 return _err("task focus refused: coordinator conflict fence overflow requires a new coordinator")
             unresolved = False
@@ -1180,14 +1184,14 @@ def _with_codex_main_focus(args: dict, operation: Callable[[dict], dict]) -> dic
                     "task focus refused: another worktree owns this Codex coordinator",
                     data={"next_action": "Finish or park the bound worktree task before activating another task."},
                 )
-        return operation(args)
+        return operation(args, defer_binding=True) if fenced else operation(args)
 
 
 def handle_task_start(args: dict) -> dict:
     return _with_codex_main_focus(args, _handle_task_start)
 
 
-def _handle_task_start(args: dict) -> dict:
+def _handle_task_start(args: dict, *, defer_binding: bool = False) -> dict:
     td = _selector_opt(args, "task_dir")
     ti = _selector_opt(args, "task_id")
     sl = _selector_opt(args, "slug")
@@ -1237,10 +1241,10 @@ def _handle_task_start(args: dict) -> dict:
     resumed_existing = os.path.lexists(existing_control_path)
     exact_session_id = _current_session_identity(control_root)
     codex_workspace = _server_runtime() == "codex" and args.get("workspace") is not None
-    if codex_workspace:
+    if codex_workspace or defer_binding:
         exact_session_id = ""
     session_id = exact_session_id or current_session_id()
-    if codex_workspace:
+    if codex_workspace or defer_binding:
         session_id = "default"
     defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
     if not defer_codex_binding and not resumed_existing and not _session_resumes(repo_root, task_dir, session_id):
@@ -1517,7 +1521,7 @@ def _handle_task_start(args: dict) -> dict:
             transaction_stack.close()
         raise
 
-    registration = None if codex_workspace else _register_task_start_watcher(repo_root, task_dir, resumed)
+    registration = None if (codex_workspace or defer_binding) else _register_task_start_watcher(repo_root, task_dir, resumed)
     if registration is not None and not registration["registered"]:
         warnings.append({
             "code": "RECEIPT_WATCHER_REGISTRATION_FAILED",
@@ -1705,7 +1709,7 @@ def handle_task_context(args: dict) -> dict:
     return _with_codex_main_focus(args, _handle_task_context)
 
 
-def _handle_task_context(args: dict) -> dict:
+def _handle_task_context(args: dict, *, defer_binding: bool = False) -> dict:
     ti = _req(args, "task_id")
     control_root, repo_root = _task_roots(args)
     td = canonical_task_dir(task_id=ti, repo_root=repo_root)
@@ -1715,7 +1719,7 @@ def _handle_task_context(args: dict) -> dict:
     # Only a process-owned identity may publish here. Ordinary Codex binding is
     # performed by PostToolUse from this successful structured result.
     exact_session_id = _current_session_identity(control_root)
-    if _server_runtime() == "codex" and args.get("workspace") is not None:
+    if _server_runtime() == "codex" and (args.get("workspace") is not None or defer_binding):
         exact_session_id = ""
     defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
     session_id = exact_session_id or current_session_id()

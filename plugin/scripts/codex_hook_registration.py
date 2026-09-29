@@ -20,6 +20,7 @@ from _lib import (
     MAX_BINDING_CONFLICTS, MAX_CONFLICT_BYTES,
     _binding_conflicts_overflow as _conflicts_overflow,
     _live_binding_conflicts, _BindingConflictOverflow,
+    _has_binding_conflict_fence, clear_binding_conflict_fence,
     find_harness_root,
     is_codex_task_binding_tool,
     read_active_session_marker,
@@ -155,19 +156,9 @@ def _registration_identity(payload: bytes) -> tuple[str, str]:
 
 def _bound_workspace_roots(control_root: str, thread_id: str) -> list[str] | None:
     roots = workspace_roots(control_root)
-    bindings = {root: resolve_session_task_binding(root, thread_id) for root in roots}
-    live = {(binding["task_dir"], binding["run_id"])
-            for binding in bindings.values() if binding}
-    try:
-        for root in roots:
-            live.update((item["task_dir"], item["run_id"]) for item in _live_binding_conflicts(
-                read_active_session_marker(root, thread_id), roots,
-            ))
-    except _BindingConflictOverflow:
+    if any(_has_binding_conflict_fence(read_active_session_marker(root, thread_id)) for root in roots):
         return None
-    if len(live) > 1:
-        return None
-    return [root for root, binding in bindings.items() if binding]
+    return [root for root in roots if resolve_session_task_binding(root, thread_id)]
 
 
 def _live_conflicts(control_root: str, marker: dict) -> list[dict]:
@@ -352,6 +343,15 @@ def register_task_result(
                             "reason": "conflicting open tasks invalidated exact session binding",
                         })
                     return False
+                if any(_has_binding_conflict_fence(marker) for marker in markers.values()):
+                    # No fence is acknowledged until every old offset is gone.
+                    # Interruption during either loop must never revive a survivor.
+                    for root in roots:
+                        if not invalidate_registration(root, thread_id):
+                            return False
+                    for root in roots:
+                        if _has_binding_conflict_fence(markers[root]):
+                            clear_binding_conflict_fence(root, thread_id)
                 existing = resolve_session_task_binding(control_root, thread_id)
                 if not existing and not invalidate_registration(control_root, thread_id):
                     return False
