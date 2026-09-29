@@ -15,12 +15,11 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest import mock
-
-import pytest
 
 
 def _installer():
@@ -160,6 +159,15 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize("success_mode", ["success", "ping", "notification"])
     if "peer_failure" in metafunc.fixturenames:
         metafunc.parametrize("peer_failure", ["mismatch", "unsupported", "syscall_error"])
+    if "endpoint_kind" in metafunc.fixturenames:
+        metafunc.parametrize("endpoint_kind", ["file", "socket"])
+        metafunc.parametrize("stdout,stderr,expected", [
+            ("stdout ignored", "Error: failed to connect\nCaused by: ENOENT", "Error: failed to connect\nCaused by: ENOENT"),
+            ("stdout error", "  ", "stdout error"),
+            ("", "", "no diagnostic output"),
+        ])
+    if "inspection" in metafunc.fixturenames:
+        metafunc.parametrize("inspection", ["lstat", "stat"])
 
 
 def test_native_reload_sends_only_empty_config_refresh(tmp_path, success_mode):
@@ -299,12 +307,6 @@ def test_discovery_error_with_existing_endpoint_fails_closed(tmp_path, monkeypat
     assert endpoint.is_symlink()
 
 
-@pytest.mark.parametrize("stdout,stderr,expected", [
-    ("stdout ignored", "Error: failed to connect\nCaused by: ENOENT", "Error: failed to connect\nCaused by: ENOENT"),
-    ("stdout error", "  ", "stdout error"),
-    ("", "", "no diagnostic output"),
-])
-@pytest.mark.parametrize("endpoint_kind", ["file", "socket"])
 def test_failed_discovery_reports_diagnostic_and_present_endpoint(
     tmp_path, monkeypatch, stdout, stderr, expected, endpoint_kind,
 ):
@@ -312,9 +314,13 @@ def test_failed_discovery_reports_diagnostic_and_present_endpoint(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     endpoint = tmp_path / "app-server-control" / "app-server-control.sock"
     endpoint.parent.mkdir()
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+    with tempfile.TemporaryDirectory(prefix="hc-", dir="/tmp") as socket_dir, \
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         if endpoint_kind == "socket":
-            server.bind(str(endpoint))
+            # The control link can be long under xdist; the Unix socket cannot.
+            native_socket = Path(socket_dir) / "s"
+            server.bind(str(native_socket))
+            endpoint.symlink_to(native_socket)
         else:
             endpoint.write_text("keep this file")
         with mock.patch.object(module, "_run", return_value=(7, stdout, stderr)) as discover:
@@ -330,7 +336,6 @@ def test_failed_discovery_reports_diagnostic_and_present_endpoint(
             assert endpoint.read_text() == "keep this file"
 
 
-@pytest.mark.parametrize("inspection", ["lstat", "stat"])
 def test_endpoint_inspection_error_preserves_discovery_failure(tmp_path, monkeypatch, inspection):
     module = _installer()
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
