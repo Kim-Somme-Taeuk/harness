@@ -438,13 +438,15 @@ def test_non_canonical_worktree_path_is_canonicalized_before_use(tmp_path: Path)
         mod.harvest(str(repo), "lead-c", "TASK__demo")
 
 
-def _s1_removal_fixture(tmp_path, monkeypatch, count=1, tracked_link=False):
+def _s1_removal_fixture(tmp_path, monkeypatch, count=1, tracked_link=False, preexisting_tag=False):
     import copy
     import test_batch_submodules as fixture
     import test_batch_state as state_fixture
     import batch_state
 
     main, work, paths = fixture._setup(tmp_path, monkeypatch, count)
+    if preexisting_tag:
+        fixture._git(main / paths[0], "tag", "-a", "preexisting-annotated", "-m", "valuable preexisting annotation")
     (main / "doc/harness").mkdir(parents=True)
     (main / "doc/harness/manifest.yaml").write_text("version: 5\n")
     if tracked_link:
@@ -575,6 +577,7 @@ def test_s1_guarded_removal_rejects_unknown_ignored_and_untracked_content(tmp_pa
         for parent in missing_parents:
             parent.rmdir()
     gitdir = Path(_git("rev-parse", "--absolute-git-dir", cwd=work / module))
+    (gitdir / "info").mkdir(exist_ok=True)
     (gitdir / "info/exclude").write_text("private-data\n")
     hidden = work / module / "private-data"
     hidden.write_text("irreplaceable")
@@ -707,3 +710,53 @@ def test_s1_guarded_removal_retains_learning_bytes_omitted_by_harvest(tmp_path, 
             mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
         assert work.is_dir() and source.read_bytes() == original
         assert destination.read_bytes() == valid
+
+
+def pytest_generate_tests(metafunc):
+    if "hidden_index_case" in metafunc.fixturenames:
+        metafunc.parametrize("hidden_index_case", [
+            ("outer", "--assume-unchanged"), ("outer", "--skip-worktree"),
+            ("module", "--assume-unchanged"), ("module", "--skip-worktree"),
+        ], ids=["outer-assumed", "outer-skipped", "module-assumed", "module-skipped"])
+
+
+def test_s1_guarded_removal_retains_edits_hidden_by_index_flags(tmp_path, monkeypatch, hidden_index_case):
+    main, work, module, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    location, flag = hidden_index_case
+    checkout = work if location == "outer" else work / module
+    path = checkout / "file.txt"
+    _git("update-index", flag, "--", "file.txt", cwd=checkout)
+    precious = b"unique source hidden from ordinary Git dirt checks\n"
+    path.write_bytes(precious)
+    assert _git("status", "--porcelain", cwd=checkout) == ""
+    index = Path(_git("rev-parse", "--absolute-git-dir", cwd=checkout)) / "index"
+    original_index = index.read_bytes()
+    remove_calls = []
+
+    def refuse_unexpected_removal(*args):
+        remove_calls.append(args)
+        raise AssertionError("guard reached destructive removal with hidden source edits")
+
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint,
+                              git_runner=refuse_unexpected_removal)
+    assert remove_calls == []
+    assert work.is_dir() and path.read_bytes() == precious
+    assert index.read_bytes() == original_index
+
+
+def test_s1_full_removal_supports_preexisting_annotated_module_tag(tmp_path, monkeypatch):
+    main, work, module, manifest, checkpoint, _, _, tip = _s1_removal_fixture(
+        tmp_path, monkeypatch, preexisting_tag=True)
+    destination = main / module
+    tag = _git("rev-parse", "refs/tags/preexisting-annotated", cwd=destination)
+    assert _git("cat-file", "-t", tag, cwd=destination) == "tag"
+    annotation = _git("cat-file", "-p", tag, cwd=destination)
+    result = mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert result.returncode == 0 and not work.exists()
+    assert not Path(manifest["admin_dir"]).exists()
+    _git("reflog", "expire", "--expire=now", "--all", cwd=destination)
+    _git("gc", "--prune=now", cwd=destination)
+    assert _git("cat-file", "-p", tag, cwd=destination) == annotation
+    assert _git("cat-file", "-t", tip, cwd=destination) == "commit"
+    assert (main / "doc/harness/archive/batch/TASK__lead/TASK.json").is_file()

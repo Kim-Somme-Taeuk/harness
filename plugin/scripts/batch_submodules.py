@@ -42,7 +42,7 @@ def _git(root, *args, allow=False):
                '-c', 'core.hooksPath=' + os.devnull, '-c', 'submodule.recurse=false',
                '-c', 'fetch.recurseSubmodules=false', '-c', 'protocol.allow=never',
                '-c', 'protocol.file.allow=always', '-c', 'maintenance.auto=false',
-               '-c', 'gc.auto=0', '-c', 'core.fsync=all', '-c', 'core.fsyncMethod=fsync', *args]
+               '-c', 'gc.auto=0', '-c', 'pack.writeReverseIndex=false', '-c', 'core.fsync=all', '-c', 'core.fsyncMethod=fsync', *args]
     try:
         result = subprocess.run(command, cwd=root, env=env, capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -119,7 +119,15 @@ def _supported(root, gd):
         _require(count <= 100000, 'module content inventory exceeds bound')
 
 
+def reject_hidden_index_flags(root):
+    """Refuse index flags which can hide unique working-tree bytes from Git."""
+    entries = _git(root, '--literal-pathspecs', 'ls-files', '-v', '-z').split('\0')
+    _require(not any(entry and (entry[0] == 'S' or entry[0].islower()) for entry in entries),
+             'assume-unchanged or skip-worktree index flags must be cleared before S1 work')
+
+
 def _clean(root, ignored=False):
+    reject_hidden_index_flags(root)
     _require(not _git(root, 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'), 'module checkout is dirty')
     if ignored:
         _require(not _git(root, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'), 'unknown ignored module content')
@@ -335,7 +343,7 @@ def prepare(repo, worktree, value, persist):
             _sync_directory(str(Path(gd).parent.parent))
             _sync_directory(value['admin_dir'])
             persist(value)
-            _git(repo, 'clone', '--template=', '--local', '--no-hardlinks', '--no-checkout', '--no-tags', '--separate-git-dir', gd, '--', os.path.join(repo, m['path']), root)
+            _git(repo, 'clone', '--template=', '--no-local', '--no-hardlinks', '--no-checkout', '--no-tags', '--separate-git-dir', gd, '--', os.path.join(repo, m['path']), root)
             _git(root, 'checkout', '-b', m['branch'], m['initial_gitlink'])
             actual, ident = _metadata(root)
             _require(actual == gd and _identity(os.path.dirname(gd), True) == m['private_parent_identity'], 'private clone identity changed')
@@ -517,6 +525,9 @@ def witness(repo, worktree, value, destination_ref, old_tip, target_tip, target=
 def reconcile_checkout(repo, value, w, target='main'):
     _bindings(repo, value['worktree'], value)
     _validate_witness(value, w)
+    # The serialized pin map records intent only. Recovery must verify durable
+    # destination refs themselves before changing any module checkout.
+    preserved_proof(repo, value)
     _require(w['target'] == target, 'wrong witness target')
     root = repo if target == 'main' else value['worktree']
     _require(_git(root, 'symbolic-ref', '-q', 'HEAD') == w['destination_ref'], 'destination branch differs from witness')

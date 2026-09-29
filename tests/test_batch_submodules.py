@@ -767,3 +767,86 @@ def test_full_batch_state_limit_is_checked_before_any_preservation_effect(tmp_pa
     assert state_file.read_bytes() == before
     assert _git(destination, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
     assert work.exists()
+
+
+def test_selection_refuses_hidden_tracked_module_edits(tmp_path, monkeypatch):
+    import pytest
+    main, _, paths = _setup(tmp_path, monkeypatch)
+    helper = _helper()
+    module = main / paths[0]
+    for flag in ("assume-unchanged", "skip-worktree"):
+        _git(module, "update-index", "--" + flag, "file.txt")
+        precious = "unique hidden selection work " + flag
+        (module / "file.txt").write_text(precious)
+        assert _git(module, "status", "--porcelain") == ""
+        with pytest.raises(helper.SubmoduleError):
+            helper.selection(main, paths)
+        assert (module / "file.txt").read_text() == precious
+        _git(module, "update-index", "--no-" + flag, "file.txt")
+        _git(module, "checkout", "--", "file.txt")
+
+
+def test_removal_refuses_hidden_tracked_module_edits(tmp_path, monkeypatch):
+    import pytest
+    helper, main, work, paths, value, _ = _prepared(tmp_path, monkeypatch)
+    helper.preserve(main, work, value, lambda _: None)
+    module = work / paths[0]
+    for flag in ("assume-unchanged", "skip-worktree"):
+        _git(module, "update-index", "--" + flag, "file.txt")
+        precious = "unique hidden disposable work " + flag
+        (module / "file.txt").write_text(precious)
+        assert _git(module, "status", "--porcelain") == ""
+        with pytest.raises(helper.SubmoduleError):
+            helper.removal_proof(main, work, value)
+        assert work.exists() and (module / "file.txt").read_text() == precious
+        _git(module, "update-index", "--no-" + flag, "file.txt")
+        _git(module, "checkout", "--", "file.txt")
+
+
+def test_landed_witness_refuses_missing_or_changed_pin_before_checkout(tmp_path, monkeypatch):
+    import pytest
+    helper, main, _, paths, value, proof, targets = _landed(tmp_path, monkeypatch)
+    module = main / paths[0]
+    target = targets[0]
+    old_head = _git(module, "rev-parse", "HEAD")
+    old_bytes = (module / "file.txt").read_bytes()
+    pin = value["modules"][0]["pins"][target]
+    assert old_head != target
+    # The target still resolves throughout: only the authoritative pin is lost.
+    for replacement in (None, old_head):
+        if replacement is None:
+            _git(module, "update-ref", "-d", pin)
+        else:
+            _git(module, "update-ref", pin, replacement)
+        assert _git(module, "cat-file", "-t", target) == "commit"
+        with pytest.raises(helper.SubmoduleError):
+            helper.reconcile_checkout(main, value, proof)
+        assert _git(module, "rev-parse", "HEAD") == old_head
+        assert (module / "file.txt").read_bytes() == old_bytes
+    _git(module, "update-ref", pin, target)
+    helper.reconcile_checkout(main, value, proof)
+    assert _git(module, "rev-parse", "HEAD") == target
+
+
+def test_preexisting_annotated_tag_survives_independent_clone_and_normal_disposal_proof(tmp_path, monkeypatch):
+    main, work, paths = _setup(tmp_path, monkeypatch)
+    source = main / paths[0]
+    _git(source, "tag", "-a", "before-preparation", "-m", "preexisting annotation")
+    tag = _git(source, "rev-parse", "refs/tags/before-preparation")
+    helper = _helper()
+    value = _manifest(helper, main, work, paths)
+    helper.prepare(main, work, value, lambda _: None)
+    module = work / paths[0]
+    tip = _change(work, paths[0])
+    helper.preserve(main, work, value, lambda _: None)
+    helper.removal_proof(main, work, value)
+    assert _git(source, "cat-file", "-t", tag) == "tag"
+    assert _git(source, "cat-file", "-t", tip) == "commit"
+    private = Path(_git(module, "rev-parse", "--absolute-git-dir"))
+    source_gitdir = Path(_git(source, "rev-parse", "--absolute-git-dir"))
+    assert private != source_gitdir
+    assert not (private / "objects/info/alternates").exists()
+    for obj in (private / "objects").rglob("*"):
+        peer = source_gitdir / "objects" / obj.relative_to(private / "objects")
+        if obj.is_file() and peer.is_file():
+            assert (obj.stat().st_dev, obj.stat().st_ino) != (peer.stat().st_dev, peer.stat().st_ino)

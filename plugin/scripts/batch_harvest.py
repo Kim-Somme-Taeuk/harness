@@ -299,6 +299,9 @@ def _s1_git_text(root, *args):
 
 def _s1_content(worktree, task_id, source_entries, manifest, repo):
     """Every outer file must be tracked or have an exact preserved counterpart."""
+    from batch_submodules import reject_hidden_index_flags
+
+    reject_hidden_index_flags(worktree)
     _s1_require(not _s1_git_text(worktree, 'diff', '--cached', '--name-only', 'HEAD', '--ignore-submodules=none')
                 and not _s1_git_text(worktree, 'diff', '--name-only', '--ignore-submodules=none'),
                 "tracked or staged S1 worktree content changed")

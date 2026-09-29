@@ -13,7 +13,10 @@ Selected paths must be canonical, non-symlink direct gitlinks with matching
 gitlinks. Duplicate, missing, unpopulated, nested, escaping or unsupported
 repository topology refuses before preparation. Recursive modules, shallow or
 promisor repositories, alternates and replacement refs are not supported.
-Ignored nested repositories continue as ordinary sequential tasks.
+Ignored nested repositories continue as ordinary sequential tasks. Tracked entries
+with `assume-unchanged` or `skip-worktree` flags refuse S1 cleanliness/disposal
+proofs because Git can otherwise hide uncommitted bytes; the helper never clears
+those flags or discards their content.
 
 Each selected gitlink is one ownership boundary even when the requested edit
 is a descendant path. Two leads changing sibling paths in the same module
@@ -31,7 +34,7 @@ idempotence, and malformed or downgraded records refuse.
 The existing batch record owns the module manifest and checkpoints. Bind
 persists the exact worker/worktree/branch and preparation intent while still
 reserved, then creates local independent module clones with private gitdirs
-under that registered worktree's administration directory. No hardlinks,
+under that registered worktree's administration directory. Only the intended reachable objects transfer from validated local paths. No hardlinks,
 alternates, network initialization or shared configuration edits are used.
 Private clones use an empty Git template so disposable metadata does not inherit
 custom hooks or template files.
