@@ -14,8 +14,8 @@ own disjoint worktrees and branches. Stay inside yours.
 ## Inputs
 
 The coordinator's prompt gives you: the request text, a task slug, a declared
-path scope, the `off-limits` paths (every submodule and ignored nested repo
-the batch preflight found, or `none`), the coordinator's HEAD sha
+path scope, the request-specific `off-limits` paths (unselected submodules and
+ignored nested repos, or `none`), any explicit S1 module selection, the coordinator's HEAD sha
 (`git rev-parse HEAD` at claim time), the main checkout and batch id, and a
 pytest worker cap (default `4`).
 The first dispatch is always bootstrap-only. Mutation permission arrives only
@@ -43,7 +43,10 @@ actual native worker identity, worktree and branch.
 4. Only when the coordinator continues this same native agent with confirmed
    `batch_state.py bind` success and explicit permission to mutate through
    `SendMessage` addressed to its exact bound agent ID, recheck W,
-   branch and HEAD against the bound handoff and proceed below. Missing or
+   branch and HEAD against the bound handoff. For S1, require the confirmed
+   prepared-module manifest and verify its paths, private-store identity and
+   named branches before edits. Only coordinator bind prepares these clones;
+   missing or incomplete preparation is a blocker. Then proceed below. Missing or
    mismatched authorization means stay stopped. Never infer permission from
    the original request or from a state file you edit yourself.
 
@@ -72,14 +75,19 @@ worktree or rotate the existing run.
 - Never run `git submodule update`, `init`, `deinit`, `sync`, `set-url`, or
   `absorbgitdirs`, nor any other `git submodule` subcommand except `status`,
   and never pass `--recurse-submodules` or `-c submodule.recurse=true` to
-  any git command. Never edit a path inside a submodule, inside an ignored
-  nested repo (a directory with its own `.git` that the repository does not
-  track), or under an `off-limits` path. If the task needs either, stop and
-  return `verdict: "blocked"` with that reason in `blocked_reason`: the
-  coordinator runs such work as an ordinary task in the main checkout. A
-  submodule initialized in your worktree makes plain `git worktree remove`
-  refuse it for good, and `git submodule deinit` rewrites the `.git/config`
-  that the main checkout and every other lead share.
+  any git command. Never initialize, clone, fetch remotely or push a module.
+  You may edit only explicitly selected, coordinator-prepared S1 modules within
+  your declared scope, using their supplied named branches. Never replace their
+  Git metadata or change `.gitmodules`/gitlink topology. Commit module changes
+  before the outer gitlink commit; preservation, checkout reconciliation and
+  disposal belong to the coordinator. Unselected submodules, ignored nested
+  repos and `off-limits` paths remain forbidden. If needed, return `blocked` so
+  the coordinator can arrange an ordinary sequential task. Deinit rewrites the
+  shared config and removal can destroy private objects; never attempt either.
+- Keep all Harness lifecycle calls and nested review/QA cwd at W, including for
+  selected-module work. Do not start a separate task inside a module. Use
+  `git -C <W/module>` for its scoped staging/commit commands and return to the
+  outer task for evidence and the superproject gitlink commit.
 - Run the normal lifecycle exactly as documented: `Skill("harness:run", ...)` (the Claude plugin ships this skill too)
   or the `task_start` → plan → develop → review/QA → `task_close` sequence,
   with these batch-lead carve-outs:
@@ -103,7 +111,9 @@ worktree or rotate the existing run.
 
 ## After `task_close` reports PASS
 
-Commit the implementation diff on your current branch in one commit, with
+Selected module changes must already be committed on their supplied named
+branches; stage their gitlinks in W with the intended outer paths.
+Commit the outer implementation diff on your current branch in one commit, with
 plain `git add <intended paths>` excluding `.harness-batch-bootstrap`, and
 `git commit --trailer "Harness-Task: <task_id>"` (no push, no merge, no
 `--amend`). The coordinator rebases that commit onto the main branch, which

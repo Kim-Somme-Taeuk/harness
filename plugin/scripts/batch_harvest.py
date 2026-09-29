@@ -24,7 +24,8 @@ Idempotent: re-running after a successful harvest is a no-op for the archive
 copy (byte-identical tree) and appends zero learnings rows. An existing archive
 with different content for the same task id is refused, never replaced. Never removes the
 worktree, branch, or any git state — that stays the coordinator's job with
-plain `git worktree remove` / `git branch -d`.
+plain `git worktree remove` / `git branch -d`. The internal S1 removal
+entrypoint below is the sole guarded exception for state-managed submodules.
 
 Stdlib only.
 """
@@ -253,6 +254,191 @@ def harvest(repo_root: str, worktree: str, task_id: str) -> dict:
     dest_dir = _archive_task(repo_root, worktree, task_id)
     appended = _append_learnings(repo_root, rows)
     return {"archived": dest_dir, "learnings_appended": appended}
+
+
+def _s1_require(condition, reason):
+    if not condition:
+        raise HarvestError(reason)
+
+
+def _s1_path(path, directory=False):
+    """Check every existing ancestor, including before bounded state reads."""
+    absolute = os.path.abspath(path)
+    _s1_require(os.path.realpath(absolute) == absolute, "unsafe symlink in S1 proof path")
+    current = os.path.sep
+    parts = absolute.split(os.path.sep)[1:]
+    for index, part in enumerate(parts):
+        current = os.path.join(current, part)
+        info = os.lstat(current)
+        is_directory = index < len(parts) - 1 or directory
+        _s1_require(stat.S_ISDIR(info.st_mode) if is_directory else stat.S_ISREG(info.st_mode),
+                    "unsafe S1 proof path type")
+    return absolute
+
+
+def _s1_git(root, *args):
+    env = _trusted_git_env()
+    env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1', GIT_NO_REPLACE_OBJECTS='1', LC_ALL='C')
+    return subprocess.run(
+        ['git', '--no-optional-locks', '-c', 'core.fsmonitor=false',
+         '-c', 'core.hooksPath=' + os.devnull, '-c', 'submodule.recurse=false',
+         '-c', 'protocol.allow=never', '-c', 'status.showUntrackedFiles=all', *args],
+        cwd=root, env=env, capture_output=True, text=True, timeout=120,
+    )
+
+
+def _s1_git_text(root, *args):
+    result = _s1_git(root, *args)
+    _s1_require(result.returncode == 0 and len(result.stdout) <= 4 * 1024 * 1024,
+                "cannot inspect S1 Git proof: " + args[0])
+    _s1_require(not any(x in result.stderr for x in ('Permission denied', 'could not open directory')),
+                "cannot inspect all S1 checkout content")
+    return result.stdout.rstrip('\n')
+
+
+def _s1_content(worktree, task_id, source_entries, manifest, repo):
+    """Every outer file must be tracked or have an exact preserved counterpart."""
+    _s1_require(not _s1_git_text(worktree, 'diff', '--cached', '--name-only', 'HEAD', '--ignore-submodules=none')
+                and not _s1_git_text(worktree, 'diff', '--name-only', '--ignore-submodules=none'),
+                "tracked or staged S1 worktree content changed")
+    tracked = set(filter(None, _s1_git_text(worktree, 'ls-files', '-z').split('\0')))
+    selected = {m['path'] for m in manifest['modules']}
+    task_rel = 'doc/harness/tasks/' + task_id
+    allowed = set(tracked) | {task_rel + '/' + rel for rel in source_entries}
+    allowed.add(task_rel)
+    learning_rel = 'doc/harness/learnings.jsonl'
+    learning = os.path.join(worktree, learning_rel)
+    if os.path.lexists(learning):
+        _s1_path(learning)
+        destination = _s1_path(os.path.join(repo, learning_rel))
+        _s1_require(os.path.getsize(learning) <= 1024 * 1024 and os.path.getsize(destination) <= 1024 * 1024,
+                    "learning content exceeds removal proof bound")
+        with open(learning, 'rb') as handle:
+            source_lines = handle.read().splitlines()
+        with open(destination, 'rb') as handle:
+            dest_lines = set(handle.read().splitlines())
+        # Unlike ordinary harvest's permissive parser, disposal cannot lose
+        # malformed rows or unique bytes that were not appended to the ledger.
+        _s1_require(all(line in dest_lines for line in source_lines), "learning content not preserved")
+        allowed.add(learning_rel)
+    directories = set()
+    for path in allowed | selected:
+        parent = os.path.dirname(path)
+        while parent:
+            directories.add(parent)
+            parent = os.path.dirname(parent)
+    directories.update(task_rel + '/' + p for p, value in source_entries.items() if value is None)
+    directories.add(task_rel)
+    def unreadable(exc):
+        raise HarvestError('cannot inspect every worktree entry') from exc
+    count = 0
+    for current, dirs, files in os.walk(worktree, followlinks=False, onerror=unreadable):
+        relroot = os.path.relpath(current, worktree)
+        relroot = '' if relroot == '.' else relroot
+        keep = []
+        for name in dirs:
+            rel = '/'.join(filter(None, (relroot, name)))
+            full = os.path.join(worktree, rel)
+            _s1_require(name != '.git', 'unexpected nested repository')
+            if os.path.islink(full):
+                _s1_require(rel in tracked, 'unknown symlink directory in worktree removal proof')
+                continue  # tracked link bytes are integrated; never follow its target
+            if rel in selected:
+                continue  # shared helper independently proves all module content
+            _s1_require(rel in directories or rel in tracked, 'unknown ignored or untracked directory: ' + rel)
+            keep.append(name)
+        dirs[:] = keep
+        for name in files:
+            rel = '/'.join(filter(None, (relroot, name)))
+            if rel == '.git':
+                continue  # registered worktree gitfile proved separately
+            _s1_require(name != '.git', 'unexpected nested repository')
+            _s1_require(rel in allowed, 'unknown ignored or untracked content: ' + rel)
+            mode = os.lstat(os.path.join(worktree, rel)).st_mode
+            _s1_require(stat.S_ISREG(mode) or rel in tracked and stat.S_ISLNK(mode), 'nonregular worktree content')
+        count += len(dirs) + len(files)
+        _s1_require(count <= 100000, 'worktree content inventory exceeds bound')
+
+
+def remove_s1_worktree(repo, worktree, task_id, manifest, checkpoint, git_runner=None):
+    """Single-force disposal after durable state, evidence and module proofs.
+
+    Finish owns lock/retention restoration and ordinary branch deletion. This
+    callable grants no permission to standalone harvest or ordinary finish.
+    """
+    from _lib import _read_json_file, read_task_control, task_control_status
+    import batch_submodules
+
+    try:
+        repo, worktree = os.fspath(repo), os.fspath(worktree)
+        _s1_path(repo, True)
+        _s1_path(worktree, True)
+        batch_submodules.validate_manifest(manifest)
+        _s1_require(manifest['repo'] == repo and manifest['worktree'] == worktree
+                    and task_id == 'TASK__' + manifest['slug'], 'S1 removal identity mismatch')
+        _verify_registered_worktree(repo, worktree)
+        state_path = _s1_path(os.path.join(repo, 'doc/harness/runtime/batches', manifest['batch_id'] + '.json'))
+        data = _read_json_file(state_path)
+        _s1_require(type(data.get('schema_version')) is int and data['schema_version'] == 2
+                    and data.get('repo') == repo and data.get('batch_id') == manifest['batch_id'], 'missing or incompatible durable S1 state')
+        requests = data.get('requests')
+        _s1_require(isinstance(requests, list), 'invalid durable request list')
+        matching = [item for item in requests if isinstance(item, dict) and item.get('slug') == manifest['slug']]
+        _s1_require(len(matching) == 1, 'missing or ambiguous durable S1 request')
+        item = matching[0]
+        _s1_require(item.get('status') == 'integrating' and item.get('task_id') == task_id
+                    and item.get('worktree') == worktree and item.get('spawn_head') == manifest['spawn_head']
+                    and item.get('submodule_manifest') == manifest and item.get('checkpoint') == checkpoint,
+                    'durable S1 removal proof does not match request')
+        _s1_require(isinstance(checkpoint, dict) and checkpoint.get('stage') == 'harvested'
+                    and checkpoint.get('destination_ref') == data.get('destination_ref')
+                    and checkpoint.get('run_id') == item.get('run_id')
+                    and checkpoint.get('close_fingerprint') == item.get('close_fingerprint'), 'missing harvested generation checkpoint')
+        tip = checkpoint.get('integrated_tip')
+        _s1_require(isinstance(tip, str) and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', tip)
+                    and checkpoint.get('branch_tip') == tip, 'invalid integrated tip')
+        _s1_require(_s1_git_text(repo, 'symbolic-ref', '-q', 'HEAD') == data['destination_ref']
+                    and _s1_git_text(repo, 'rev-parse', 'HEAD') == tip
+                    and _s1_git_text(worktree, 'rev-parse', 'HEAD') == tip
+                    and isinstance(item.get('branch'), str)
+                    and _s1_git_text(worktree, 'symbolic-ref', '-q', 'HEAD') == 'refs/heads/' + item['branch'],
+                    'integrated branch or destination changed')
+        source = _s1_path(os.path.join(worktree, 'doc/harness/tasks', task_id), True)
+        archive = _s1_path(os.path.join(repo, 'doc/harness/archive/batch', task_id), True)
+        _s1_require(isinstance(checkpoint.get('harvest'), dict) and checkpoint['harvest'].get('archived') == archive,
+                    'checkpoint archive path mismatch')
+        for directory in (source, archive):
+            _refuse_non_regular_tree(directory)
+            control = read_task_control(directory)
+            _s1_require(control and task_control_status(directory, control) == 'closed'
+                        and control.get('run_id') == item.get('run_id')
+                        and control.get('close_receipt_fingerprint') == item.get('close_fingerprint'),
+                        'task source/archive is not the exact closed generation')
+        source_entries, archive_entries = _tree_entries(source), _tree_entries(archive)
+        fingerprint = 'sha256:' + hashlib.sha256(json.dumps(archive_entries, sort_keys=True).encode()).hexdigest()
+        _s1_require(source_entries == archive_entries and checkpoint.get('archive_fingerprint') == fingerprint,
+                    'task evidence differs from durable archive')
+        batch_submodules.removal_proof(repo, worktree, manifest)
+        _s1_content(worktree, task_id, source_entries, manifest, repo)
+        # Re-read authoritative state after potentially expensive inventories, and
+        # repeat module proof immediately before the one destructive operation.
+        _s1_require(_read_json_file(_s1_path(state_path)) == data, 'durable state changed during removal proof')
+        batch_submodules.removal_proof(repo, worktree, manifest)
+        for directory in (source, archive):
+            _s1_path(directory, True)
+            _refuse_non_regular_tree(directory)
+        _s1_require(_tree_entries(source) == source_entries and _tree_entries(archive) == archive_entries,
+                    'task evidence changed during removal proof')
+        _s1_content(worktree, task_id, source_entries, manifest, repo)
+        _s1_require(_s1_git_text(repo, 'rev-parse', 'HEAD') == tip
+                    and _s1_git_text(worktree, 'rev-parse', 'HEAD') == tip
+                    and _s1_git_text(repo, 'symbolic-ref', '-q', 'HEAD') == data['destination_ref']
+                    and _s1_git_text(worktree, 'symbolic-ref', '-q', 'HEAD') == 'refs/heads/' + item['branch'],
+                    'branch identity changed during removal proof')
+    except (batch_submodules.SubmoduleError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise HarvestError('S1 removal proof refused: ' + str(exc)) from exc
+    return (git_runner or _s1_git)(repo, 'worktree', 'remove', '--force', worktree)
 
 
 def main() -> int:

@@ -436,3 +436,274 @@ def test_non_canonical_worktree_path_is_canonicalized_before_use(tmp_path: Path)
     assert summary["archived"] == str(repo.resolve() / "doc/harness/archive/batch/TASK__demo")
     with _raises(mod.HarvestError, match="absolute"):
         mod.harvest(str(repo), "lead-c", "TASK__demo")
+
+
+def _s1_removal_fixture(tmp_path, monkeypatch, count=1, tracked_link=False):
+    import copy
+    import test_batch_submodules as fixture
+    import test_batch_state as state_fixture
+    import batch_state
+
+    main, work, paths = fixture._setup(tmp_path, monkeypatch, count)
+    (main / "doc/harness").mkdir(parents=True)
+    (main / "doc/harness/manifest.yaml").write_text("version: 5\n")
+    if tracked_link:
+        target = tmp_path / "external"
+        target.mkdir()
+        (target / "precious").write_text("external data")
+        (main / "external-link").symlink_to(target, target_is_directory=True)
+    with (main / ".gitignore").open("a") as handle:
+        handle.write("doc/harness/tasks/\ndoc/harness/archive/\ndoc/harness/runtime/\ndoc/harness/learnings.jsonl\n")
+    fixture._commit(main, "ignore operational evidence")
+    fixture._git(work, "rebase", "main")
+    helper = fixture._helper()
+    manifest = fixture._manifest(helper, main, work, [paths[0]])
+    helper.prepare(main, work, manifest, lambda _: None)
+    old = fixture._git(main, "rev-parse", "HEAD")
+    module_tip = fixture._change(work, paths[0])
+    helper.preserve(main, work, manifest, lambda _: None)
+    tip = fixture._git(work, "rev-parse", "HEAD")
+    witness = helper.witness(main, work, manifest, "refs/heads/main", old, tip)
+    manifest["witness"] = witness
+    fixture._git(main, "merge", "--ff-only", "lead")
+    helper.reconcile_checkout(main, manifest, witness)
+    task_dir = state_fixture.task(work, slug="lead", closed=True)
+    control = json.loads((task_dir / "TASK.json").read_text())
+    harvested = mod.harvest(str(main), str(work), "TASK__lead")
+    batch_state.sync_harvest(str(main), harvested["archived"])
+    checkpoint = dict(stage="harvested", destination_ref="refs/heads/main", branch_tip=tip,
+                      integrated_tip=tip, run_id=control["run_id"],
+                      close_fingerprint=control["close_receipt_fingerprint"], harvest=harvested,
+                      archive_fingerprint=batch_state.fingerprint(harvested["archived"]))
+    request = dict(slug="lead", request="module edit", scopes=[paths[0]], depends_on=[],
+                   resolved_scopes=[str(main / paths[0])], ownership_scopes=[str(main / paths[0])],
+                   submodules=[paths[0]], submodule_manifest=copy.deepcopy(manifest),
+                   status="integrating", task_id="TASK__lead", worker_id="worker-lead",
+                   worktree=str(work), branch="lead", spawn_head=manifest["spawn_head"],
+                   run_id=control["run_id"], close_fingerprint=control["close_receipt_fingerprint"],
+                   checkpoint=copy.deepcopy(checkpoint),
+                   result=dict(verdict="closed", task_id="TASK__lead", worktree=str(work), branch="lead", commit=tip))
+    state = dict(schema_version=2, batch_id=manifest["batch_id"], repo=str(main),
+                 destination_ref="refs/heads/main", initial_head=manifest["spawn_head"],
+                 max_leads=3, cap_source="default", status="open", halted=False,
+                 created_at="2026-09-29T00:00:00Z", updated_at="2026-09-29T00:00:00Z", requests=[request])
+    state_path = main / "doc/harness/runtime/batches" / (manifest["batch_id"] + ".json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    batch_state.write_json(str(state_path), state)
+    return main, work, paths[0], manifest, checkpoint, state_path, state, module_tip
+
+
+def test_s1_guarded_removal_uses_single_force_and_preserves_objects(tmp_path, monkeypatch):
+    main, work, path, manifest, checkpoint, _, _, tip = _s1_removal_fixture(tmp_path, monkeypatch)
+    calls = []
+    def runner(repo, *args):
+        calls.append(args)
+        return subprocess.run(["git", *map(str, args)], cwd=repo, capture_output=True, text=True)
+    result = mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint, git_runner=runner)
+    assert result.returncode == 0, result.stderr
+    assert calls == [("worktree", "remove", "--force", str(work))]
+    assert not work.exists()
+    assert not Path(manifest["admin_dir"]).exists()
+    _git("gc", "--prune=now", cwd=main / path)
+    assert _git("cat-file", "-t", tip, cwd=main / path) == "commit"
+    assert (main / "doc/harness/archive/batch/TASK__lead/PLAN.md").exists()
+    # The helper removes only the tree: the finish owner still owns safe -d.
+    assert _git("rev-parse", "refs/heads/lead", cwd=main) == checkpoint["integrated_tip"]
+
+
+def test_s1_guarded_removal_requires_exact_persisted_state(tmp_path, monkeypatch):
+    import copy
+    import batch_state
+    main, work, _, manifest, checkpoint, state_path, state, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    variants = []
+    for key, value in (("schema_version", 1), ("batch_id", "foreign"), ("repo", str(tmp_path)),
+                       ("destination_ref", "refs/heads/foreign")):
+        changed = copy.deepcopy(state)
+        changed[key] = value
+        variants.append(changed)
+    for key, value in (("status", "returned"), ("task_id", "TASK__foreign"), ("spawn_head", "0" * 40),
+                       ("worktree", str(tmp_path / "foreign")), ("branch", "foreign"),
+                       ("run_id", "foreign"), ("close_fingerprint", "sha256:" + "0" * 64)):
+        changed = copy.deepcopy(state)
+        changed["requests"][0][key] = value
+        variants.append(changed)
+    changed = copy.deepcopy(state)
+    changed["requests"][0]["submodule_manifest"]["slug"] = "foreign"
+    variants.append(changed)
+    changed = copy.deepcopy(state)
+    changed["requests"][0]["checkpoint"]["stage"] = "integrated"
+    variants.append(changed)
+    for changed in variants:
+        batch_state.write_json(str(state_path), changed)
+        with _raises(mod.HarvestError):
+            mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+        assert work.exists()
+    state_path.unlink()
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert work.exists()
+
+
+def test_s1_guarded_removal_rejects_changed_evidence_and_archive(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    archive = Path(checkpoint["harvest"]["archived"])
+    for path in (archive / "PLAN.md", work / "doc/harness/tasks/TASK__lead/PLAN.md",
+                 archive / "TASK.json", work / "doc/harness/tasks/TASK__lead/TASK.json"):
+        original = path.read_bytes()
+        path.write_bytes(original + b"changed")
+        with _raises(mod.HarvestError):
+            mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+        assert work.exists()
+        path.write_bytes(original)
+
+
+def test_s1_guarded_removal_rejects_unknown_ignored_and_untracked_content(tmp_path, monkeypatch):
+    main, work, module, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    for path in (work / "unknown.txt", work / "doc/harness/tasks/unknown.bin",
+                 work / "doc/harness/runtime/precious.bin", work / module / "unknown.txt"):
+        missing_parents = []
+        parent = path.parent
+        while not parent.exists():
+            missing_parents.append(parent)
+            parent = parent.parent
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("irreplaceable")
+        with _raises(mod.HarvestError):
+            mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+        assert path.read_text() == "irreplaceable"
+        path.unlink()
+        for parent in missing_parents:
+            parent.rmdir()
+    gitdir = Path(_git("rev-parse", "--absolute-git-dir", cwd=work / module))
+    (gitdir / "info/exclude").write_text("private-data\n")
+    hidden = work / module / "private-data"
+    hidden.write_text("irreplaceable")
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert hidden.read_text() == "irreplaceable"
+
+
+def test_s1_guarded_removal_rejects_dirty_superproject_and_module(tmp_path, monkeypatch):
+    main, work, module, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    for path in (work / "file.txt", work / module / "file.txt"):
+        before = path.read_bytes()
+        path.write_text("keep edits")
+        with _raises(mod.HarvestError):
+            mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+        assert path.read_text() == "keep edits"
+        path.write_bytes(before)
+
+
+def test_s1_guarded_removal_rejects_new_refs_and_missing_pins(tmp_path, monkeypatch):
+    main, work, module, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    _git("branch", "new-work", cwd=work / module)
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    _git("branch", "-d", "new-work", cwd=work / module)
+    pin = next(iter(manifest["modules"][0]["pins"].values()))
+    _git("update-ref", "-d", pin, cwd=main / module)
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert work.exists()
+
+
+def test_s1_guarded_removal_rejects_ignored_nested_repository(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    hidden = work / "doc/harness/runtime/nested"
+    _init_repo(hidden)
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert (hidden / ".git").exists()
+
+
+def test_s1_guarded_removal_rejects_symlinked_state(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, state_path, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    saved = tmp_path / "redirected-state.json"
+    state_path.rename(saved)
+    state_path.symlink_to(saved)
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert work.exists()
+
+
+def test_s1_guarded_removal_rejects_extra_initialized_unselected_module(tmp_path, monkeypatch):
+    import test_batch_submodules as fixture
+    main, work, _, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch, count=2)
+    extra = work / "libs/module1"
+    fixture._git(main, "clone", "--no-hardlinks", str(main / "libs/module1"), str(extra))
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert (extra / ".git").exists()
+
+
+def test_s1_guarded_removal_accepts_tracked_directory_symlink_without_following(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch, tracked_link=True)
+    result = mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert result.returncode == 0, result.stderr
+    assert not work.exists()
+    assert (tmp_path / "external/precious").read_text() == "external data"
+
+
+def test_s1_guarded_removal_rejects_staged_change_hidden_by_restored_worktree(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, _, _, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    path = work / "file.txt"
+    head_bytes = path.read_bytes()
+    path.write_text("valuable staged version\n")
+    _git("add", "--", "file.txt", cwd=work)
+    staged_oid = _git("rev-parse", ":file.txt", cwd=work)
+    path.write_bytes(head_bytes)
+    # The worktree equals HEAD, but the index contains distinct user work.
+    assert _git("diff", "--name-only", "HEAD", cwd=work) == ""
+    assert _git("diff", "--cached", "--name-only", "HEAD", cwd=work) == "file.txt"
+    index = Path(_git("rev-parse", "--absolute-git-dir", cwd=work)) / "index"
+    index_bytes = index.read_bytes()
+    with _raises(mod.HarvestError):
+        mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert work.is_dir()
+    assert index.read_bytes() == index_bytes
+    assert _git("rev-parse", ":file.txt", cwd=work) == staged_oid
+    assert path.read_bytes() == head_bytes
+
+
+def _s1_reharvest_learnings(main, work, checkpoint, state_path, state):
+    import copy
+    import batch_state
+    harvested = mod.harvest(str(main), str(work), "TASK__lead")
+    batch_state.sync_harvest(str(main), harvested["archived"])
+    checkpoint["harvest"] = harvested
+    state["requests"][0]["checkpoint"] = copy.deepcopy(checkpoint)
+    batch_state.write_json(str(state_path), state)
+    return harvested
+
+
+def test_s1_guarded_removal_accepts_exact_harvested_learning_lines(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, state_path, state, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    source = work / "doc/harness/learnings.jsonl"
+    destination = main / "doc/harness/learnings.jsonl"
+    existing = b'{"key": "already-present", "insight": "preserve spacing"}\n'
+    added = b'{"key":"new","insight":"preserve bytes"}\n'
+    destination.write_bytes(existing)
+    source.write_bytes(existing + added)
+    harvested = _s1_reharvest_learnings(main, work, checkpoint, state_path, state)
+    assert harvested["learnings_appended"] == 1
+    assert destination.read_bytes() == source.read_bytes()
+    preserved = destination.read_bytes()
+    result = mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+    assert result.returncode == 0 and not work.exists()
+    assert destination.read_bytes() == preserved
+
+
+def test_s1_guarded_removal_retains_learning_bytes_omitted_by_harvest(tmp_path, monkeypatch):
+    main, work, _, manifest, checkpoint, state_path, state, _ = _s1_removal_fixture(tmp_path, monkeypatch)
+    source = work / "doc/harness/learnings.jsonl"
+    destination = main / "doc/harness/learnings.jsonl"
+    valid = b'{"key":"kept","insight":"valid row"}\n'
+    for omitted in (b'{malformed but valuable bytes}\n', b'["unique non-object learning"]\n'):
+        original = valid + omitted
+        source.write_bytes(original)
+        _s1_reharvest_learnings(main, work, checkpoint, state_path, state)
+        assert destination.read_bytes() == valid
+        with _raises(mod.HarvestError, match="learning content not preserved"):
+            mod.remove_s1_worktree(str(main), str(work), "TASK__lead", manifest, checkpoint)
+        assert work.is_dir() and source.read_bytes() == original
+        assert destination.read_bytes() == valid

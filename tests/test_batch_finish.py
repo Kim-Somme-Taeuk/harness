@@ -39,6 +39,7 @@ def pytest_generate_tests(metafunc):
         "boundary": ["after-rebase", "before-merge", "merge-timeout"],
         "checkout": ["detached", "sibling"],
         "checkpoint_stage": ["rebase", "integrated", "harvested"],
+        "s1_interrupt": ["before-update", "before-integrated-checkpoint"],
     }
     for name, values in cases.items():
         if name in metafunc.fixturenames:
@@ -1006,3 +1007,289 @@ def test_checkpoint_receives_deep_copies_without_changing_successful_finish(tmp_
     assert result["cleanup"]["removed"] is True
     assert result["cleanup"]["branch_deleted"] is True
     assert not lead.worktree.exists()
+
+
+def _s1_finish_fixture(tmp_path, monkeypatch):
+    import copy
+    import test_batch_submodules as fixture
+    import test_batch_state as state_fixture
+    import batch_state
+
+    main, work, paths = fixture._setup(tmp_path, monkeypatch)
+    _git("config", "user.name", "S1 Finish Test", cwd=main)
+    _git("config", "user.email", "s1-finish@example.test", cwd=main)
+    _write(main / "doc/harness/manifest.yaml", "version: 7\n")
+    with (main / ".gitignore").open("a") as handle:
+        handle.write("doc/harness/tasks/\ndoc/harness/archive/\ndoc/harness/runtime/\ndoc/harness/learnings.jsonl\n")
+    fixture._commit(main, "operational ignores")
+    fixture._git(work, "rebase", "main")
+    helper = fixture._helper()
+    manifest = fixture._manifest(helper, main, work, paths)
+    helper.prepare(main, work, manifest, lambda _: None)
+    module_tip = fixture._change(work, paths[0])
+    tip = _head(work)
+    task_dir = state_fixture.task(work, slug="lead", closed=True)
+    control = json.loads((task_dir / "TASK.json").read_text())
+    _git("worktree", "lock", "--reason", LOCK_REASON, str(work), cwd=main)
+    retention = dict(batch_id=manifest["batch_id"], slug="lead", spawn_head=manifest["spawn_head"])
+    (work / mod.RETENTION_MARKER).write_bytes(mod.retention_bytes(retention))
+    request = dict(slug="lead", request="module edit", scopes=paths, depends_on=[],
+                   resolved_scopes=[str(main / paths[0])], ownership_scopes=[str(main / paths[0])],
+                   submodules=paths, submodule_manifest=copy.deepcopy(manifest),
+                   status="integrating", task_id="TASK__lead", worker_id="worker-lead",
+                   worktree=str(work), branch="lead", spawn_head=manifest["spawn_head"],
+                   run_id=control["run_id"], close_fingerprint=control["close_receipt_fingerprint"],
+                   checkpoint=None,
+                   result=dict(verdict="closed", task_id="TASK__lead", worktree=str(work), branch="lead", commit=tip))
+    state = dict(schema_version=2, batch_id=manifest["batch_id"], repo=str(main),
+                 destination_ref="refs/heads/main", initial_head=manifest["spawn_head"],
+                 max_leads=3, cap_source="default", status="open", halted=False,
+                 created_at="2026-09-29T00:00:00Z", updated_at="2026-09-29T00:00:00Z", requests=[request])
+    state_path = main / "doc/harness/runtime/batches" / (manifest["batch_id"] + ".json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    events = []
+
+    def persist(value):
+        request["submodule_manifest"] = copy.deepcopy(value)
+        batch_state.write_json(str(state_path), state)
+        events.append(("manifest", copy.deepcopy(value)))
+
+    def checkpoint(stage, result):
+        record = dict(stage=stage, destination_ref=result["destination_ref"],
+                      branch_tip=result["branch_tip"], integrated_tip=result["integrated_tip"],
+                      run_id=control["run_id"], close_fingerprint=control["close_receipt_fingerprint"])
+        if stage == "harvested":
+            batch_state.sync_harvest(str(main), result["harvest"]["archived"])
+            record.update(harvest=result["harvest"],
+                          archive_fingerprint=batch_state.fingerprint(result["harvest"]["archived"]))
+        request["checkpoint"] = copy.deepcopy(record)
+        batch_state.write_json(str(state_path), state)
+        events.append((stage, copy.deepcopy(record)))
+        return record
+
+    persist(manifest)
+    return dict(main=main, work=work, path=paths[0], manifest=manifest, module_tip=module_tip,
+                state_path=state_path, state=state, events=events, persist=persist,
+                checkpoint=checkpoint, retention=retention, helper=helper,
+                args=argparse.Namespace(worktree=str(work), branch="lead", task_id="TASK__lead", commit=tip, resume=False))
+
+
+def _s1_finish(f, **overrides):
+    options = dict(submodules=f["manifest"], persist_submodules=f["persist"],
+                   checkpoint=f["checkpoint"], retention=f["retention"])
+    options.update(overrides)
+    return mod.finish(str(f["main"]), f["args"], **options)
+
+
+def test_s1_finish_preserves_before_rebase_and_updates_before_checkpoint(tmp_path, monkeypatch):
+    import test_batch_submodules as fixture
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    main, work = f["main"], f["work"]
+    (main / "incoming.txt").write_text("independent main work\n")
+    fixture._commit(main, "incoming")
+    old = _head(main)
+    commands = []
+    original_git = mod._git
+
+    def observe(root, *args):
+        if "rebase" in args and "--abort" not in args:
+            assert all(m["pins"] for m in f["manifest"]["modules"])
+            assert fixture._git(main / f["path"], "cat-file", "-t", f["module_tip"]) == "commit"
+        if "merge" in args and "--ff-only" in args:
+            stored = json.loads(f["state_path"].read_text())["requests"][0]["submodule_manifest"]
+            assert stored["witness"]["old_tip"] == old
+            assert stored["witness"]["target_tip"] == _head(work)
+        commands.append(args)
+        return original_git(root, *args)
+
+    def checkpoint(stage, result):
+        if stage in ("integrated", "harvested"):
+            assert _head(main / f["path"]) == f["module_tip"]
+            assert _git("status", "--porcelain", cwd=main) == ""
+        return f["checkpoint"](stage, result)
+
+    monkeypatch.setattr(mod, "_git", observe)
+    result = _s1_finish(f, checkpoint=checkpoint)
+    assert result["status"] == "integrated", result
+    assert result["cleanup"]["removed"] and result["cleanup"]["branch_deleted"]
+    assert not work.exists() and not Path(f["manifest"]["admin_dir"]).exists()
+    assert _git("rev-list", "--merges", f"{old}..HEAD", cwd=main) == ""
+    assert _git("rev-parse", "HEAD^", cwd=main) == old
+    assert any("rebase" in cmd for cmd in commands)
+    assert any("merge" in cmd and "--ff-only" in cmd for cmd in commands)
+    assert len([cmd for cmd in commands if cmd[:2] == ("worktree", "remove")]) == 1
+    assert (main / "doc/harness/archive/batch/TASK__lead/TASK.json").exists()
+    fixture._git(main / f["path"], "reflog", "expire", "--expire=now", "--all")
+    fixture._git(main / f["path"], "gc", "--prune=now")
+    assert fixture._git(main / f["path"], "cat-file", "-t", f["module_tip"]) == "commit"
+
+
+def test_s1_finish_requires_both_durable_callbacks_before_mutation(tmp_path, monkeypatch):
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    old = _head(f["main"])
+    for missing in ("checkpoint", "persist_submodules"):
+        result = _s1_finish(f, **{missing: None})
+        assert result["status"] != "integrated", result
+        assert _head(f["main"]) == old and f["work"].exists()
+        assert _lock_reason(f["main"], f["work"]) == LOCK_REASON
+        assert not (f["main"] / "doc/harness/archive/batch/TASK__lead").exists()
+
+
+def test_s1_finish_resume_after_ff_before_update_or_checkpoint(tmp_path, monkeypatch, s1_interrupt):
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    original = f["helper"].reconcile_checkout
+    interrupted = False
+
+    def stop_once(repo, value, witness, target="main"):
+        nonlocal interrupted
+        if s1_interrupt == "before-update" and target == "main" and _head(f["main"]) == witness["target_tip"] and not interrupted:
+            interrupted = True
+            raise OSError("crash after fast-forward")
+        return original(repo, value, witness, target=target)
+
+    def checkpoint(stage, result):
+        nonlocal interrupted
+        if s1_interrupt == "before-integrated-checkpoint" and stage == "integrated" and not interrupted:
+            interrupted = True
+            raise OSError("crash before integrated checkpoint")
+        return f["checkpoint"](stage, result)
+
+    monkeypatch.setattr(f["helper"], "reconcile_checkout", stop_once)
+    result = _s1_finish(f, checkpoint=checkpoint)
+    assert interrupted and result["status"] != "integrated", result
+    assert f["work"].exists() and _head(f["main"]) == _head(f["work"])
+    assert (_head(f["main"] / f["path"]) == f["module_tip"]) is (s1_interrupt == "before-integrated-checkpoint")
+    assert not any(stage == "integrated" for stage, _ in f["events"])
+    f["args"].resume = True
+    result = _s1_finish(f)
+    assert result["status"] == "integrated", result
+    assert _head(f["main"] / f["path"]) == f["module_tip"]
+    assert not f["work"].exists()
+
+
+def test_s1_finish_witness_refuses_changed_destination_and_unrelated_dirt(tmp_path, monkeypatch):
+    import copy
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    helper, main, work = f["helper"], f["main"], f["work"]
+    helper.preserve(main, work, f["manifest"], f["persist"])
+    witness = helper.witness(main, work, f["manifest"], "refs/heads/main", _head(main), _head(work))
+    f["manifest"]["witness"] = witness
+    f["persist"](f["manifest"])
+    _git("merge", "--ff-only", "lead", cwd=main)
+    f["args"].resume = True
+    _git("checkout", "-qb", "foreign", cwd=main)
+    result = _s1_finish(f)
+    assert result["status"] != "integrated", result
+    assert work.exists() and _head(main / f["path"]) != f["module_tip"]
+    _git("checkout", "main", cwd=main)
+    (main / "file.txt").write_text("valuable unrelated dirt\n")
+    before = copy.deepcopy(f["manifest"])
+    result = _s1_finish(f)
+    assert result["status"] != "integrated", result
+    assert (main / "file.txt").read_text() == "valuable unrelated dirt\n"
+    assert work.exists() and f["manifest"] == before
+
+
+def test_s1_finish_archive_proof_refusal_restores_marker_and_lock(tmp_path, monkeypatch):
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    marker = (f["work"] / mod.RETENTION_MARKER).read_bytes()
+
+    def corrupt(stage, result):
+        proof = f["checkpoint"](stage, result)
+        if stage == "harvested":
+            (Path(result["harvest"]["archived"]) / "PLAN.md").write_text("changed archive")
+        return proof
+
+    result = _s1_finish(f, checkpoint=corrupt)
+    assert result["status"] == "kept", result
+    assert result["integrated_tip"] == _head(f["main"])
+    assert not result["cleanup"]["removed"] and f["work"].exists()
+    assert _lock_reason(f["main"], f["work"]) == LOCK_REASON
+    assert (f["work"] / mod.RETENTION_MARKER).read_bytes() == marker
+
+
+def test_s1_finish_removal_exception_retains_unknown_outcome_and_restores_guards(tmp_path, monkeypatch):
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    original = mod._git
+    calls = []
+
+    def fail_remove(root, *args):
+        if args[:2] == ("worktree", "remove"):
+            calls.append(args)
+            raise OSError("runner transport failed")
+        return original(root, *args)
+
+    monkeypatch.setattr(mod, "_git", fail_remove)
+    result = _s1_finish(f)
+    assert calls and result["status"] == "error", result
+    assert "runner transport failed" in result["reason"]
+    assert f["work"].exists() and not result["cleanup"]["removed"]
+    assert _lock_reason(f["main"], f["work"]) == LOCK_REASON
+    assert (f["work"] / mod.RETENTION_MARKER).read_bytes() == mod.retention_bytes(f["retention"])
+
+
+def test_s1_finish_stale_lead_checkout_retains_unproven_movement(tmp_path, monkeypatch):
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    module = f["work"] / f["path"]
+    _git("reset", "--keep", f["manifest"]["modules"][0]["initial_gitlink"], cwd=module)
+    old = _head(f["main"])
+    result = _s1_finish(f)
+    assert result["status"] != "integrated", result
+    assert _head(f["main"]) == old and f["work"].exists()
+    assert _head(module) == f["manifest"]["modules"][0]["initial_gitlink"]
+    assert _lock_reason(f["main"], f["work"]) == LOCK_REASON
+
+
+def test_s1_finish_retains_actual_postrebase_stale_module_without_incoming_proof(tmp_path, monkeypatch):
+    import test_batch_submodules as fixture
+    f = _s1_finish_fixture(tmp_path, monkeypatch)
+    main, work = f["main"], f["work"]
+    selected = f["path"]
+    initial = f["manifest"]["modules"][0]["initial_gitlink"]
+    # This lead changes only an outer file. Main independently advances the
+    # selected gitlink, so a genuine successful rebase must leave a stale private
+    # checkout. No pre-rebase invalid state is injected into finish.
+    fixture._git(work, "reset", "--mixed", f["manifest"]["spawn_head"])
+    fixture._git(work / selected, "reset", "--keep", initial)
+    (work / "outer-change.txt").write_text("legitimate outer lead change\n")
+    fixture._git(work, "add", "--", "outer-change.txt")
+    fixture._git(work, "commit", "-qm", "outer lead change", "--trailer", "Harness-Task: TASK__lead")
+    old_lead = _head(work)
+    f["args"].commit = old_lead
+    f["state"]["requests"][0]["result"]["commit"] = old_lead
+    f["persist"](f["manifest"])
+    (main / selected / "file.txt").write_text("independent main module advance\n")
+    incoming_module = fixture._commit(main / selected, "main module advance")
+    fixture._git(main, "add", "--", selected)
+    fixture._git(main, "commit", "-qm", "main gitlink advance")
+    main_tip = _head(main)
+    private_store = Path(f["manifest"]["modules"][0]["private_gitdir"])
+    store_inode = private_store.stat().st_ino
+    marker_bytes = (work / mod.RETENTION_MARKER).read_bytes()
+    f["helper"].validate(main, work, f["manifest"], "finish")
+    original_rebase = mod._rebase
+    observed = []
+
+    def observe_rebase(repo, tree, head, result, **kwargs):
+        original_rebase(repo, tree, head, result, **kwargs)
+        assert _head(work) != old_lead
+        assert _git("rev-parse", "HEAD^", cwd=work) == main_tip
+        assert _git("rev-parse", "HEAD:" + selected, cwd=work) == incoming_module
+        assert _head(work / selected) == initial
+        assert incoming_module not in f["manifest"]["modules"][0]["pins"]
+        observed.append(_head(work))
+
+    monkeypatch.setattr(mod, "_rebase", observe_rebase)
+    result = _s1_finish(f)
+    assert observed, result
+    assert result["status"] != "integrated", result
+    assert result["integrated_tip"] is None
+    assert _head(main) == main_tip and _head(work) == observed[0]
+    assert not result["cleanup"]["removed"] and work.is_dir()
+    assert private_store.stat().st_ino == store_inode
+    assert _head(work / selected) == initial
+    assert (work / "outer-change.txt").read_text() == "legitimate outer lead change\n"
+    assert (work / mod.RETENTION_MARKER).read_bytes() == marker_bytes
+    assert _lock_reason(main, work) == LOCK_REASON
+    assert not mod._rebase_in_progress(str(work))
+    assert not (main / "doc/harness/archive/batch/TASK__lead").exists()

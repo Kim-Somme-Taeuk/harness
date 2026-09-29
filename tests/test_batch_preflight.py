@@ -839,3 +839,156 @@ def test_unexpected_error_still_prints_a_refuse_report(monkeypatch, tmp_path, ca
     body = json.loads(capsys.readouterr().out)
     assert body["verdict"] == "refuse"
     assert any("ValueError: unexpected" in reason for reason in body["refusals"])
+
+
+# Selected direct-module requests retain literal scopes but own whole gitlinks.
+def _s1_two_modules(tmp_path):
+    main = _with_submodule(tmp_path)
+    other = _repo(tmp_path / "other-source", {"other.txt": "other\n"})
+    _git("submodule", "add", "-q", str(other), "libs/other", cwd=main)
+    _git("commit", "-qm", "second module", cwd=main)
+    return main
+
+
+def test_s1_empty_selection_preserves_exact_default_report(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    requests = {"a": ["libs/sub/s.txt"], "b": ["README.md"]}
+    baseline = mod.preflight(str(main), requests)
+    for selected in (None, {}, {"a": []}):
+        assert mod.preflight(str(main), requests, submodules=selected) == baseline
+    assert "ownership_scopes" not in baseline
+    assert baseline["verdict"] == "adjust"
+
+
+def test_s1_selected_descendant_retains_literal_scope_and_whole_ownership(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    report = mod.preflight(str(main), {"a": ["libs/sub/s.txt"]}, {"a": ["libs/sub"]})
+    assert report["verdict"] == "ok", report
+    assert report["excluded_requests"] == {}
+    assert report["scopes"] == [{"path": "libs/sub/s.txt", "resolved": str(main / "libs/sub/s.txt"),
+                                 "class": "selected-submodule", "owner": "libs/sub", "request": "a"}]
+    assert report["ownership_scopes"] == {"a": [str(main / "libs/sub")]}
+    assert [m["path"] for m in report["selected_modules"]["a"]] == ["libs/sub"]
+    assert report["off_limits"] == ["libs/sub"]
+    assert report["off_limits_by_request"] == {"a": []}
+
+
+def test_s1_sibling_descendants_serialize_whole_module(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    requests = {"a": ["libs/sub/first.py"], "b": ["libs/sub/second.py"]}
+    report = mod.preflight(str(main), requests, {slug: ["libs/sub"] for slug in requests})
+    assert report["verdict"] == "adjust", report
+    assert report["excluded_requests"] == {}
+    assert report["overlaps"]
+    assert {tuple(x["requests"]) for x in report["overlaps"]} == {("a", "b")}
+    assert report["ownership_scopes"] == {slug: [str(main / "libs/sub")] for slug in requests}
+    assert [s["resolved"] for s in report["scopes"]] == [str(main / paths[0]) for paths in requests.values()]
+
+
+def test_s1_distinct_modules_parallel_and_other_modules_stay_offlimits(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _s1_two_modules(tmp_path)
+    report = mod.preflight(str(main), {"a": ["libs/sub/s.txt"], "b": ["libs/other/other.txt"]},
+                           {"a": ["libs/sub"], "b": ["libs/other"]})
+    assert report["verdict"] == "ok", report
+    assert report["overlaps"] == []
+    assert report["off_limits_by_request"] == {"a": ["libs/other"], "b": ["libs/sub"]}
+    assert report["ownership_scopes"] == {"a": [str(main / "libs/sub")], "b": [str(main / "libs/other")]}
+
+
+def test_s1_parent_scope_remains_broad_and_conflicts_with_module(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    report = mod.preflight(str(main), {"a": ["libs"], "b": ["libs/sub/s.txt"]},
+                           {"a": ["libs/sub"], "b": ["libs/sub"]})
+    assert report["verdict"] == "adjust", report
+    assert report["overlaps"]
+    assert _scope(report, "libs")["class"] == "tracked-area"
+    assert report["ownership_scopes"]["a"] == [str(main / "libs")]
+    assert report["ownership_scopes"]["b"] == [str(main / "libs/sub")]
+
+
+def test_s1_unselected_request_remains_excluded(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    report = mod.preflight(str(main), {"allowed": ["libs/sub/a"], "ordinary": ["libs/sub/b"]},
+                           {"allowed": ["libs/sub"]})
+    assert report["verdict"] == "adjust"
+    assert set(report["excluded_requests"]) == {"ordinary"}
+    assert report["off_limits_by_request"]["ordinary"] == ["libs/sub"]
+    assert report["overlaps"] == []
+
+
+def test_s1_nested_repository_stays_offlimits_for_every_request(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    with (main / ".gitignore").open("a") as handle:
+        handle.write("repos/\n")
+    _git("add", ".gitignore", cwd=main)
+    _git("commit", "-qm", "ignore nested", cwd=main)
+    _repo(main / "repos/svc")
+    report = mod.preflight(str(main), {"a": ["libs/sub"], "b": ["README.md"]}, {"a": ["libs/sub"]})
+    assert report["verdict"] == "ok", report
+    assert report["off_limits_by_request"] == {"a": ["repos/svc"], "b": ["libs/sub", "repos/svc"]}
+
+
+def test_s1_uncovered_and_unknown_request_selection_refuse(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    for selected in ({"a": ["libs/sub"]}, {"unknown": ["libs/sub"]}, {"unknown": []}):
+        report = mod.preflight(str(main), {"a": ["README.md"]}, selected)
+        assert report["verdict"] == "refuse", report
+        assert report["refusals"]
+
+
+def test_s1_malformed_selection_refuses_with_report(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    for selected in ({"a": ["libs/sub", "libs/sub"]}, {"a": ["../subsrc"]},
+                     {"a": ["libs/./sub"]}, {"a": ["missing"]}, {"a": "libs/sub"}):
+        report = mod.preflight(str(main), {"a": ["."]}, selected)
+        assert report["verdict"] == "refuse", report
+        assert report["refusals"]
+
+
+def test_s1_dirty_and_unpopulated_modules_cannot_be_selected(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    module = main / "libs/sub"
+    (module / "s.txt").write_text("pending\n")
+    dirty = mod.preflight(str(main), {"a": ["libs/sub"]}, {"a": ["libs/sub"]})
+    assert dirty["verdict"] == "refuse", dirty
+    _git("checkout", "--", "s.txt", cwd=module)
+    _git("submodule", "deinit", "-f", "--", "libs/sub", cwd=main)
+    empty = mod.preflight(str(main), {"a": ["libs/sub"]}, {"a": ["libs/sub"]})
+    assert empty["verdict"] == "refuse", empty
+
+
+def test_s1_selected_preflight_is_readonly(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _with_submodule(tmp_path)
+    before = _tree_digest(tmp_path)
+    report = mod.preflight(str(main), {"a": ["libs/sub/s.txt"]}, {"a": ["libs/sub"]})
+    assert report["verdict"] == "ok", report
+    assert _tree_digest(tmp_path) == before
+
+
+def test_s1_cli_repeat_submodule_selection_and_invalid_syntax(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    main = _s1_two_modules(tmp_path)
+    result = _cli("--repo", str(main), "--request", "a=libs",
+                  "--submodule", "a=libs/sub", "--submodule", "a=libs/other", cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["verdict"] == "ok", report
+    assert {m["path"] for m in report["selected_modules"]["a"]} == {"libs/sub", "libs/other"}
+    for value in ("no-equals", "a=", "bad slug=libs/sub"):
+        bad = _cli("--repo", str(main), "--request", "a=libs", "--submodule", value, cwd=tmp_path)
+        assert bad.returncode == 2
+        assert bad.stdout == ""
+    unknown = _cli("--repo", str(main), "--request", "a=libs", "--submodule", "unknown=libs/sub", cwd=tmp_path)
+    assert unknown.returncode == 1
+    assert json.loads(unknown.stdout)["verdict"] == "refuse"

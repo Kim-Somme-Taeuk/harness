@@ -65,6 +65,7 @@ from _lib import (  # type: ignore  # noqa: E402
     resolve_registered_worktree,
 )
 import batch_harvest  # type: ignore  # noqa: E402
+import batch_submodules  # type: ignore  # noqa: E402
 
 TASK_ID_RE = batch_harvest.TASK_ID_RE
 COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,64}")
@@ -302,10 +303,11 @@ def _abort_note(worktree: str) -> str:
     return f"; `git rebase --abort` failed, the worktree is mid-rebase: {_detail(aborted)}"
 
 
-def _rebase(repo: str, worktree: str, main_head: str, result: dict) -> None:
+def _rebase(repo: str, worktree: str, main_head: str, result: dict, *, submodules=False) -> None:
     try:
         rebased = _git(
-            worktree, "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", main_head,
+            worktree, *(["-c", "submodule.recurse=false"] if submodules else []),
+            "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", main_head,
         )
         if rebased.returncode == 0:
             return
@@ -347,7 +349,8 @@ def _removal_failure_note(repo: str, worktree: str, lock, cleanup: dict) -> str:
     return ""
 
 
-def _cleanup(repo: str, worktree: str, branch: str, result: dict, retention=None) -> None:
+def _cleanup(repo: str, worktree: str, branch: str, result: dict, retention=None,
+             submodules=None, proof=None) -> None:
     cleanup = result["cleanup"]
     lock = _worktree_lock(repo, worktree)
     if lock is not None:
@@ -360,7 +363,12 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict, retention=None
             validate_retention(worktree, retention)
             os.unlink(os.path.join(worktree, RETENTION_MARKER))
         try:
-            removed = _git(repo, "worktree", "remove", worktree)
+            if submodules is None:
+                removed = _git(repo, "worktree", "remove", worktree)
+            else:
+                removed = batch_harvest.remove_s1_worktree(
+                    repo, worktree, result['task_id'], submodules, proof, git_runner=_git,
+                )
         finally:
             # A removal refusal must keep the native retention predicate too.
             marker = os.path.join(worktree, RETENTION_MARKER)
@@ -371,6 +379,9 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict, retention=None
                         handle.write(retention_bytes(retention))
                         handle.flush()
                         os.fsync(handle.fileno())
+    except batch_harvest.HarvestError as exc:
+        note = _removal_failure_note(repo, worktree, lock, cleanup)
+        raise Outcome("kept", f"S1 removal proof refused, worktree kept: {exc}{note}") from exc
     except (Exception, KeyboardInterrupt) as exc:
         note = _removal_failure_note(repo, worktree, lock, cleanup)
         raise FinishError(f"{type(exc).__name__}: {exc}{note}") from exc
@@ -390,7 +401,8 @@ def _cleanup(repo: str, worktree: str, branch: str, result: dict, retention=None
     cleanup["branch_deleted"] = True
 
 
-def finish(repo_root: str, args, checkpoint=None, retention=None) -> dict:
+def finish(repo_root: str, args, checkpoint=None, retention=None,
+           submodules=None, persist_submodules=None) -> dict:
     """Run step d for one lead; never raises, the result carries the status."""
     repo = os.path.realpath(repo_root)
     worktree = os.path.realpath(args.worktree)
@@ -399,18 +411,50 @@ def finish(repo_root: str, args, checkpoint=None, retention=None) -> dict:
     try:
         if retention is not None and checkpoint is None:
             raise FinishError('retention cleanup requires a durable checkpoint callback')
+        if submodules is not None:
+            if not callable(checkpoint) or not callable(persist_submodules):
+                raise FinishError('S1 finish requires durable checkpoint and manifest callbacks')
+            batch_submodules.validate_manifest(submodules)
+            if submodules['witness'] is not None:
+                previous = submodules['witness']
+                batch_submodules.reconcile_checkout(repo, submodules, previous, target=previous['target'])
         main_ref, main_head = (_check(repo, worktree, args, result) if retention is None
                                else _check(repo, worktree, args, result, retention))
         result["destination_ref"] = main_ref
-        _rebase(repo, worktree, main_head, result)
+        if submodules is None:
+            _rebase(repo, worktree, main_head, result)
+        else:
+            batch_submodules.preserve(repo, worktree, submodules, persist_submodules)
+            _rebase(repo, worktree, main_head, result, submodules=True)
         result["branch_tip"] = _resolve_commit(repo, ref)
+        if submodules is not None:
+            stale_lead = any(
+                _git_out(os.path.join(worktree, module['path']), 'rev-parse', 'HEAD').strip()
+                != _git_out(worktree, 'rev-parse', 'HEAD:' + module['path']).strip()
+                for module in submodules['modules']
+            )
+            if stale_lead:
+                submodules['witness'] = batch_submodules.witness(
+                    repo, worktree, submodules, ref, result['branch_tip'], result['branch_tip'], target='lead',
+                )
+                persist_submodules(submodules)
+                batch_submodules.reconcile_checkout(repo, submodules, submodules['witness'], target='lead')
+                batch_submodules.preserve(repo, worktree, submodules, persist_submodules)
+            batch_submodules.validate(repo, worktree, submodules, 'finish')
+            submodules['witness'] = batch_submodules.witness(
+                repo, worktree, submodules, main_ref, main_head, result['branch_tip'],
+            )
+            persist_submodules(submodules)
         if checkpoint:
             checkpoint("rebase", copy.deepcopy(result))
         try:
             _check_main_ref(repo, main_ref)
+            if submodules is not None and _resolve_commit(repo, main_ref) != main_head:
+                raise Outcome("ff-refused", "the destination tip changed after the S1 witness")
             if _status_lines(repo):
                 raise Outcome("ff-refused", "the main checkout became dirty after rebase")
-            merged = _git(repo, "merge", "--ff-only", ref)
+            merged = _git(repo, *(["-c", "submodule.recurse=false"] if submodules is not None else []),
+                          "merge", "--ff-only", ref)
             if merged.returncode != 0:
                 raise Outcome("ff-refused", f"`git merge --ff-only {ref}` refused: {_detail(merged)}")
             _check_main_ref(repo, main_ref)
@@ -418,6 +462,8 @@ def finish(repo_root: str, args, checkpoint=None, retention=None) -> dict:
             if head != result["branch_tip"]:
                 raise FinishError(f"main branch {main_ref} at {head} is not the branch tip after the fast-forward")
             result["integrated_tip"] = result["branch_tip"]
+            if submodules is not None:
+                batch_submodules.reconcile_checkout(repo, submodules, submodules['witness'])
         except (Exception, KeyboardInterrupt) as exc:
             reason = str(exc) or type(exc).__name__
             try:
@@ -435,20 +481,28 @@ def finish(repo_root: str, args, checkpoint=None, retention=None) -> dict:
             result["harvest"] = batch_harvest.harvest(repo, worktree, args.task_id)
         except Exception as exc:  # any harvest failure is local to this lead
             raise Outcome("kept", f"harvest refused, worktree kept: {type(exc).__name__}: {exc}")
+        removal_checkpoint = None
         if checkpoint:
-            checkpoint("harvested", copy.deepcopy(result))
+            removal_checkpoint = checkpoint("harvested", copy.deepcopy(result))
+        if submodules is not None and not isinstance(removal_checkpoint, dict):
+            raise Outcome('kept', 'S1 cleanup requires the durable harvested checkpoint returned by its state owner')
         _check_main_ref(repo, main_ref)
         if _resolve_commit(repo, ref) != result["integrated_tip"]:
             raise Outcome("kept", "lead branch changed before cleanup")
         if lead_status(worktree, retention):
             raise Outcome("kept", "lead worktree became dirty before cleanup")
-        if retention is None:
+        if submodules is not None:
+            _cleanup(repo, worktree, args.branch, result, retention,
+                     submodules=submodules, proof=removal_checkpoint)
+        elif retention is None:
             _cleanup(repo, worktree, args.branch, result)
         else:
             _cleanup(repo, worktree, args.branch, result, retention)
         result["status"] = "integrated"
     except Outcome as outcome:
         result["status"], result["reason"] = outcome.status, outcome.reason
+    except batch_submodules.SubmoduleError as exc:
+        result['status'], result['reason'] = 'kept', f'S1 proof refused, worktree kept: {exc}'
     except Exception as exc:  # a crash must never read as integrated
         result["status"] = "error"
         result["reason"] = f"batch_finish failed: {type(exc).__name__}: {exc}"

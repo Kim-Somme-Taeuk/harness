@@ -4,9 +4,11 @@ r"""Read-only repo-shape preflight for one `harness:batch` wave.
 A batch lead works in a linked worktree of the main checkout. That is safe
 only when the main checkout is a plain git work tree, is clean, and each
 request's scope lies in the part of the tree a lead worktree carries.
-Submodules and nested repositories break those assumptions (see
+Unselected submodules and nested repositories break those assumptions (see
 `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`, "Multi-repo and
 submodules"), so the coordinator runs this report before spawning a wave.
+Explicit --submodule SLUG=PATH selections admit supported direct populated
+modules and reserve each selected module as a whole ownership boundary.
 
 Usage:
   python3 plugin/scripts/batch_preflight.py [--repo <main checkout>] \
@@ -521,8 +523,8 @@ def _inspect(report: dict, root: str, common_dir: str) -> None:
                 )
 
 
-def preflight(repo_root: str, requests: dict) -> dict:
-    """Build the report for ``requests`` (``{slug: [scope path, ...]}``)."""
+def preflight(repo_root: str, requests: dict, submodules=None) -> dict:
+    """Inspect literal scopes and optional per-request direct-module selections."""
     root = os.path.realpath(repo_root)
     report = _empty_report(root)
     try:
@@ -546,7 +548,38 @@ def preflight(repo_root: str, requests: dict) -> dict:
     if report["worktrees_ignore"]["status"] == "not-ignored":
         report["refusals"].append(_worktrees_refusal(report["worktrees_ignore"]["git_path"]))
 
+    selections = {}
+    if submodules is not None:
+        if not isinstance(submodules, dict):
+            report["refusals"].append("submodules must map request slugs to path lists")
+        else:
+            from batch_submodules import SubmoduleError, selection
+            for slug, paths in submodules.items():
+                if slug not in requests:
+                    report["refusals"].append(f"unknown submodule request {slug}")
+                    continue
+                if not isinstance(paths, list):
+                    report["refusals"].append(f"submodules of {slug} must be a path list")
+                    continue
+                if not paths:
+                    continue
+                try:
+                    selections[slug] = selection(root, paths)
+                except (SubmoduleError, OSError, ValueError) as exc:
+                    report["refusals"].append(f"invalid submodule selection of {slug}: {exc}")
+    selected_paths = {slug: {entry["path"] for entry in entries}
+                      for slug, entries in selections.items()}
+    selected_mode = isinstance(submodules, dict) and any(submodules.values())
+    if selected_mode:
+        report["selected_modules"] = selections
+        report["off_limits_by_request"] = {
+            slug: [path for path in report["off_limits"]
+                   if path not in selected_paths.get(slug, set())]
+            for slug in requests
+        }
+        report["ownership_scopes"] = {slug: [] for slug in requests}
     sub_paths = {entry["path"] for entry in report["submodules"]}
+    ownership = []
     for slug, paths in requests.items():
         for path in paths:
             try:
@@ -555,15 +588,30 @@ def preflight(repo_root: str, requests: dict) -> dict:
                 report["refusals"].append(f"cannot classify scope {path} of {slug}: {exc}")
                 continue
             scope["request"] = slug
+            if scope["class"] == "inside-submodule" and scope["owner"] in selected_paths.get(slug, set()):
+                scope["class"] = "selected-submodule"
             report["scopes"].append(scope)
-            if scope["class"] != "tracked-area":
+            boundary = dict(scope)
+            if scope["class"] == "selected-submodule":
+                boundary["resolved"] = os.path.join(root, scope["owner"])
+            ownership.append(boundary)
+            if selected_mode and boundary["resolved"] not in report["ownership_scopes"][slug]:
+                report["ownership_scopes"][slug].append(boundary["resolved"])
+            if scope["class"] not in ("tracked-area", "selected-submodule"):
                 report["excluded_requests"].setdefault(slug, []).append(
                     _exclusion_reason(scope)
                 )
+    for slug, paths in selected_paths.items():
+        scopes = [scope["resolved"] for scope in report["scopes"]
+                  if scope["request"] == slug and scope["class"] in ("tracked-area", "selected-submodule")]
+        for path in paths:
+            selected = os.path.join(root, path)
+            if not any(_is_within(selected, scope) or _is_within(scope, selected) for scope in scopes):
+                report["refusals"].append(f"selected submodule {path} is not covered by a literal scope of {slug}")
     # An excluded request never runs in any wave, so pairing it would only
     # advise deferring something that cannot be deferred.
     report["overlaps"] = scope_overlaps(
-        [s for s in report["scopes"] if s["request"] not in report["excluded_requests"]]
+        [s for s in ownership if s["request"] not in report["excluded_requests"]]
     )
 
     if report["refusals"]:
@@ -609,10 +657,17 @@ def main(argv=None) -> int:
         "--request", action="append", default=[], type=_request_arg, metavar="SLUG=PATH",
         help="one declared scope path of one request; repeat per path and per request",
     )
+    parser.add_argument(
+        "--submodule", action="append", default=[], type=_request_arg, metavar="SLUG=PATH",
+        help="select a supported direct populated submodule for a request; repeat per module",
+    )
     args = parser.parse_args(argv)
     requests: dict = {}
     for slug, path in args.request:
         requests.setdefault(slug, []).append(path)
+    selections: dict = {}
+    for slug, path in args.submodule:
+        selections.setdefault(slug, []).append(path)
     repo = args.repo or find_repo_root()
     unusable = _globs_and_lists(os.path.realpath(repo), requests)
     if unusable:
@@ -622,7 +677,7 @@ def main(argv=None) -> int:
             "(repeat --request SLUG=PATH for each path)"
         )
     try:
-        report = preflight(repo, requests)
+        report = preflight(repo, requests, selections) if selections else preflight(repo, requests)
     except Exception as exc:  # a crash must never read as a pass
         report = _empty_report(os.path.realpath(repo))
         report["refusals"].append(f"preflight failed: {type(exc).__name__}: {exc}")

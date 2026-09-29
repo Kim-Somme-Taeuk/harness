@@ -35,6 +35,7 @@ def _write(path, text):
 
 def pytest_generate_tests(metafunc):
     cases = {
+        "s1_resume_worker": ["worker-a", "replacement-worker"],
         "capacity": [(None, None, 3), ("2", None, 2), ("99", None, 8),
                      (None, "2", 2), (None, "true", 3), (None, "'2'", 3),
                      (None, "0", 3), ("1", "4", 1)],
@@ -1009,3 +1010,286 @@ batch_state.main(sys.argv[1:])
     state = json.loads(pool.state.read_text())
     assert state.get("halted") or state["requests"][0]["status"] == "integrating"
     pool.cli("claim", ok=False)
+
+
+# S1 integration: these use real linked worktrees and independent module stores.
+def _s1_pool(tmp_path, monkeypatch, count=1):
+    pool = Pool(tmp_path, monkeypatch)
+    for key, value in {"GIT_AUTHOR_NAME": "S1 Test", "GIT_AUTHOR_EMAIL": "s1@example.test",
+                       "GIT_COMMITTER_NAME": "S1 Test", "GIT_COMMITTER_EMAIL": "s1@example.test"}.items():
+        monkeypatch.setenv(key, value)
+    from test_batch_preflight import _repo as make_repo
+    for number in range(count):
+        source = make_repo(tmp_path / f"module-source-{number}", {"code.txt": "initial\n"})
+        _git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source),
+             f"libs/module{number}", cwd=pool.repo)
+    _git("commit", "-qm", "module topology", cwd=pool.repo)
+    return pool
+
+
+def _s1_request(slug="a", module="libs/module0", suffix="code.txt"):
+    value = request(slug, module + "/" + suffix)
+    value["submodules"] = [module]
+    return value
+
+
+def _s1_complete(pool, slug="a", worker="worker-a", module="libs/module0"):
+    worktree, branch = pool.bind(slug, worker)
+    _write(worktree / module / "code.txt", "implemented " + slug + "\n")
+    _git("add", "-A", cwd=worktree / module)
+    _git("commit", "-qm", "module implementation", cwd=worktree / module)
+    module_tip = _head(worktree / module)
+    _git("add", module, cwd=worktree)
+    _git("commit", "-qm", "record module", "--trailer", "Harness-Task: TASK__" + slug, cwd=worktree)
+    directory = task(worktree, slug, closed=True)
+    pool.cli(*pool.result(slug, worktree, branch, "closed", worker, run_id=RUN))
+    return worktree, branch, directory, module_tip
+
+
+def test_s1_schema_intent_idempotence_and_empty_selection_v1(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    selection = _s1_request()
+    pool.init([selection])
+    original = pool.state.read_bytes()
+    data = json.loads(original)
+    assert data["schema_version"] == 2
+    item = data["requests"][0]
+    assert item["submodules"] == ["libs/module0"]
+    assert item["resolved_scopes"] == [str(pool.repo / "libs/module0/code.txt")]
+    assert item["ownership_scopes"] == [str(pool.repo / "libs/module0")]
+    pool.init([selection])
+    assert pool.state.read_bytes() == original
+    pool.init([request("a", "libs/module0/code.txt")], ok=False)
+    assert pool.state.read_bytes() == original
+    pool.batch = "ordinary"
+    pool.init([{**request("ordinary", "README.md"), "submodules": []}])
+    ordinary = json.loads(pool.state.read_text())
+    assert ordinary["schema_version"] == 1
+    assert not {"submodules", "ownership_scopes", "submodule_manifest"} & ordinary["requests"][0].keys()
+
+
+def test_s1_downgraded_or_malformed_state_refuses_without_mutation(tmp_path, monkeypatch):
+    import copy
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    original = json.loads(pool.state.read_text())
+    variants = []
+    changed = copy.deepcopy(original)
+    changed["schema_version"] = 1
+    variants.append(changed)
+    for key, value in (("submodules", []), ("submodules", ["../escape"]),
+                       ("submodules", ["libs/module0", "libs/module0"]),
+                       ("ownership_scopes", [str(pool.repo / "README.md")])):
+        changed = copy.deepcopy(original)
+        changed["requests"][0][key] = value
+        variants.append(changed)
+    for changed in variants:
+        pool.state.write_text(json.dumps(changed))
+        before = pool.state.read_bytes()
+        pool.cli("claim", ok=False)
+        assert pool.state.read_bytes() == before
+
+
+def test_s1_invalid_or_uncovered_selection_refuses_intake(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    for selected in (["missing"], ["libs/module0", "libs/module0"], ["../escape"], "libs/module0"):
+        pool.init([{**request("a", "."), "submodules": selected}], ok=False)
+        assert not pool.state.exists()
+    pool.init([{**request("a", "README.md"), "submodules": ["libs/module0"]}], ok=False)
+    assert not pool.state.exists()
+
+
+def test_s1_sibling_ownership_serializes_while_distinct_modules_parallel(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch, count=2)
+    pool.init([_s1_request("a", suffix="first.py"), _s1_request("b", suffix="second.py"),
+               _s1_request("c", "libs/module1")])
+    assert [item["slug"] for item in pool.claim()] == ["a", "c"]
+    assert pool.claim() == []
+
+
+def test_s1_retained_whole_module_ownership_blocks_new_batch_sibling(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch = pool.bind()
+    task(worktree)
+    _write(worktree / "libs/module0/code.txt", "unfinished")
+    pool.cli(*pool.result("a", worktree, branch))
+    pool.cli("abandon", "--slug", "a", "--worker-stopped", "--reason", "retained work")
+    pool.cli("close")
+    pool.batch = "second"
+    pool.init([_s1_request("sibling", suffix="elsewhere.py"), request("free", "README.md")])
+    assert [item["slug"] for item in pool.claim()] == ["free"]
+    assert (worktree / "libs/module0/code.txt").read_text() == "unfinished"
+
+
+def test_s1_bind_persists_reservation_before_prepare_and_retries_exact_identity(tmp_path, monkeypatch, capsys):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch = unbound_worktree(pool)
+    module = load_state_module()
+    import batch_submodules
+    original = batch_submodules.prepare
+    observed = []
+    def interrupt(repo, work, value, persist):
+        saved = json.loads(pool.state.read_text())["requests"][0]
+        assert saved["status"] == "reserved"
+        assert saved["worker_id"] == "worker-a" and saved["worktree"] == str(worktree)
+        assert saved["submodule_manifest"] == value
+        observed.append(True)
+        original(repo, work, value, persist)
+        raise OSError("stop after complete preparation")
+    monkeypatch.setattr(batch_submodules, "prepare", interrupt)
+    args = pool.argv("bind", "--slug", "a", "--worker-id", "worker-a", "--worktree", worktree, "--branch", branch)[2:]
+    assert module.main(args) != 0
+    capsys.readouterr()
+    assert observed
+    item = json.loads(pool.state.read_text())["requests"][0]
+    assert item["status"] == "reserved"
+    private = Path(item["submodule_manifest"]["modules"][0]["private_gitdir"])
+    inode = private.stat().st_ino
+    pool.cli("bind", "--slug", "a", "--worker-id", "foreign", "--worktree", worktree, "--branch", branch, ok=False)
+    monkeypatch.setattr(batch_submodules, "prepare", original)
+    pool.cli("bind", "--slug", "a", "--worker-id", "worker-a", "--worktree", worktree, "--branch", branch)
+    item = json.loads(pool.state.read_text())["requests"][0]
+    assert item["status"] == "running"
+    assert all(m["phase"] == "prepared" for m in item["submodule_manifest"]["modules"])
+    assert private.stat().st_ino == inode
+
+
+def test_s1_resume_preserves_dirty_module_worker_handoff_and_identity(tmp_path, monkeypatch, s1_resume_worker):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch = pool.bind()
+    task(worktree)
+    gitfile = worktree / "libs/module0/.git"
+    before = gitfile.read_bytes()
+    _write(worktree / "libs/module0/code.txt", "uncommitted module work")
+    pool.cli(*pool.result("a", worktree, branch))
+    handoff = pool.cli("resume", "--slug", "a", "--worker-stopped")
+    assert str(worktree) in json.dumps(handoff)
+    assert "worker-a" in json.dumps(handoff)
+    assert "libs/module0" in json.dumps(handoff)
+    pool.cli("bind", "--slug", "a", "--worker-id", s1_resume_worker, "--worktree", worktree, "--branch", branch)
+    assert gitfile.read_bytes() == before
+    assert (worktree / "libs/module0/code.txt").read_text() == "uncommitted module work"
+
+
+def test_s1_resume_refuses_replaced_module_metadata(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch = pool.bind()
+    task(worktree)
+    pool.cli(*pool.result("a", worktree, branch))
+    (worktree / "libs/module0/.git").write_text("gitdir: " + str(pool.repo / ".git/modules/libs/module0") + "\n")
+    before = pool.state.read_bytes()
+    pool.cli("resume", "--slug", "a", "--worker-stopped", ok=False)
+    assert pool.state.read_bytes() == before
+    assert worktree.exists()
+
+
+def test_s1_closed_result_requires_module_commit_recorded_by_superproject(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch = pool.bind()
+    task(worktree, closed=True)
+    _write(worktree / "libs/module0/code.txt", "module only commit")
+    _git("add", "-A", cwd=worktree / "libs/module0")
+    _git("commit", "-qm", "unrecorded module change", cwd=worktree / "libs/module0")
+    before = pool.state.read_bytes()
+    pool.cli(*pool.result("a", worktree, branch, "closed", run_id=RUN), ok=False)
+    assert pool.state.read_bytes() == before
+    _git("add", "libs/module0", cwd=worktree)
+    _git("commit", "-qm", "record module", "--trailer", "Harness-Task: TASK__a", cwd=worktree)
+    pool.cli(*pool.result("a", worktree, branch, "closed", run_id=RUN))
+
+
+def test_s1_cli_full_finish_preserves_objects_and_removes_worktree_and_branch(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    config = (pool.repo / ".git/config").read_bytes()
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch, directory, tip = _s1_complete(pool)
+    evidence = (directory / "TASK.json").read_bytes()
+    pool.cli("finish", "--slug", "a")
+    pool.cli("close")
+    assert not worktree.exists()
+    assert not _git("branch", "--list", branch, cwd=pool.repo)
+    assert _head(pool.repo / "libs/module0") == tip
+    assert _git("status", "--porcelain", cwd=pool.repo) == ""
+    assert _git("rev-list", "--merges", "HEAD", cwd=pool.repo) == ""
+    _git("gc", "--prune=now", cwd=pool.repo / "libs/module0")
+    assert _git("cat-file", "-t", tip, cwd=pool.repo / "libs/module0") == "commit"
+    assert (pool.repo / ".git/config").read_bytes() == config
+    assert (pool.repo / "doc/harness/archive/batch/TASK__a/TASK.json").read_bytes() == evidence
+
+
+def _s1_crash_finish(pool, program):
+    result = subprocess.run([sys.executable, "-c", program, str(SCRIPT.parent),
+                             *pool.argv("finish", "--slug", "a")[2:]],
+                            capture_output=True, text=True, timeout=90)
+    assert result.returncode == 91, (result.stdout, result.stderr)
+
+
+def test_s1_recover_reconciles_landed_witness_before_cleanliness_guard(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch, _, tip = _s1_complete(pool)
+    old_module = _head(pool.repo / "libs/module0")
+    _s1_crash_finish(pool, """
+import os, subprocess, sys
+sys.path.insert(0, sys.argv.pop(1))
+import batch_state
+original = subprocess.run
+def crash(command, *args, **kwargs):
+    result = original(command, *args, **kwargs)
+    if 'merge' in command and '--ff-only' in command and result.returncode == 0:
+        os._exit(91)
+    return result
+subprocess.run = crash
+batch_state.main(sys.argv[1:])
+""")
+    assert _head(pool.repo) == _head(worktree)
+    assert _head(pool.repo / "libs/module0") == old_module != tip
+    assert _git("status", "--porcelain", cwd=pool.repo)
+    pool.cli("recover", "--slug", "a", "--worker-stopped")
+    assert _head(pool.repo / "libs/module0") == tip
+    if worktree.exists():
+        pool.cli("finish", "--slug", "a", "--resume")
+    assert not worktree.exists()
+    assert not _git("branch", "--list", branch, cwd=pool.repo)
+    pool.cli("close")
+
+
+def test_s1_removed_worktree_recovery_requires_preserved_objects(tmp_path, monkeypatch):
+    pool = _s1_pool(tmp_path, monkeypatch)
+    pool.init([_s1_request()])
+    pool.claim()
+    worktree, branch, _, _ = _s1_complete(pool)
+    _s1_crash_finish(pool, """
+import os, sys
+sys.path.insert(0, sys.argv.pop(1))
+import batch_state, batch_finish
+original = batch_finish._cleanup
+def crash(*args, **kwargs):
+    original(*args, **kwargs)
+    os._exit(91)
+batch_finish._cleanup = crash
+batch_state.main(sys.argv[1:])
+""")
+    assert not worktree.exists()
+    item = json.loads(pool.state.read_text())["requests"][0]
+    pin = next(iter(item["submodule_manifest"]["modules"][0]["pins"].values()))
+    oid = _git("rev-parse", pin, cwd=pool.repo / "libs/module0")
+    _git("update-ref", "-d", pin, cwd=pool.repo / "libs/module0")
+    pool.cli("recover", "--slug", "a", "--worker-stopped", ok=False)
+    pool.cli("close", ok=False)
+    _git("update-ref", pin, oid, cwd=pool.repo / "libs/module0")
+    pool.cli("recover", "--slug", "a", "--worker-stopped")
+    assert not _git("branch", "--list", branch, cwd=pool.repo)
+    pool.cli("close")

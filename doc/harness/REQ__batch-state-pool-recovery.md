@@ -17,7 +17,7 @@ The runtime-installed script uses the same interface.
 | `status` | Read reported state and current observations without writing; show retained work and next actions. |
 | `claim` | Atomically reserve eligible requests up to capacity and return current spawn HEAD and off-limits paths. |
 | `bootstrap --slug S --worktree W --branch B` | Create only the validated Git-visible retention marker in the reserved checkout; do not write task evidence or batch records. |
-| `bind --slug S --worker-id ID --worktree W --branch B` | Bind a reservation to a registered worktree on the expected branch and starting commit. |
+| `bind --slug S --worker-id ID --worktree W --branch B` | Bind a reservation to its registered checkout; prepare selected modules before returning `running` and the bound `request`. |
 | `result --slug S --worker-id ID --result-file FILE` | Record a structurally matched actual lead result; validate close authority for `closed`. |
 | `finish --slug S [--resume]` | Serialize existing rebase, fast-forward, harvest and cleanup with durable checkpoints. |
 | `recover --slug S --worker-stopped` | Reconcile interruption using exact saved integration and archive evidence; uncertainty stays visible. |
@@ -27,9 +27,13 @@ The runtime-installed script uses the same interface.
 | `close` | Refuse unresolved active work or cleanup; distinguish retained abandonment from integrated completion. |
 
 Requests are a JSON list of objects with `slug`, `request`, `scopes` and
-optional `depends_on`. Scopes are literal paths, never shell expressions.
+optional `depends_on` and `submodules` (selected direct module paths). Scopes are literal paths, never shell expressions.
 Unknown dependencies, dependency cycles, duplicate slugs and reused task/archive
-identities refuse intake. A batch has at most 100 requests.
+identities refuse intake. A batch has at most 100 requests. Selection, private preparation and guarded
+disposal follow [Selected submodules](REQ__batch-submodule-support.md). Batches
+with a nonempty selection use schema 2; ordinary batches retain schema 1. The
+new reader accepts both, while old readers refuse schema 2. Exact init
+idempotence includes normalized selection; records cannot silently downgrade it.
 
 The effective cap is explicit `--max-leads`, then optional manifest
 `batch.max_leads`, then 3. Positive integers above 8 clamp to 8. Invalid explicit
@@ -43,7 +47,10 @@ worker slot; the coordinator serially integrates closed results and immediately
 refills eligible slots from the current destination HEAD. A dependency becomes
 ready only after its predecessor is integrated and cleaned up. Overlapping
 scopes cannot run concurrently; blocked, failed, kept and abandoned sources
-continue to reserve their scopes across batches while unresolved.
+continue to reserve their scopes across batches while unresolved. Selected
+module ownership reserves the whole gitlink separately from the original literal
+scopes; sibling paths in one module serialize, and distinct modules may run in
+parallel.
 
 Only one pool may have reserved/running/integrating requests in a control root.
 All mutations use the same persistent advisory lock. Status does not wait for
@@ -59,7 +66,12 @@ only `.harness-batch-bootstrap`, a nonignored untracked regular file containing
 the exact `{batch_id,slug,spawn_head}` reservation payload. Bind accepts only
 that validated operational marker as a bootstrap change and rejects halted or
 unresolved integration, including reservations made before the halt. Never expire
-a reservation solely because time passed. A failed spawn requires explicit
+a reservation solely because time passed. For S1, bind also persists preparation
+intent and private-store identity, then prepares selected modules before granting
+running permission. An interrupted preparation retains the exact reservation;
+retry through the same initial `bind` never replaces an unknown partial clone.
+A successful selected bind returns `request.submodules` and
+`request.submodule_manifest`; resume returns those fields inside `handoff`. A failed spawn requires explicit
 stopped/no-external-work confirmation before release.
 
 Claude removes unchanged isolation worktrees on completion; its retention rules
@@ -69,8 +81,8 @@ change. Never stage it or remove it in a lead. For lead QA, only this validated
 operational marker is excepted from source cleanliness; implementation changes
 still require commits. Continue the exact bound native agent with `SendMessage`
 when available. Managed finish validates the marker at cleanliness boundaries
-and removes it only after durable harvest, immediately before ordinary worktree
-removal. Unknown or unsafe marker content never permits a dirty-worktree bypass.
+and removes it only after durable harvest, immediately before worktree
+removal through the ordinary or guarded S1 route. Unknown or unsafe marker content never permits a dirty-worktree bypass.
 See [Claude subagents](https://code.claude.com/docs/en/sub-agents#frontmatter-reference)
 and [worktree retention](https://code.claude.com/docs/en/worktrees#clean-up-subagent-and-background-session-worktrees).
 
@@ -88,6 +100,13 @@ identity and harvested archive tree fingerprint. Atomic replacement includes
 file and directory synchronization. Before publishing the cleanup checkpoint,
 synchronize the archived files, directories, their publication parents and
 preserved learnings. Any synchronization or checkpoint failure stops cleanup.
+
+For S1, persist the destination/module witness before fast-forward and update
+selected main checkouts immediately after landing. Recovery consumes that witness
+before the ordinary dirty guard; only exact old-or-target clean module states
+qualify. Missing pins, changed destination identity or unrelated dirt retain work.
+The same batch record owns preparation, preservation and integration checkpoints;
+there is no second state journal.
 
 Recovery compares saved facts against current Git registration, branch,
 ancestry, task closure and archive contents. It never guesses a rebased tip
@@ -136,9 +155,9 @@ proof. No generic process-killing or agent-spawning service is introduced.
 
 The installed script, workflow and resume-agent definitions ship together.
 Claude supports worktree task lifecycle; Codex can develop and exercise the
-shared CLI but still refuses worktree `workspace` lifecycle calls. Submodule
-exclusions remain until the separate S1 support change lands. Ignored nested
-repositories remain ordinary sequential tasks.
+shared CLI but still refuses worktree `workspace` lifecycle calls. Only explicitly
+selected direct modules use S1; unselected modules and ignored nested repositories
+remain ordinary sequential tasks.
 
 Verification uses real Git repositories for pool refill, dependencies, retained
 scope collisions, concurrent claims, exact resume, rebase/fast-forward and

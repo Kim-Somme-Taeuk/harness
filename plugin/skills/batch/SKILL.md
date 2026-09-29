@@ -12,6 +12,7 @@ exercise the shared helpers but cannot run worktree task lifecycle calls.
 
 `doc/harness/REQ__batch-state-pool-recovery.md` owns the command/state contract;
 `doc/harness/REQ__parallel-tasks-via-worktree-leads.md` explains worktree shape.
+`doc/harness/REQ__batch-submodule-support.md` owns the selected-module S1 contract.
 Persistent records under `doc/harness/runtime/batches/<id>.json` are operational
 metadata, never task authority or review/QA evidence. Never edit them by hand.
 
@@ -19,7 +20,10 @@ metadata, never task authority or review/QA evidence. Never edit them by hand.
 
 Collect N requests. Each needs a slug and a declared path scope (the files or
 directories it is expected to touch). Write an ignored local requests JSON file containing a list of
-`{slug, request, scopes: [relative paths], depends_on: [slug]}` objects.
+`{slug, request, scopes: [relative paths], depends_on: [slug], submodules: [module paths]}` objects.
+`submodules` is optional: explicitly select populated direct modules covered by
+the literal scopes. Omission keeps default exclusions. S1 rejects recursive or
+unpopulated modules and topology changes; unsupported work stays sequential.
 Dependencies are optional; declare them when one request needs another's output.
 The scheduler serializes overlapping scopes and only releases a dependency
 once its predecessor is integrated and cleaned. Never invent independence.
@@ -31,7 +35,9 @@ collision, but only after the fast-forward, so reject a reused slug here
 instead.
 
 The preflight script (step b.1) classifies every declared scope path. Only a
-`tracked-area` scope may run in a lead. A request with a scope
+`tracked-area` or validated `selected-submodule` scope may run in a lead.
+Selected modules reserve the whole gitlink, including sibling descendant scopes.
+A request with an unselected scope
 `inside-submodule` or `inside-ignored-nested-repo` is not batched: run it as
 an ordinary harness task in the main checkout, before or after the pool, never
 while leads run (step b.4). An `outside-root` scope cannot run in a batch lead
@@ -43,7 +49,8 @@ Before initializing or spawning anything:
 
 1. Run the repo-shape preflight for the eligible independent intake set,
    one `--request` per declared scope path (repeat the slug for a second
-   path; a comma list is refused):
+   path; a comma list is refused). For each explicit selection also repeat
+   `--submodule <slug>=<module path>`; do not infer selection from scope alone:
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_preflight.py --repo <main checkout> --request <slug>=<path> --request <slug>=<path2> ...`
    Spawn only when it exits 0 (`verdict: "ok"`) and steps b.2–b.5 hold. It
    prints a JSON report:
@@ -87,13 +94,13 @@ Before initializing or spawning anything:
 1. Run `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> claim`.
    `claim` atomically reserves capacity before spawning, rechecks preflight,
    and returns `claims` with the current destination `spawn_head` and
-   `off_limits`. Reserved and running requests both consume slots. An empty
+   per-request `off_limits` (unselected modules and nested repos). Reserved and running requests both consume slots. An empty
    `claims` list is successful: inspect its reasons and wait for actual host
    results or handle the stated blocker; never oversubscribe by spawning anyway.
 2. Spawn the claimed bootstrap leads in **one assistant message**:
 
    ```
-   Agent(subagent_type: "harness:task-lead", prompt: "bootstrap-only; do not start a task or edit source.\n<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\ncoordinator HEAD: <claim spawn_head>\nmain checkout: <main checkout>\nbatch id: <id>\npytest worker cap: 4")
+   Agent(subagent_type: "harness:task-lead", prompt: "bootstrap-only; do not start a task or edit source.\n<request text>\nslug: <slug>\nscope: <declared path scope>\noff-limits: <preflight off_limits, comma-separated, or none>\nsubmodules: <claim submodules, or []>\ncoordinator HEAD: <claim spawn_head>\nmain checkout: <main checkout>\nbatch id: <id>\npytest worker cap: 4")
    ```
 
    Do not pass `name=`: named teammates do not receive worktree isolation.
@@ -110,6 +117,14 @@ Before initializing or spawning anything:
    every unfinished or zero-source final; never stage or remove it in a lead.
 3. Bind that exact host identity before granting mutation permission:
    `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> bind --slug <slug> --worker-id <native id> --worktree <W> --branch <branch>`.
+   For selected S1, bind alone owns private local clone preparation and persists
+   its intent before effects. Require successful binding with all selected
+   modules prepared; a partial clone retains the reservation, never permits work.
+   Require `status: "running"`; include the returned
+   `request.submodule_manifest` (paths, named branches and private-store identity)
+   in the continuation handoff, with every module `phase: "prepared"`. Retry
+   interrupted initial preparation through `bind` with the same worker/W/branch;
+   do not use a replacement checkout or discard the retained reservation.
    Only after successful binding, use native `SendMessage` addressed to that
    exact bound agent ID to resume that same agent with the confirmed binding
    and permission to start its lifecycle. Never replace this with a fresh isolating spawn. If native
@@ -142,7 +157,10 @@ Before invoking the helper, read
 `${CLAUDE_PLUGIN_ROOT}/skills/run/worktree-completion.md` and apply its
 ownership, stopped-writer and evidence-preservation checks, including ignored
 content. Keep the normal helper order: rebase, fast-forward, harvest, remove,
-then combined review/QA in step e.
+then combined review/QA in step e. Selected S1 adds durable local module-object
+preservation before integration and immediate main module checkout reconciliation
+after fast-forward. The helper owns these effects; never replace them with
+manual initialization, network fetch or deinit.
 
 1. For every lead with `verdict: "closed"`, **in order**, from the main
    checkout:
@@ -160,11 +178,12 @@ then combined review/QA in step e.
    with `batch_harvest.py` before the worktree is gone, releases Claude
    Code's agent lock only when `git worktree list --porcelain` shows one
    (`git worktree unlock <W>`), and runs `git worktree remove <W>` and
-   `git branch -d <branch>`. The script never stashes or passes `--force`;
-   around it, never stash, pass `--force`, or fall back to a merge commit
-   either. Managed finish preserves the marker through rebase and integration
+   `git branch -d <branch>`. Ordinary removal never passes `--force`. Only
+   state-managed S1 may call the guarded removal owner in `batch_harvest.py`,
+   under the shared completion procedure. Never manually force removal, stash,
+   or fall back to a merge commit. Managed finish preserves the marker through rebase and integration
    failures and removes only that marker after the durable archive checkpoint,
-   immediately before ordinary worktree removal. Unknown marker bytes, links,
+   immediately before ordinary or guarded S1 worktree removal. Unknown marker bytes, links,
    tracking or other dirty files refuse; standalone finish has no exemption.
    Run it only for a lead that has returned: never unlock a worktree
    whose lead is still running.
@@ -238,7 +257,9 @@ means retain and report, never unlock or expire a reservation.
 
 - Reconcile interrupted integration with
   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> recover --slug <slug> --worker-stopped`.
-  Follow its exact next action. Never infer a rebased tip from the old returned
+  Follow its exact next action. S1 consumes its persisted destination/module
+  witness before ordinary cleanliness checks; never clear apparent stale-module
+  dirt by hand or overwrite unrelated changes. Never infer a rebased tip from the old returned
   commit, infer closure from an archive, or replay lifecycle receipts. If only
   a branch remains, report only that branch; normal `git branch -d` is allowed
   only with verified recorded integration or the shared separately reviewed
@@ -246,7 +267,10 @@ means retain and report, never unlock or expire a reservation.
 - Resume blocked/failed work, an interrupted running worker confirmed stopped,
   or a failed continuation bootstrap with its bound reservation using
   `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> resume --slug <slug> --worker-stopped`.
-  This reserves a slot for the same registered W, branch, task and run. Prefer
+  This reserves a slot for the same registered W, branch, task and run. S1 also
+  validates the original private module metadata and named branches, preserving
+  dirty development edits. Forward the selected-module handoff; never reinitialize
+  or allocate substitute module stores. Prefer
   the original native agent. Otherwise dispatch `harness:task-lead-resume`
   bootstrap-only with the returned handoff and original scope/off-limits;
   it has no worktree isolation and must use the existing W. Obtain its actual

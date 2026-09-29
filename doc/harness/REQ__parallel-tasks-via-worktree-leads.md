@@ -10,12 +10,13 @@ invalidated_by_paths:
   - plugin/scripts/batch_harvest.py
   - plugin/scripts/batch_finish.py
   - plugin/scripts/batch_state.py
+  - plugin/scripts/batch_submodules.py
   - plugin/scripts/setup_finalize.py
   - plugin/scripts/batch_preflight.py
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-28T13:28:11Z
+freshness_updated: 2026-09-29T00:49:58Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -145,8 +146,10 @@ freshness_updated: 2026-09-28T13:28:11Z
   branch's name would win a bare-name lookup), harvests through
   `batch_harvest.py`, runs `git worktree unlock` only when
   `git worktree list --porcelain` shows the worktree (compared by realpath)
-  locked, and runs `git worktree remove` and `git branch -d`, never with
-  `--force`. It aborts a failed or interrupted rebase only when
+  locked, and ordinarily runs `git worktree remove` and `git branch -d`,
+  never with `--force`. State-managed selected S1 modules have the sole guarded
+  removal exception owned by `batch_harvest.py`, defined in
+  [Selected submodules](REQ__batch-submodule-support.md); branch deletion stays `-d`. It aborts a failed or interrupted rebase only when
   `rebase-merge` or `rebase-apply` exists (`rev-parse --git-path`), because
   the dirty-worktree and untracked-file refusals never start one and
   `rebase --abort` then exits 128; it never aborts a rebase it did not
@@ -316,11 +319,11 @@ open the repository at all.
 
 ## Multi-repo and submodules
 
-Batch supports exactly one shape: a single git control root whose scopes lie
-in its own tracked area. A repository with submodules or nested repos still
-batches the requests scoped to its tracked area; only the requests scoped
-inside a submodule or nested repo are sequenced outside the wave. Three other
-shapes exist:
+Batch uses a single git control root. Its own tracked area and explicitly
+selected populated direct submodules can participate in leads. Without an S1
+selection, requests inside submodules or nested repos remain ordinary sequential
+tasks outside the wave. The complete opt-in contract is owned by
+[Selected submodules](REQ__batch-submodule-support.md). Three related shapes exist:
 
 - (a) **Submodules**: mode-160000 gitlinks, normally declared in
   `.gitmodules`.
@@ -329,7 +332,7 @@ shapes exist:
   service repos under an ignored `repos/`).
 - (c) **A non-git parent with child repos**: no control root at all.
 
-What happens without the stop-gap:
+Repository hazards without controlled preparation:
 
 - `git worktree add` never initializes submodules (it has no recursive option
   and `submodule.recurse` does not change that), and neither Claude Code nor
@@ -347,7 +350,7 @@ What happens without the stop-gap:
   checkout with an embedded `.git` directory passes the validator, so only the
   preflight's superproject check refuses it.
 
-Stop-gap rules (current):
+Default rules and selected S1 extension:
 
 - `plugin/scripts/batch_preflight.py` runs at intake and preflight for exactly
   the wave about to be spawned, and the coordinator spawns only on exit 0
@@ -388,8 +391,9 @@ Stop-gap rules (current):
   (`verdict`, `control_root`, `submodules`, `nested_repos`, `off_limits`,
   `post_checkout_hooks`, `worktrees_ignore`, `dirty`, `scopes`, `overlaps`,
   `excluded_requests`, `refusals`) is always present, even on an early
-  refusal or a crash, and
-  `dirty` lists at most 20 status entries per repo alongside the full `count`.
+  refusal or a crash. S1 reports additionally expose `selected_modules`,
+  `off_limits_by_request` and `ownership_scopes`; default reports keep their
+  existing shape. `dirty` lists at most 20 status entries per repo alongside the full `count`.
   Hook detection reads the first 256 KiB of each post-checkout hook, matches
   `submodule` case-insensitively, and ignores the executable bit.
 - No refusal advises deleting anything, with one exception: when git cannot
@@ -422,28 +426,29 @@ Stop-gap rules (current):
   keeps a lead out of the repos inside such a scope. A separate class for
   ignored non-repo scopes is deferred: a lead's edits there are never
   committed, which is a task-planning problem rather than a repo-shape hazard.
-  Only `tracked-area` may run in a lead. A request scoped inside a submodule or
-  an ignored nested repo runs as an ordinary task in the main checkout,
+  `tracked-area` may run in a lead. Explicit per-request `--submodule SLUG=PATH`
+  selection additionally admits `selected-submodule` scopes after S1 validation.
+  An unselected submodule or ignored nested repo runs as an ordinary task in the main checkout,
   outside the wave; an `outside-root` scope cannot run in `harness:batch` at
   all. `excluded_requests` keeps every exclusion reason of a request.
 - Two requests overlap when one of their symlink-resolved scopes equals or is
   a path-segment ancestor of one of the other's (`a/b` and `a/bc` do not
   overlap; `.` overlaps everything); a request's own paths are never paired,
   and neither is an excluded request, because it never runs in a wave.
-  Overlapping requests move one of them to a later wave.
-- The report's `off_limits` (every submodule, and every nested repo the scan
-  found; a directory with its own `.git` among files the superproject tracks
-  is not listed, though a scope under it is still excluded) goes into each
-  lead prompt. A lead never runs `git submodule
-  update/init/deinit/sync/set-url/absorbgitdirs` or any other subcommand but
-  `status`, never passes `--recurse-submodules` or
-  `-c submodule.recurse=true`, and never edits inside a submodule, an ignored
-  nested repo, or an off-limits path; if the task needs that, it returns
-  `blocked` with the reason.
-- With no submodule ever initialized in a lead worktree, plain
-  `git worktree remove` keeps working, so the batch rule "never `--force`"
-  stays satisfiable. If a removal still refuses because of a submodule, the
-  worktree is kept and reported.
+  Selected modules reserve the whole gitlink, so sibling descendant scopes also
+  overlap. Overlapping requests move one of them to a later wave.
+- The default report's `off_limits` includes every submodule and every nested
+  repo found by the scan. With S1 selection, `off_limits_by_request` removes only
+  that request's validated selected modules; `ownership_scopes` separately
+  reserves whole gitlinks without changing the declared scope list. The
+  coordinator passes the appropriate exclusions into each lead prompt.
+  Leads never initialize/deinitialize/sync modules or enable recursion. Only
+  coordinator-prepared selected modules permit scoped edits and commits on their
+  supplied named branches; commit each module before the outer gitlink commit.
+  Unselected modules, nested repos and other off-limits paths stay forbidden.
+- Ordinary worktrees use plain `git worktree remove`; a refusal retains the tree.
+  Only state-managed S1 can use the guarded removal owner described in the
+  selected-module REQ. A lead cannot grant itself force-removal permission.
 - Residual risk: `git status` in a nested repo or submodule runs that repo's
   configured clean filters, as any status there does. Nested repos in the
   user's project are trusted like the main checkout; refusing filter configs
@@ -481,11 +486,12 @@ Verified hazards (git 2.43, reproduced in the 2026-09-27 investigation):
 - Git's own documentation (git-worktree, BUGS): "It is NOT recommended to make
   multiple checkouts of a superproject."
 
-Full submodule support is a later task (Goal child G): lead init on a named
-branch, coordinator local fetch → rebase and fast-forward → immediate
-`submodule update`, and a
-guarded single `--force` removal in `batch_harvest.py`. Until it lands, the
-stop-gap above applies.
+S1 handles these hazards through coordinator-owned private named-branch clones,
+whole-module ownership, durable local object pins, linear integration and
+immediate checkout reconciliation. Its writeahead witnesses and guarded disposal
+are specified once in [Selected submodules](REQ__batch-submodule-support.md).
+Recursive graphs, unpopulated modules and ignored nested-repository cloning
+remain outside S1 and use the ordinary sequential route.
 
 ## Guards observed (live probes, 2026-09-27)
 

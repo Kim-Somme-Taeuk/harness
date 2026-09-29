@@ -67,7 +67,7 @@ invalidated_by_paths:
   - doc/CLAUDE.md
   - doc/harness/critics/
   - doc/harness/review-overlays/
-freshness_updated: 2026-09-28T13:28:11Z
+freshness_updated: 2026-09-29T00:49:58Z
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -1536,7 +1536,7 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 ### 10.1 coordinator 전체 흐름
 
 ```
-(a) intake: 요청마다 slug + 경로 scope
+(a) intake: 요청마다 slug + 경로 scope + 선택적 submodules 목록
       - slug 재사용 금지 (tasks/TASK__<slug>, archive/batch/TASK__<slug>)
       - scope 겹침과 depends_on은 저장된 큐에서 순서를 지킨다
       - batch_state.py --repo <main> --batch-id <id> init --requests-file <json>
@@ -1553,13 +1553,15 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
       Agent(subagent_type:"harness:task-lead",
             prompt: 요청 / slug / scope / off-limits / coordinator HEAD / pytest worker cap: 4)
       bootstrap 명령으로 검증된 비추적 보존 표시를 만든 뒤 W/branch/HEAD 반환
-      native worker ID를 bind한 뒤 SendMessage로 같은 agent를 재개
+      native worker ID를 bind하고, 선택된 S1 모듈의 private clone 준비까지 성공한 뒤
+      SendMessage로 같은 agent를 재개
       표시만 source-clean 검사에서 제외하고, 증거를 디스크에 확정한 뒤 finish가 삭제
       bind 전에는 소스 수정이나 task_start 금지
 (d) 결과를 result로 기록하고 closed lead를 반환 순서대로 하나씩:
       python3 plugin/scripts/batch_state.py --repo <main> --batch-id <id> finish --slug <slug>
       내부 batch_finish.py를 호출하고 Git 변경 전후 및 제거 전 checkpoint를 저장
       registered worktree / branch tip / clean / merge commit 없음 확인 → rebase → ff-only → harvest → 잠겼을 때만 unlock → remove → branch -d
+      S1은 통합 전 모듈 객체 보존, ff 전 witness 저장, ff 직후 main 모듈 checkout 갱신 추가
       integrated(0) → 다음 lead / kept(3) → 이유와 남은 worktree·branch 보고, 다음 lead
       conflict / ff-refused / error (wrapper exit 3) → 중단·보고, 필요한 복구는 (e)
       독립 batch_finish.py의 exit 4/5/1과 구분; wrapper usage 오류는 exit 2
@@ -1609,14 +1611,15 @@ C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write 
 | 분류 | 조건 | 처리 |
 |---|---|---|
 | `outside-root` | root 밖이거나 `.git/` 아래 | batch 불가 |
-| `inside-submodule` | submodule 경로와 같거나 그 아래 | wave 전후에 main에서 일반 과제로 |
+| `inside-submodule` | 선택하지 않은 submodule 경로와 같거나 그 아래 | wave 전후에 main에서 일반 과제로 |
+| `selected-submodule` | 요청의 명시적 S1 선택을 검증한 module 경로 또는 그 아래 | bind 준비 후 lead 가능; gitlink 전체 예약 |
 | `inside-ignored-nested-repo` | root(제외)부터 scope(포함) 사이에 `.git`이 있는 디렉터리. 남겨 둔 lead worktree 안의 scope도 여기에 해당 | 같음 |
 | `tracked-area` | 그 밖(untracked, ignored, 아직 없는 경로, submodule을 포함하는 scope 포함) | lead 가능 |
 
 - **겹침**: 한 scope가 다른 요청 scope와 같거나, 경로 세그먼트 단위로 조상일 때. `a/b`와 `a/bc`는 겹치지 않고, `.`은 모든 것과 겹친다.
 - **깨끗함**: main, 채워진 submodule 전부, nested repo 전부에서 `git status --porcelain --ignore-submodules=none`이 비어 있어야 한다.
 - **post-checkout 훅**: submodule이 있는 저장소에서 기본 또는 유효(`core.hooksPath`) post-checkout 훅에 `submodule`이 들어 있으면 refuse한다. 그런 훅은 모든 lead worktree에서 submodule을 초기화하기 때문이다.
-- **`off_limits`**: submodule 경로와 nested repo의 합집합. ignored nested repo는 lead worktree 안에 존재하지 않으므로 모든 lead prompt에 넘긴다.
+- **`off_limits`**: 기본값은 submodule 경로와 nested repo의 합집합. S1에서는 `off_limits_by_request`가 그 요청의 검증된 선택 모듈만 제외한다. `ownership_scopes`는 같은 모듈의 서로 다른 하위 경로도 동시에 실행하지 않도록 gitlink 전체를 예약한다. ignored nested repo는 계속 제외한다.
 - **등록된 worktree는 nested repo가 아니다.** root 아래의 등록된 linked worktree(예: `.claude/worktrees`에 남겨 둔 blocked/failed lead)는 nested_repos와 off_limits에서 빠지고 status 검사도 받지 않는다. 그래서 그 안의 커밋되지 않은 작업이 새 wave를 막지 않는다(`batch_preflight.py:228-235, 274, 490-496`, REQ `:290-293`).
 - **fail closed**: 읽을 수 없는 디렉터리, git의 "could not open directory" 경고, 일반 파일이 아니거나 읽을 수 없는 `.gitmodules`는 모두 `refuse`다. nested repo를 숨길 수 있기 때문이다(`batch_preflight.py:66-68, 92-109, 169-196, 258-275`, REQ `:245-252`).
 - preflight는 아무것도 쓰지 않는다. git 호출은 GIT_* 환경 변수를 모두 지우고 `--no-optional-locks`, `-c core.fsmonitor=false`, `LC_ALL=C`, 120초 timeout으로 실행한다. 예기치 않은 crash도 `refuse` 보고를 낸다.
@@ -1639,7 +1642,7 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
   - AskUserQuestion. 대신 선택지와 trade-off를 담아 blocked로 반환한다.
   - install_verified(생략), goal_*.
   - `git submodule`은 status만 허용하고, `--recurse-submodules`는 금지한다.
-  - submodule, nested repo, off-limits 경로 편집.
+  - 선택되지 않은 submodule, nested repo, off-limits 경로 편집. 준비 완료된 S1 모듈만 지정 범위에서 수정하고, 제공된 named branch에서 먼저 커밋한 뒤 outer gitlink를 커밋한다.
 - 훅은 workspace 인자를 받지 않고 payload `cwd`에서 저장소를 해석한다. 그래서 W에서 스폰한 reviewer/QA의 영수증은 worktree 과제에 기록된다(`tests/test_worktree_workspace.py:377`).
 - `task_verify(run_commands=true, workspace=…)`는 과제 root를 cwd로 두고 `verify_runner`를 돌린다. `verify_runner`는 `.git` gitfile에서 탐색을 멈추므로 worktree 안에서 실행된다.
 - Claude Code는 agent isolation worktree를 항상 `<repo>/.claude/worktrees/<name>`에 만든다(`worktree.location` 설정은 읽지 않는다). wave 1의 branch 이름은 `worktree-agent-<id>`였다.
@@ -1659,7 +1662,7 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
 
 - `<W>/doc/harness/tasks/<id>`를 temp dir과 rename을 거쳐 `doc/harness/archive/batch/<id>`로 복사한다. 같은 트리가 이미 있으면 아무것도 하지 않고, 다른 트리가 있으면 거부한다.
 - learnings 행은 flock 아래에서 main `learnings.jsonl`에 append한다. 이미 있는 줄과 정확히 같은 줄은 제외한다.
-- git 상태는 건드리지 않는다.
+- harvest 자체는 Git 상태를 건드리지 않는다. 별도의 guarded S1 제거 경로는 state-managed finish만 호출하며, archive·모듈 보존 증명과 전체 파일 검사를 통과해야 단일 `--force`를 쓴다. 일반 worktree 제거와 branch `-d`는 그대로다.
 
 **harvest는 제거 전에 해야 한다.** `git worktree remove`는 gitignored 파일(`doc/harness/tasks/`, learnings)까지 지운다.
 
@@ -1673,7 +1676,7 @@ host git 클라이언트(예: drvfs 위의 GitKraken)에서는 branch와 commit�
 - helper는 잠긴 worktree만 unlock하고 remove 거부·예외 시 남아 있는 등록된 worktree에 원래 이유로 relock을 시도한다. 복원 실패도 원래 실패와 함께 보고한다. 실행 중인지 직접 판별하지 않으므로 코디네이터는 lead가 반환한 뒤에만 helper를 호출해야 한다(`batch_finish.py`의 `_cleanup`, REQ § Known limits).
 - preflight의 `worktrees_ignore`는 symlink를 푼 뒤 git이 보는 경로를 검사한다. 저장소 밖으로 나가는 경로는 통과하며, 안쪽 경로가 ignore되지 않았으면 refuse한다(`batch_preflight.py`의 `worktrees_ignore`).
 - preflight와 finish helper의 clean 검사는 `status.showUntrackedFiles=no`와 관계없이 미추적 파일을 포함한다. helper의 native worktree remove도 이 설정을 덮어써서 검사 이후 생긴 미추적 파일을 보호한다. standalone preflight는 HEAD 작업 상태나 이전 배치 예약을 검사하지 않는다. 풀의 `batch_state.py claim`이 destination ref, 진행 중 Git 작업, 기록된 retained scope 겹침을 추가로 검사한다. finish helper는 main detached HEAD와 lead의 진행 중 rebase를 별도로 거부한다.
-- submodule(git 2.43): 한번 초기화하면 plain remove가 계속 거부된다. `--force`는 모듈 저장소를 지운다. `deinit`은 공유 `.git/config`를 다시 쓴다. merge는 submodule checkout을 갱신하지 않는다. 완전 지원은 미뤄졌다.
+- submodule(git 2.43): 초기화 후 plain remove가 거부되고 `--force`는 모듈 저장소까지 지운다. S1은 명시적으로 선택한 populated direct module만 private clone으로 준비하며, refs·태그·reflog·중간 gitlink 객체를 main의 영구 refs로 보존한다. 공유 config를 바꾸는 `deinit`은 금지한다. ff 직후 checkout을 갱신하며, 중단 복구는 정확한 witness를 일반 dirty 검사보다 먼저 확인한다. 재귀 모듈·미초기화 모듈·nested repo는 지원 범위 밖이다. 상세 계약: [선택 모듈 S1](REQ__batch-submodule-support.md).
 - `batch_harvest.py` 단독 호출은 `HarvestError`만 잡지만 helper는 모든 harvest 예외를 `kept`로 보고하고 worktree를 남긴다. learnings append가 archive rename 뒤에 있어 append 실패 시 archive는 이미 존재할 수 있다. 통합 후 정리 실패는 `integrated_tip`과 `cleanup`으로 구별하고 원인을 고친 뒤 `--resume`한다. branch만 남았으면 `git branch -d`로 마친다.
 - helper는 시작 시 main의 symbolic ref를 기록하고 rebase 뒤 checkout이 detached되거나 다른 branch로 바뀌면 거부한다. 성공 확인과 merge 실패·timeout 뒤 통합 확인 모두 최초 branch ref를 기준으로 하며, 현재 HEAD에만 반영된 tip을 통합됐다고 보고하거나 그 근거로 lead를 정리하지 않는다. 실패 경로에서는 harvest·정리를 진행하지 않는다. 상태가 `error`여도 확인된 `integrated_tip`이 있으면 통합된 것이다. 확인 자체가 실패하면 `reason`에 통합 여부 미확인을 명시한다. null tip만으로 미통합이라고 보고하지 않는다.
 - 공유 파일: wave 1에서 lead의 `forbidden_paths`는 CHANGELOG와 batch REQ를 제외했고, lead에 따라 CONTRACTS.md/CLAUDE.md/README도 제외했다. lead마다 목록이 달랐다. 통합 과제가 쓴 것은 `plugin/CHANGELOG.md`와 batch REQ다. 이 파일들은 모두 소스 확장자가 아니므로 `forbidden_paths`에 넣어도 gate가 강제하지 않는다(§5.6). 계획상의 관행일 뿐이다.

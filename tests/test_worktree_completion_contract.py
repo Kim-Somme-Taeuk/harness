@@ -79,7 +79,8 @@ def test_normal_route_is_linear_and_preserves_source_evidence():
     assert phase.index("git -c rebase.updateRefs=false rebase --no-autostash <destination-tip>") < phase.index("git merge --ff-only refs/heads/<source-branch>") < phase.index("git worktree remove <path>") < phase.index("git branch -d <branch>")
     assert "Never create a merge commit or fall back to one" in phase
     assert "never stash, force-push" in phase
-    assert "Never use `--force`, forced branch deletion, `git reset --hard`, or `git clean`" in phase
+    assert "Never use `--force` on this ordinary route" in phase
+    assert "forced branch deletion, `git reset --hard`, or `git clean`" in phase
     assert "source and destination branch identities and tips, clean states" in phase
     assert "--untracked-files=all" in phase
     assert "merge commit in the source range needs resolution" in phase
@@ -153,7 +154,7 @@ def test_real_codex_payload_projects_policy_and_resolves_caller_references(tmp_p
 
     # The durable wrapper and its integration/harvest dependencies ship in the
     # real payload, with the same implementation exercised by the Git tests.
-    for script in ("batch_state.py", "batch_finish.py", "batch_harvest.py", "batch_preflight.py"):
+    for script in ("batch_state.py", "batch_finish.py", "batch_harvest.py", "batch_preflight.py", "batch_submodules.py"):
         assert (target / "scripts" / script).read_bytes() == (REPO / "plugin/scripts" / script).read_bytes()
 
     shared = target / "internal-skills/run/worktree-completion.md"
@@ -168,3 +169,33 @@ def test_real_codex_payload_projects_policy_and_resolves_caller_references(tmp_p
         assert reference, caller
         assert (target / reference[1]).resolve() == shared.resolve()
         assert (target / reference[1]).is_file()
+
+
+def test_single_force_exception_requires_state_managed_s1_preservation_and_archive():
+    exception = _shared("State-managed S1 disposal exception")
+    assert "Only `batch_state.py finish`" in exception
+    assert "single `git worktree remove --force`" in exception
+    assert "sole owner, `batch_harvest.py`" in exception
+    for proof in ("exact durable batch/module identities", "integration checkpoint",
+                  "byte-verified task archive", "refs/tags/reflogs/history",
+                  "complete closure", "unchanged inventory immediately before removal",
+                  "tracked, staged, untracked and ignored content"):
+        assert proof in exception
+    assert "Unknown data" in exception and "retain the tree" in exception
+    assert "Restore the original lock and bootstrap marker on refusal" in exception
+    assert "branch deletion remains `-d`" in exception
+    assert "No standalone helper, lead or copied-recovery route inherits this exception" in exception
+    assert "never invoke force manually" in exception
+    batch = _section(_text(REPO / "plugin/skills/batch/SKILL.md"),
+                     "d) Collect results, rebase, and fast-forward")
+    assert "Ordinary removal never passes `--force`" in batch
+    assert "Only state-managed S1" in batch and "shared completion procedure" in batch
+    assert "Never manually force removal" in batch
+
+
+def test_copied_recovery_cannot_inherit_selected_module_force_permission():
+    recovery = _shared("Interrupted or already-copied recovery")
+    assert "ordinary no-force removal" in recovery
+    assert "S1 exception does not authorize copied-recovery disposal" in recovery
+    assert "No unintegrated unique source commits" in recovery
+    assert "Fresh independent review and QA" in recovery

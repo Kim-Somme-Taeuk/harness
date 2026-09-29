@@ -297,7 +297,7 @@ def test_batch_skill_gates_spawning_on_the_repo_shape_preflight():
     assert _normalized("at the path git actually sees") in norm
 
 
-def test_task_lead_forbids_submodule_commands_and_nested_repo_edits():
+def test_task_lead_forbids_module_management_and_unselected_or_nested_repo_edits():
     body = _text(TASK_LEAD)
     norm = _normalized(body)
     for subcommand in ("update", "init", "deinit", "sync", "set-url", "absorbgitdirs"):
@@ -309,9 +309,10 @@ def test_task_lead_forbids_submodule_commands_and_nested_repo_edits():
             "any other `git submodule` subcommand except `status`",
             "`--recurse-submodules`",
             "`-c submodule.recurse=true`",
-            "Never edit a path inside a submodule, inside an ignored nested repo",
+            "Unselected submodules, ignored nested repos and `off-limits` paths remain forbidden",
+            "Never initialize, clone, fetch remotely or push a module",
             "`off-limits`",
-            "return `verdict: \"blocked\"` with that reason",
+            "return `blocked`",
         ),
         TASK_LEAD,
     )
@@ -335,7 +336,8 @@ def test_req_documents_worktree_location_and_multi_repo_shapes():
             "same 9p mount",
             "It is NOT recommended to make multiple checkouts of a superproject.",
             "refuses that worktree forever",
-            "Goal child G",
+            "REQ__batch-submodule-support.md",
+            "Recursive graphs, unpopulated modules",
         ),
         path,
     )
@@ -471,7 +473,7 @@ def test_resume_preserves_marker_and_managed_finish_removes_only_after_harvest()
     ), path)
     _assert_all(_text(BATCH_SKILL), (
         "Managed finish preserves the marker through rebase and integration failures",
-        "removes only that marker after the durable archive checkpoint, immediately before ordinary worktree removal",
+        "removes only that marker after the durable archive checkpoint, immediately before ordinary or guarded S1 worktree removal",
         "Unknown marker bytes, links, tracking or other dirty files refuse",
         "standalone finish has no exemption",
     ), BATCH_SKILL)
@@ -479,3 +481,62 @@ def test_resume_preserves_marker_and_managed_finish_removes_only_after_harvest()
         "It grants no PASS or task authority",
         "managed finish removes it only after durable evidence harvest, immediately before worktree removal",
     ), TASK_LEAD)
+
+
+def test_selected_modules_require_opt_in_and_prepared_same_worker_handoff():
+    # Permission is split across intake, coordinator binding and the receiving
+    # lead. Keeping one surface permissive must not silently widen the others.
+    batch = _normalized(_text(BATCH_SKILL))
+    lead = _normalized(_text(TASK_LEAD))
+    for token in ("submodules: [module paths]", "--submodule <slug>=<module path>",
+                  "omission keeps default exclusions", "reserve the whole gitlink"):
+        assert token in batch
+    bind = batch.index("bind --slug")
+    prepared = batch.index("all selected modules prepared", bind)
+    handoff = batch.index("only after successful binding", prepared)
+    assert bind < prepared < handoff
+    assert "exact bound agent id" in batch[handoff:]
+    assert "confirmed prepared-module manifest" in lead
+    assert "only coordinator bind prepares these clones" in lead
+    assert "only explicitly selected, coordinator-prepared s1 modules within your declared scope" in lead
+    assert "missing or incomplete preparation is a blocker" in lead
+
+
+def test_selected_module_commits_stay_under_outer_task_lifecycle():
+    lead = _normalized(_text(TASK_LEAD))
+    assert "commit module changes before the outer gitlink commit" in lead
+    assert "`git -c <w/module>`" in lead
+    assert "do not start a separate task inside a module" in lead
+    assert "lifecycle calls and nested review/qa cwd at w" in lead
+    outer = lead[lead.index("## after `task_close` reports pass"):]
+    assert "outer implementation diff" in outer
+    assert 'git commit --trailer "harness-task: <task_id>"' in outer
+    assert "no push, no merge" in outer
+
+
+def test_selected_resume_preserves_module_identity_and_unfinished_edits():
+    path = REPO / "plugin/agents/task-lead-resume.md"
+    resume = _normalized(_text(path))
+    assert "isolation" not in _frontmatter(path)
+    for token in ("original selected-module manifest", "private-store identities",
+                  "named branches", "preserve those exact stores", "unfinished edits",
+                  "never clone, initialize or allocate a replacement module checkout",
+                  "confirmed prepared-module handoff"):
+        assert token in resume
+    assert "dirty module edits" in resume and "rather than resetting" in resume
+    assert "task_start(workspace=w, task_id=existing_id)` without `fresh_run`" in resume
+
+
+def test_published_s1_contract_has_one_owner_and_keeps_unsupported_topologies_out():
+    owner = REPO / "doc/harness/REQ__batch-submodule-support.md"
+    for path in (BATCH_SKILL, REPO / "doc/harness/REQ__parallel-tasks-via-worktree-leads.md",
+                 REPO / "doc/harness/REQ__batch-state-pool-recovery.md",
+                 REPO / "doc/harness/GUIDE__how-harness-works.md"):
+        assert owner.name in _text(path), path
+    contract = _normalized(_text(owner))
+    for token in ("schema 2", "schema 1", "older readers refuse schema 2",
+                  "annotated tags", "reflog", "intermediate commits",
+                  "survive garbage collection", "before ordinary destination cleanliness checks",
+                  "unrelated dirt", "ordinary sequential route"):
+        assert token in contract
+    assert "recursive modules" in contract and "not supported" in contract

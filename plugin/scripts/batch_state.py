@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import batch_finish as finish_helper
 import batch_harvest
 import batch_preflight
+import batch_submodules
 from _lib import find_repo_root, read_task_control, task_control_status, resolve_registered_worktree
 
 LIMIT = 1024 * 1024
@@ -134,6 +135,12 @@ def requests_valid(items):
         for scope in scopes:
             require(isinstance(scope, str) and scope and not os.path.isabs(scope)
                     and '\x00' not in scope and '..' not in scope.split('/'), 'scope must be a literal relative path')
+        if 'submodules' in item:
+            modules = item['submodules']
+            require(isinstance(modules, list) and len(modules) <= batch_submodules.MAX_MODULES
+                    and all(isinstance(p, str) and p and len(p) <= 4096 and not p.startswith('/')
+                            and '\x00' not in p and all(x not in ('', '.', '..', '.git') for x in p.split('/')) for p in modules)
+                    and len(set(modules)) == len(modules), 'invalid submodule selection')
         deps = item.get('depends_on', [])
         require(isinstance(deps, list) and all(isinstance(x, str) for x in deps) and len(set(deps)) == len(deps), 'invalid dependencies')
     visiting, visited = set(), set()
@@ -152,7 +159,7 @@ def requests_valid(items):
 
 
 def validate(data, repo, batch_id):
-    require(isinstance(data, dict) and type(data.get('schema_version')) is int and data['schema_version'] == 1, 'unknown state schema')
+    require(isinstance(data, dict) and type(data.get('schema_version')) is int and data['schema_version'] in (1, 2), 'unknown state schema')
     require(data.get('repo') == repo and data.get('batch_id') == batch_id, 'state identity mismatch')
     require(type(data.get('max_leads')) is int and 1 <= data['max_leads'] <= 8, 'invalid capacity')
     require(isinstance(data.get('destination_ref'), str) and data['destination_ref'].startswith('refs/heads/'), 'invalid destination')
@@ -160,11 +167,33 @@ def validate(data, repo, batch_id):
     for key in ('initial_head', 'created_at', 'updated_at', 'cap_source'):
         require(isinstance(data.get(key), str) and data[key], f'invalid {key}')
     requests_valid(data.get('requests'))
+    selected_batch = any(item.get('submodules') for item in data['requests'])
+    require((data['schema_version'] == 2) == selected_batch, 'selected modules require schema 2')
+    require(len(json.dumps(data).encode()) <= LIMIT, 'state exceeds 1 MiB')
     for item in data['requests']:
+        if data['schema_version'] == 1 or not item.get('submodules'):
+            require(not any(k in item for k in ('submodules', 'submodule_manifest', 'ownership_scopes')), 'S1 fields in an ordinary request')
         require(item.get('status') in STATES and item.get('task_id') == 'TASK__' + item['slug'], 'invalid request state')
         require(isinstance(item.get('resolved_scopes'), list) and len(item['resolved_scopes']) == len(item['scopes'])
                 and all(isinstance(p, str) and os.path.isabs(p) and os.path.commonpath((repo, p)) == repo for p in item['resolved_scopes']), 'invalid scope bindings')
         require(isinstance(item.get('depends_on'), list), 'missing dependency list')
+        if item.get('submodules'):
+            require(item.get('ownership_scopes') == module_ownership(repo, item), 'invalid whole-module ownership')
+            if item.get('worktree'):
+                manifest = item.get('submodule_manifest')
+                try:
+                    batch_submodules.validate_manifest(manifest)
+                except batch_submodules.SubmoduleError as exc:
+                    raise Refusal('invalid submodule manifest: ' + str(exc)) from exc
+                require(all(manifest.get(k) == v for k, v in dict(repo=repo, batch_id=batch_id, slug=item['slug'],
+                        worktree=item['worktree'], spawn_head=item.get('spawn_head')).items()), 'module manifest work identity mismatch')
+                require([m['path'] for m in manifest['modules']] == item['submodules'], 'module manifest selection mismatch')
+                require(all(isinstance(item.get(k), str) and item[k] for k in ('worker_id', 'branch', 'spawn_head')),
+                        'module preparation lacks bound worker identity')
+                if item['status'] not in {'reserved', 'abandoned'}:
+                    require(all(m['phase'] == 'prepared' for m in manifest['modules']), 'running module preparation is incomplete')
+            else:
+                require('submodule_manifest' not in item, 'unbound module manifest')
         if item['status'] == 'reserved':
             require(isinstance(item.get('spawn_head'), str) and finish_helper.COMMIT_RE.fullmatch(item['spawn_head']), 'invalid reservation HEAD')
         if item['status'] in {'running', 'returned', 'integrating', 'integrated', 'kept'}:
@@ -251,13 +280,59 @@ def main_boundary(repo, expected=None):
     return ref, finish_helper._resolve_commit(repo, ref)
 
 
+def module_ownership(repo, item):
+    roots = [os.path.join(repo, path) for path in item['submodules']]
+    scopes = item['resolved_scopes']
+    require(all(any(os.path.commonpath((root, scope)) in (root, scope) for scope in scopes)
+                for root in roots), 'selected module is outside request scopes')
+    result = []
+    for scope in scopes:
+        boundary = next((root for root in roots if os.path.commonpath((root, scope)) == root), scope)
+        if boundary not in result:
+            result.append(boundary)
+    return result
+
+
+def ownership(item):
+    return item.get('ownership_scopes', item['resolved_scopes'])
+
+
+def normalize_requests(items):
+    result = []
+    for item in items:
+        normalized = {k: item.get(k, []) for k in ('slug', 'request', 'scopes', 'depends_on')}
+        if item.get('submodules'):
+            normalized['submodules'] = list(item['submodules'])
+        result.append(normalized)
+    return result
+
+
+def reconcile_modules(repo, item):
+    manifest = item.get('submodule_manifest')
+    if manifest and manifest['witness'] is not None:
+        witness = manifest['witness']
+        if os.path.exists(item['worktree']):
+            batch_submodules.reconcile_checkout(repo, manifest, witness, target=witness['target'])
+        else:
+            require(witness['target'] == 'main'
+                    and finish_helper._git(repo, 'symbolic-ref', '-q', 'HEAD').stdout.strip() == witness['destination_ref']
+                    and finish_helper._resolve_commit(repo, witness['destination_ref']) == witness['target_tip'],
+                    'removed S1 worktree destination differs from integration witness')
+
+
 def preflight(repo, item):
     requests = {item['slug']: item['scopes']}
     require(not batch_preflight._globs_and_lists(repo, requests), 'scope names no existing path and looks like a glob or comma list')
-    report = batch_preflight.preflight(repo, requests)
+    report = (batch_preflight.preflight(repo, requests, {item['slug']: item['submodules']})
+              if item.get('submodules') else batch_preflight.preflight(repo, requests))
     require(report['verdict'] == 'ok', 'preflight refused: ' + json.dumps(report))
     resolved = [x['resolved'] for x in report['scopes']]
     require('resolved_scopes' not in item or resolved == item['resolved_scopes'], 'scope resolution changed')
+    if item.get('submodules'):
+        boundaries = report['ownership_scopes'][item['slug']]
+        require('ownership_scopes' not in item or item['ownership_scopes'] == boundaries, 'module ownership changed')
+        item['ownership_scopes'] = boundaries
+        return resolved, report['off_limits_by_request'][item['slug']]
     return resolved, report['off_limits']
 
 
@@ -387,10 +462,10 @@ def execute(args, directory, records):
         requests = read_json(args.requests_file)
         requests_valid(requests)
         maximum, source = cap(repo, args.max_leads)
-        normalized = [{k: x.get(k, []) for k in ('slug', 'request', 'scopes', 'depends_on')} for x in requests]
+        normalized = normalize_requests(requests)
         if batch_id in records:
             old = records[batch_id]
-            require([{k: x[k] for k in ('slug', 'request', 'scopes', 'depends_on')} for x in old['requests']] == normalized
+            require(normalize_requests(old['requests']) == normalized
                     and old['max_leads'] == maximum, 'conflicting existing batch')
             return {'status': 'ok', 'batch': old}
         require(len(records) < MAX_BATCHES, 'batch history limit reached')
@@ -402,7 +477,7 @@ def execute(args, directory, records):
                     and not os.path.lexists(os.path.join(repo, 'doc/harness/tasks', task_id)), 'task/archive identity already used')
             resolved, _ = preflight(repo, item)
             item.update(status='queued', task_id=task_id, resolved_scopes=resolved)
-        data = dict(schema_version=1, batch_id=batch_id, repo=repo, destination_ref=ref, initial_head=head,
+        data = dict(schema_version=2 if any(x.get('submodules') for x in normalized) else 1, batch_id=batch_id, repo=repo, destination_ref=ref, initial_head=head,
                     max_leads=maximum, cap_source=source, created_at=now(), updated_at=now(), status='open', halted=False, requests=normalized)
         write_json(path, data)
         return {'status': 'ok', 'batch': data}
@@ -444,7 +519,7 @@ def execute(args, directory, records):
                 reason = 'capacity'
             elif any(by_slug[dep]['status'] != 'integrated' for dep in item['depends_on']):
                 reason = 'dependencies'
-            elif any(overlap(item['resolved_scopes'], x['resolved_scopes']) for x in held(records, item)):
+            elif any(overlap(ownership(item), ownership(x)) for x in held(records, item)):
                 reason = 'retained scope ownership'
             if reason:
                 reasons[item['slug']] = reason
@@ -502,6 +577,10 @@ def execute(args, directory, records):
         worktree = os.path.realpath(args.worktree)
         for other in held(records, item):
             require(other.get('worktree') != worktree and other.get('branch') != args.branch and other.get('worker_id') != args.worker_id, 'worktree/branch/worker already owned')
+        if item.get('submodules') and item.get('worktree'):
+            require(worktree == item['worktree'] and args.branch == item['branch']
+                    and (item.get('resuming') or args.worker_id == item['worker_id']),
+                    'module preparation requires exact worker, worktree and branch; resume preserves worktree and branch')
         candidate = dict(item, worktree=worktree, branch=args.branch, worker_id=args.worker_id)
         marker = os.path.join(worktree, finish_helper.RETENTION_MARKER)
         if os.path.lexists(marker):
@@ -517,6 +596,22 @@ def execute(args, directory, records):
             require(bound(repo, candidate) == item['spawn_head'], 'bootstrap HEAD differs from reservation')
             require(not finish_helper.lead_status(worktree, candidate.get('retention')), 'bootstrap modified source before binding')
             require(not os.path.exists(os.path.join(worktree, 'doc/harness/tasks', item['task_id'])), 'bootstrap started task before binding')
+        if item.get('submodules'):
+            if item.get('resuming'):
+                batch_submodules.validate(repo, worktree, item['submodule_manifest'], 'resume')
+            else:
+                if 'submodule_manifest' not in candidate:
+                    descriptions = batch_submodules.selection(repo, item['submodules'])
+                    candidate['submodule_manifest'] = batch_submodules.manifest(
+                        repo, worktree, descriptions, batch_id=batch_id, slug=item['slug'], spawn_head=item['spawn_head'],
+                    )
+                item.update(candidate)
+                save()  # exact reservation/worker and preparation intent before cloning
+                def persist_preparation(manifest):
+                    require(manifest is item['submodule_manifest'], 'preparation manifest identity changed')
+                    save()
+                batch_submodules.prepare(repo, worktree, item['submodule_manifest'], persist_preparation)
+            require(all(m['phase'] == 'prepared' for m in item['submodule_manifest']['modules']), 'module preparation is incomplete')
         item.update(candidate)
         item['status'] = 'running'
     elif args.command == 'result':
@@ -531,6 +626,9 @@ def execute(args, directory, records):
             finish_helper.validate_retention(item['worktree'], item['retention'])
         commit = result.get('commit')
         require(commit is None or (isinstance(commit, str) and finish_helper.COMMIT_RE.fullmatch(commit)), 'invalid result commit')
+        if item.get('submodule_manifest'):
+            batch_submodules.validate(repo, item['worktree'], item['submodule_manifest'],
+                                      'finish' if result['verdict'] == 'closed' else 'resume')
         if result['verdict'] == 'closed':
             require(commit and finish_helper._resolve_commit(repo, commit) == tip, 'closed result commit is not branch tip')
             proof = control(item, closed=True)
@@ -580,15 +678,22 @@ def execute(args, directory, records):
         main_boundary(repo, data['destination_ref'])
         bound(repo, item)
         run_id = resume_control(item, observe=item['status'] == 'running')
-        require(not any(overlap(item['resolved_scopes'], x['resolved_scopes']) for x in held(records, item)), 'retained scope collision')
+        require(not any(overlap(ownership(item), ownership(x)) for x in held(records, item)), 'retained scope collision')
         preflight(repo, item)
+        if item.get('submodule_manifest'):
+            batch_submodules.validate(repo, item['worktree'], item['submodule_manifest'], 'resume')
         item.update(status='reserved', resuming=True, worker_stopped=True, run_id=run_id)
         save()
-        return {'status': 'reserved', 'handoff': dict(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], run_id=item.get('run_id'), worker_id=item['worker_id'], agent='task-lead-resume', fresh_run=False)}
+        handoff = dict(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], run_id=item.get('run_id'),
+                       worker_id=item['worker_id'], agent='task-lead-resume', fresh_run=False)
+        if item.get('submodule_manifest'):
+            handoff.update(submodules=copy.deepcopy(item['submodules']), submodule_manifest=copy.deepcopy(item['submodule_manifest']))
+        return {'status': 'reserved', 'handoff': handoff}
     elif args.command == 'finish':
         require(not data['halted'] or args.resume, 'batch halted; recover first')
         require(item['status'] == 'returned' or (args.resume and item['status'] in {'kept', 'recovery-required'}), 'finish requires closed returned result')
         active_pool(records, batch_id)
+        reconcile_modules(repo, item)
         main_boundary(repo, data['destination_ref'])
         bound(repo, item)
         control(item, closed=True)
@@ -606,7 +711,13 @@ def execute(args, directory, records):
                 sync_harvest(repo, archive)
             item['checkpoint'] = result
             save()
+            return copy.deepcopy(result)
         options = {'checkpoint': checkpoint}
+        if item.get('submodule_manifest'):
+            def persist_modules(manifest):
+                require(manifest is item['submodule_manifest'], 'integration manifest identity changed')
+                save()
+            options.update(submodules=item['submodule_manifest'], persist_submodules=persist_modules)
         if item.get('retention'):
             options['retention'] = item['retention']
         result = finish_helper.finish(repo, SimpleNamespace(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], commit=item['result']['commit'], resume=args.resume), **options)
@@ -623,6 +734,7 @@ def execute(args, directory, records):
         require(args.worker_stopped and item['status'] in {'integrating', 'kept', 'recovery-required', 'integrated'}, 'recover requires stopped integration')
         checkpoint = item.get('checkpoint', {})
         try:
+            reconcile_modules(repo, item)
             main_boundary(repo, data['destination_ref'])
             tip = checkpoint.get('branch_tip')
             require(tip and checkpoint.get('destination_ref') == data['destination_ref'], 'exact post-rebase tip missing')
@@ -647,6 +759,8 @@ def execute(args, directory, records):
                 item['status'] = 'returned'
                 item['recovery_action'] = 'finish --resume'
             else:
+                if item.get('submodule_manifest'):
+                    batch_submodules.preserved_proof(repo, item['submodule_manifest'])
                 require(integrated and checkpoint.get('integrated_tip') == tip and checkpoint.get('archive_fingerprint'), 'integration/archive proof missing after removal')
                 archive = checkpoint['harvest']['archived']
                 require(fingerprint(archive) == checkpoint['archive_fingerprint'], 'archive fingerprint changed')

@@ -26,6 +26,9 @@ or zero-source results until the coordinator's managed finish disposes of W.
 The coordinator provides the request, scope/off-limits, worker cap, exact
 registered W and branch, expected task id and existing run id (or explicitly
 no task yet), and the successful `batch_state.py resume` reservation handoff.
+For S1 this includes the original selected-module manifest, private-store
+identities and named branches; preserve those exact stores and any unfinished
+edits. Never clone, initialize or allocate a replacement module checkout.
 A pre-task blocked/failed request may have no task yet. An interrupted running
 request can also be reserved again after the coordinator confirms every writer
 stopped and pins the observed task run. Both require the explicit stopped-writer
@@ -34,7 +37,9 @@ states task absence must still find no task at bind; a newly appeared task is
 an identity mismatch, not permission to adopt it.
 
 1. Resolve W and enter that exact directory before task tools or nested agents.
-   Check Git registration, current branch and handoff identity. A missing or
+   Check Git registration, current branch and handoff identity, including S1
+   module metadata and named branches. Dirty module edits may belong to the
+   interrupted task; preserve them rather than resetting for bootstrap. A missing or
    different checkout, branch, task or run is a blocker, never a reason to
    initialize another checkout or task generation. Read-only inspection is
    permitted before binding; source and task mutations are not.
@@ -43,7 +48,7 @@ an identity mismatch, not permission to adopt it.
    reservation using `batch_state.py bind` before granting permission.
 3. Continue only on the coordinator's `SendMessage` to this exact bound agent ID
    with successful binding and explicit mutation permission. Recheck the
-   existing identity and enter W; never use the coordinator's main cwd for
+   existing identity and confirmed prepared-module handoff, then enter W; never use the coordinator's main cwd for
    task calls. If the host cannot deliver this handoff, stay stopped and report
    the runtime blocker. No implicit permission from the original request.
 

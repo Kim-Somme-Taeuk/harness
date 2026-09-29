@@ -55,14 +55,31 @@ This is coordinator procedure, not a Git-state gate in `task_close`.
    Inspect ignored content and retain any unique source, evidence or data
    outside the tree before deleting it. Reproducible caches may be discarded;
    unknown content or nested repository/submodule data must be retained.
+   Selected S1 module objects use the preservation proof below.
 5. Recheck ownership, stopped writers, source/destination identity, committed
    ancestry and clean status. From the surviving checkout, unlock only an
    existing lock belonging to the stopped worker, use normal
    `git worktree remove <path>`, then `git branch -d <branch>`. Never use
-   `--force`, forced branch deletion, `git reset --hard`, or `git clean`.
+   `--force` on this ordinary route, forced branch deletion, `git reset --hard`,
+   or `git clean`. The sole S1 exception is defined below.
    On removal refusal, restore the original lock if the tree remains; report
    lock-restoration failure too. If branch deletion refuses after removal,
    report only the branch as retained, not a nonexistent worktree.
+
+### State-managed S1 disposal exception
+
+Only `batch_state.py finish` may delegate a single `git worktree remove --force`
+to its sole owner, `batch_harvest.py`, for explicitly selected prepared S1 modules.
+Require the exact durable batch/module identities and integration checkpoint,
+durable byte-verified task archive, preserved module refs/tags/reflogs/history
+objects with complete closure, and unchanged inventory immediately before removal.
+Recheck all tracked, staged, untracked and ignored content; only exact harvested
+evidence and matching learnings qualify for exemptions. Unknown data, nested
+repos, unexpected modules, changed metadata/refs or missing pins retain the tree.
+Restore the original lock and bootstrap marker on refusal where W still exists;
+branch deletion remains `-d`. No standalone helper, lead or copied-recovery route
+inherits this exception. The full S1 contract is
+`doc/harness/REQ__batch-submodule-support.md`; never invoke force manually.
 
 ## Interrupted or already-copied recovery
 
@@ -100,7 +117,8 @@ Before clearing any dirt or removing an original, require all of:
 Only then restore the exact accounted, archived tracked paths to the source
 HEAD and remove the exact accounted, archived untracked paths; do not clear
 anything else. Recheck clean status with `--untracked-files=all`, then use the
-normal removal and branch deletion procedure above. Keep the archive after
+ordinary no-force removal and branch deletion procedure above; the S1 exception
+does not authorize copied-recovery disposal. Keep the archive after
 cleanup. A partial cleanup failure remains resumable from the verified archive
 and recorded disposition; never report an attempted removal as successful.
 
