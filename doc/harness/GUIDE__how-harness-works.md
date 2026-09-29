@@ -231,11 +231,11 @@ freshness_updated: 2026-09-29T05:30:50Z
 │   └── skills/               run, plan, develop, batch, setup, plan-*-review
 │                             (goal-queue/는 SKILL.md 없는 빈 디렉터리. Git이 추적하지 않는 로컬 잔재)
 ├── plugin-codex/             Codex payload의 일부 (전체 조립은 §2.2)
-│   ├── .codex-plugin/plugin.json    수동 관리 version (2.3.0+codex.20260928075810)
+│   ├── .codex-plugin/plugin.json    수동 관리 version (2.3.0+codex.20260929030000)
 │   ├── .codex-version        요구 codex CLI 최소 버전 (0.130.0)
 │   ├── skills/{run,setup}    공개 진입 스킬 (run은 internal-skills/run을 여는 20줄 래퍼)
-│   ├── internal-skills/      develop, plan, plan-*-review, run 의 SKILL.md 만 (goal-queue/는 빈 잔재)
-│   └── agents/               15개 (ac-worker, task-lead 없음) — 방법론 참고용
+│   ├── internal-skills/      batch, develop, plan, plan-*-review, run 의 SKILL.md (goal-queue/는 빈 잔재)
+│   └── agents/               16개 (task-lead 포함, ac-worker 없음) — 방법론 참고용
 ├── doc/                      영속 지식 (doc/CLAUDE.md 가 registry)
 │   ├── common/               공용 REQ/GUIDE
 │   └── harness/              manifest.yaml, REQ__*, ADR__*, patterns/, tasks/, goals/,
@@ -255,7 +255,7 @@ freshness_updated: 2026-09-29T05:30:50Z
 | 위치 | 값 | 비고 |
 |---|---|---|
 | `plugin/.claude-plugin/plugin.json` | `2.3.0` | 설치된 사본은 `2.3.0+h<sha8>`(§2.3) |
-| `plugin-codex/.codex-plugin/plugin.json` | `2.3.0+codex.20260928075810` | 손으로 관리. Codex cache 디렉터리 이름 |
+| `plugin-codex/.codex-plugin/plugin.json` | `2.3.0+codex.20260929030000` | 손으로 관리. Codex cache 디렉터리 이름 |
 | root `.codex-plugin/marketplace.json` | `2.3.0-codex` | `:13` |
 | 설치기가 생성하는 Codex marketplace | `2.3.0` | `install.py:1047-1062` |
 | MCP `serverInfo.version` | `2.0.0` | `harness_server.py:26-27` |
@@ -1184,7 +1184,7 @@ MCP 안의 WatcherManager 가 rollout 을 tail:
 | `harness:run` | 수명주기 오케스트레이션 | false(모델이 라우팅으로 호출) | `plugin/skills/run/SKILL.md` + self-improvement.md† |
 | `harness:plan` | compact/full 계획, `write_plan` | false | `plugin/skills/plan/SKILL.md` + intake.md†, review-phases.md†, decision-principles.md†, write-artifacts.md† |
 | `harness:develop` | 구현, 리뷰, QA, 설치, close | false | `plugin/skills/develop/SKILL.md` + parallel-fanout.md, browser-verification.md, quality-audit-pipeline.md†, verification-gate.md†, fix-first-pattern.md†, hypothesis-driven-debugging.md†, runtime-smoke.md†, test-failure-triage.md† |
-| `harness:batch` | worktree 병렬 모드(Claude 전용) | **true** | `plugin/skills/batch/SKILL.md` |
+| `harness:batch` | Claude 공개 worktree 병렬 스킬; Codex는 run에서 internal batch로 라우팅 | **true** | `plugin/skills/batch/SKILL.md`, `plugin-codex/internal-skills/batch/SKILL.md` |
 | `harness:setup` | 부트스트랩, 복구, 업그레이드 | **true** | `plugin/skills/setup/SKILL.md` + bootstrap.md, verify-report.md, project-interview.md, repo-census.md, templates/CONTRACTS.md |
 | `plan-ceo-review`, `plan-eng-review` | full plan의 방법론(코디네이터가 읽음) | false | 각 SKILL.md(eng는 + rubrics-threat-rollback.md†) |
 | `plan-design-review`, `plan-devex-review` | 계획 파이프라인에 연결되어 있지 않음 | false | 각 SKILL.md(devex는 + dx-hall-of-fame.md†) |
@@ -1460,7 +1460,7 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 
 ### 8.4 Codex 에이전트
 
-- `plugin-codex/agents/` 15개는 방법론 참고용이다. test-author는 `test_author_ac_<NNN>` task_name으로 스폰하는 lens 없는 역할이다. frontmatter는 모두 name과 description뿐이다. reviewer·developer·dogfooder·qa-* 파일에는 "MCP-hosted lifecycle watcher가 영수증을 소유한다"는 overlay 머리말이 있다. critic-document, defect-hunter, ux-api/-browser/-cli/-desktop 여섯 파일에는 이 문구가 없다. defect-hunter는 대신 이 역할이 "never owns review or QA lifecycle evidence"라고 쓴다(`plugin-codex/agents/code-reviewer.md:1-8`, `defect-hunter.md:1-8`).
+- `plugin-codex/agents/` 16개는 방법론 참고용이다. test-author는 `test_author_ac_<NNN>` task_name으로 스폰하는 lens 없는 역할이다. frontmatter는 모두 name과 description뿐이다. reviewer·developer·dogfooder·qa-* 파일에는 "MCP-hosted lifecycle watcher가 영수증을 소유한다"는 overlay 머리말이 있다. critic-document, defect-hunter, ux-api/-browser/-cli/-desktop 여섯 파일에는 이 문구가 없다. defect-hunter는 대신 이 역할이 "never owns review or QA lifecycle evidence"라고 쓴다(`plugin-codex/agents/code-reviewer.md:1-8`, `defect-hunter.md:1-8`).
 - developer, defect-hunter, code-reviewer, security-reviewer의 `harness:role-core` 블록은 Claude 쪽과 바이트 단위로 같고, 테스트가 이를 확인한다(`tests/test_review_agent_contracts.py`). QA/UX 파일은 손으로 관리하는 축약본이다.
 - Codex에서 lens는 `spawn_agent`의 `task_name`으로 정해진다. 이름 규칙(`plugin-codex/internal-skills/develop/SKILL.md:273-337`):
   - `code_review_*` / `review_code_*`
@@ -2032,7 +2032,7 @@ root CLAUDE.md의 `## Memory` 규칙:
 | PostToolUse 힌트 | 평문 stdout(모델에 보이지 않을 가능성, §4.4) | additionalContext로 감쌈 |
 | spawn 전 검사 | 없음 | `spawn_agent`의 bind 불가 review 이름 거부 |
 | workspace / batch | 지원(`harness:batch`, task-lead) | internal batch와 task-lead, 등록된 workspace 및 인증된 native coordinator 지원; 실제 host capability 필요 |
-| 에이전트 정의 | 17개(model, tools, isolation) | 15개(name/description만. 방법론 참고) |
+| 에이전트 정의 | 17개(model, tools, isolation) | 16개(name/description만. 방법론 참고) |
 | 스킬 본문 | `plugin/skills/*/SKILL.md` | 손으로 관리하는 별도 포트. 공용 보조 문서만 `plugin/skills`에서 복사(§2.2) |
 | 설치 cache version | 내용 해시 `<base>+h<sha8>` | 수동 관리 version 문자열 |
 | CLI 요구 | — | `codex ≥ 0.130.0` |
