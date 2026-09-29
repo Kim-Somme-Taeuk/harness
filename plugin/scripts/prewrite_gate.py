@@ -714,9 +714,12 @@ def _check_path(data: dict, file_path: str, protected_only: bool = False) -> Non
     # different registered checkout. For direct worktree targets, apply all
     # existing C-05/source gates relative to that checkout, even when Codex's
     # native cwd remains main and W lives under an otherwise ordinary prefix.
+    routed_checkout = ""
     if not (requested_common == repo_root and physical_common != repo_root):
         target_root = _target_worktree_root(repo_root, requested_path)
         if target_root:
+            if target_root != repo_root:
+                routed_checkout = target_root
             repo_root = target_root
             requested_common = os.path.commonpath([repo_root, requested_path])
             physical_common = os.path.commonpath([repo_root, file_path])
@@ -756,6 +759,8 @@ def _check_path(data: dict, file_path: str, protected_only: bool = False) -> Non
 
     if _is_protected_artifact(file_path, repo_root=repo_root):
         owner, human = _protected_denial(file_path)
+        if routed_checkout:
+            human += f" The target belongs to another Harness checkout: {routed_checkout}."
         _deny("C-05-protected-artifact", file_path, owner, human, repo_root)
         return 0
 

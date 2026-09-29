@@ -131,14 +131,20 @@ def test_symlink_outside_main_is_still_denied(tmp_path):
 
 def test_protected_only_fallback_resolves_worktree_without_enabling_source_gate(tmp_path):
     from test_prewrite_gate_payload_size_and_timeout import _load, _escapes_unset
+    from unittest import mock
+    import _lib as lib
 
     main, worktree = setup(tmp_path)
     gate = _load('prewrite_gate')
     payload = dict(cwd=str(main), tool_name='Write', tool_input={'file_path': str(worktree / 'engine.py')})
-    with _escapes_unset():
+    # Hooks normally run in their own process. Restore their cached input here
+    # so later MCP tests resolve their own cwd instead of this scratch checkout.
+    previous_input = lib.last_hook_input()
+    with _escapes_unset(), mock.patch.object(lib, '_LAST_HOOK_INPUT', {}):
         assert gate.protected_artifact_decision(json.dumps(payload)) == ''
         payload['tool_input']['file_path'] = str(worktree / 'doc/harness/tasks/TASK__lead/PLAN.md')
         result = json.loads(gate.protected_artifact_decision(json.dumps(payload)))
+    assert lib.last_hook_input() is previous_input
     assert result['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert 'C-05-protected-artifact' in result['hookSpecificOutput']['permissionDecisionReason']
 

@@ -2598,11 +2598,13 @@ class HarnessMcpServerTests(unittest.TestCase):
             prior_cwd = os.getcwd()
             with mock.patch.object(harness_lib.os, "replace", side_effect=fail_marker):
                 os.chdir(tmp)
-                with self.assertRaisesRegex(RuntimeError, "rollback was incomplete"):
-                    harness_server.handle_task_start(
-                        {"task_id": "TASK__active-resume"}
-                    )
-                os.chdir(prior_cwd)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "rollback was incomplete"):
+                        harness_server.handle_task_start(
+                            {"task_id": "TASK__active-resume"}
+                        )
+                finally:
+                    os.chdir(prior_cwd)
             self.assertEqual(
                 Path(harness_server.resolve_active_task_dir(tmp)).resolve(),
                 task_dir.resolve(),

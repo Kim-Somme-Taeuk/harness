@@ -523,6 +523,13 @@ environment_notes:
       does not work. ruff is not installed. Copying the tree to a sandbox without .git makes
       test_plan_test_references (PLAN.md test-name references) fail; that failure is a sandbox artifact.
     discovered: 2026-09-18
+  - topic: "Rerunning unittest subtest failures"
+    detail: >
+      In the full pytest suite, --lf selected ordinary failed nodes but omitted parents that
+      failed only through unittest subTest cases. Read SUBFAILED entries from the terminal
+      summary and explicitly rerun their parent node IDs; a green --lf run alone does not
+      establish that all reported failures were retested.
+    discovered: 2026-09-29
   - topic: "stop_gate.py manual exercise (retired 2026-09-23)"
     detail: >
       RETIRED 2026-09-23 -- plugin/scripts/stop_gate.py was deleted (its Stop hook registration was already

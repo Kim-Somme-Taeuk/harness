@@ -21,7 +21,7 @@ Build an ephemeral JSON snapshot from PLAN and observed worker state:
 }
 ```
 
-Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/parallel_dispatch.py --input <snapshot>`.
+Run `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/parallel_dispatch.py --input <snapshot>`.
 The snapshot can live in an ignored task work directory. Do not add fields to
 TASK.json or PROGRESS.md: this is disposable scheduling input, not new task
 authority. Use literal repo-relative paths and pass the checkout to resolve

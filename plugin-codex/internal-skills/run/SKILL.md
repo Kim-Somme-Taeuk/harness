@@ -154,7 +154,7 @@ canonical child and reviews/tests the combined result before close. Goal
 completion rechecks integration/archive evidence and the closed integration
 child; abandoned work never counts as completion. Without a work pack,
 `goal_next_task` selects first queued/active as before.
-Present the selected route and effective capacity as status.
+Present the selected next task as status, including its route and effective capacity.
 
 ### Phase 0: Resume detection
 
