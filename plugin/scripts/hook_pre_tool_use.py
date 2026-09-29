@@ -16,20 +16,24 @@ try:
         NOT_APPLICABLE,
         REGISTRATION_FAILED,
         restore_watcher_registration,
+        _registration_identity,
     )
 except Exception:  # pragma: no cover - registration recovery is best effort
     restore_watcher_registration = None
+    _registration_identity = None
     NOT_APPLICABLE = "not_applicable"
     REGISTRATION_FAILED = "failed"
 
 try:
-    from codex_lifecycle_watcher import registration_host_live  # type: ignore
+    from codex_lifecycle_watcher import registration_host_live, workspace_roots  # type: ignore
 except Exception:  # pragma: no cover - live-host check is fail-safe below
     registration_host_live = None
+    workspace_roots = None
 
 try:
     from _lib import (  # type: ignore
         find_harness_root,
+        resolve_session_task_binding,
         _infer_receipt_lens,
         emit_permission_decision,
         now_iso,
@@ -38,6 +42,7 @@ try:
     )
 except Exception:  # pragma: no cover - diagnostics must never break the hook
     find_harness_root = None
+    resolve_session_task_binding = None
     now_iso = None
     read_json_diagnostics = None
     write_json_diagnostics = None
@@ -257,14 +262,19 @@ def _observed_registration_failure(payload: bytes) -> bool:
 
 
 def _watcher_host_live(payload: bytes) -> bool:
-    if registration_host_live is None:
+    if any(helper is None for helper in (
+        registration_host_live, workspace_roots, resolve_session_task_binding,
+        _registration_identity,
+    )):
         return False
     root = _harness_root(payload)
-    thread_id = _payload_session_id(payload)
+    _, thread_id = _registration_identity(payload)
     if not root or not thread_id:
         return False
     try:
-        return bool(registration_host_live(root, thread_id))
+        bound = [workspace for workspace in workspace_roots(root)
+                 if resolve_session_task_binding(workspace, thread_id)]
+        return len(bound) == 1 and bool(registration_host_live(bound[0], thread_id))
     except Exception:
         return False
 

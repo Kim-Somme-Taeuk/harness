@@ -9,7 +9,7 @@ invalidated_by_paths:
   - tests/test_install_writable_source_comparison.py
   - plugin/scripts/_lib.py
   - tests/test_install_writable_payload.py
-freshness_updated: 2026-09-18T08:10:49Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — installed-tree modes are the installer's responsibility

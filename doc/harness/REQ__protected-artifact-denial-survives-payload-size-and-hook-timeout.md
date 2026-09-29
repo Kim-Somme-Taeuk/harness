@@ -8,7 +8,7 @@ invalidated_by_paths:
   - plugin/scripts/hook_pre_tool_use.py
   - plugin/hooks/hooks.json
 source: task: TASK__prewrite-gate-hardening
-freshness_updated: 2026-09-28T08:01:12Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — protected-artifact denial survives payload size and hook timeout

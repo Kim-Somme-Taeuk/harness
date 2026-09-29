@@ -13,7 +13,7 @@ invalidated_by_paths:
   - plugin/skills/develop/SKILL.md
   - plugin/skills/run/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-23T00:42:07Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — park 사유는 관측되지 않은 전제를 단언하지 않는다

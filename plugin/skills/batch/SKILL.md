@@ -7,8 +7,10 @@ allowed-tools: Read, Glob, Grep, Bash, Agent, SendMessage, Skill
 ---
 
 Run independent Claude worktree tasks in a bounded pool: fill, collect,
-serially integrate, and refill without waiting for a whole wave. Codex can
-exercise the shared helpers but cannot run worktree task lifecycle calls.
+serially integrate, and refill without waiting for a whole wave. Codex uses
+its internal batch workflow and the same pool helpers, with authenticated
+worktree coordinator/lens identities. A Goal dispatch supplies the exact batch
+ID and requests; reuse them and run its integration child after all leads land.
 
 `doc/harness/REQ__batch-state-pool-recovery.md` owns the command/state contract;
 `doc/harness/REQ__parallel-tasks-via-worktree-leads.md` explains worktree shape.
@@ -92,6 +94,15 @@ Before initializing or spawning anything:
 ## c) Fill the pool and bind before work
 
 1. Run `PYTHONDONTWRITEBYTECODE=1 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/batch_state.py --repo <main checkout> --batch-id <id> claim`.
+   When the host exposes a total agent limit, count live coordinators, leads,
+   and their nested workers, reserve at least one slot for independent lead
+   review/QA, and pass `--available-slots <free slots minus reserve>` to
+   admission (minimum zero). Recompute before each refill. Allocate nested
+   workers/reviewers from the same inventory; serialize lenses when only one
+   verification slot is available. No free slot means no spawn.
+   If the global host limit cannot fit coordinator + lead + independent
+   reviewer, use the ordinary sequential route before declaring a pool, or
+   report a capability blocker for an already declared Goal pack.
    `claim` atomically reserves capacity before spawning, rechecks preflight,
    and returns `claims` with the current destination `spawn_head` and
    per-request `off_limits` (unselected modules and nested repos). Reserved and running requests both consume slots. An empty
@@ -312,6 +323,12 @@ lead remains live or unknown. Keep queued work durable while halted. Then open
 `TASK__batch-integrate-<slug>` in the **main checkout** through the normal
 `harness:run` lifecycle (`task_start` → plan → develop → QA → close). Under
 that task:
+
+For a Goal-owned pack, use the canonical integration child returned by
+`goal_next_task` after the whole pool is integrated and closed, rather than
+inventing another completion child. If a halted pool needs a separate recovery
+task after every writer stops, that repair task does not complete the pack;
+return to the exact pool and finish it before opening the integration child.
 
 1. Resolve any conflict carried from step d.2 under this task: rerun the
    rebase in that lead's worktree

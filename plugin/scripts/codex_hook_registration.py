@@ -14,7 +14,7 @@ from typing import Callable
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS_DIR)
 
-from codex_lifecycle_watcher import ensure, invalidate_registration
+from codex_lifecycle_watcher import ensure, invalidate_registration, workspace_roots
 from _lib import (
     active_session_transaction,
     find_harness_root,
@@ -23,6 +23,7 @@ from _lib import (
     read_task_control,
     receipt_stream_transaction,
     resolve_session_task_binding,
+    resolve_registered_worktree,
     task_control_status,
     write_active_marker,
     write_binding_conflict_fence,
@@ -151,10 +152,11 @@ def _registration_identity(payload: bytes) -> tuple[str, str]:
 
 def _live_conflicts(control_root: str, marker: dict) -> list[dict]:
     """Return canonical still-open generations from a conflict fence."""
-    tasks_root = os.path.realpath(os.path.join(control_root, "doc", "harness", "tasks"))
+    tasks_roots = {os.path.realpath(os.path.join(root, "doc", "harness", "tasks"))
+                   for root in workspace_roots(control_root)}
     found = []
     raw = marker.get("conflicts")
-    if not isinstance(raw, list) or len(raw) != 2:
+    if not isinstance(raw, list) or not 2 <= len(raw) <= 257:
         return found
     for item in raw:
         if not isinstance(item, dict):
@@ -164,7 +166,7 @@ def _live_conflicts(control_root: str, marker: dict) -> list[dict]:
         run_id = str(item.get("run_id") or "")
         if (
             not TASK_RE.fullmatch(task_id)
-            or os.path.dirname(task_dir) != tasks_root
+            or os.path.dirname(task_dir) not in tasks_roots
             or os.path.basename(task_dir) != task_id
         ):
             continue
@@ -176,10 +178,11 @@ def _live_conflicts(control_root: str, marker: dict) -> list[dict]:
 
 def _conflict_task_dirs(control_root: str, marker: dict) -> list[str]:
     """Return structurally valid task directories named by a conflict fence."""
-    tasks_root = os.path.realpath(os.path.join(control_root, "doc", "harness", "tasks"))
+    tasks_roots = {os.path.realpath(os.path.join(root, "doc", "harness", "tasks"))
+                   for root in workspace_roots(control_root)}
     found = []
     raw = marker.get("conflicts")
-    if not isinstance(raw, list) or len(raw) != 2:
+    if not isinstance(raw, list) or not 2 <= len(raw) <= 257:
         return found
     for item in raw:
         if not isinstance(item, dict):
@@ -188,7 +191,7 @@ def _conflict_task_dirs(control_root: str, marker: dict) -> list[str]:
         task_id = str(item.get("task_id") or "")
         if (
             TASK_RE.fullmatch(task_id)
-            and os.path.dirname(task_dir) == tasks_root
+            and os.path.dirname(task_dir) in tasks_roots
             and os.path.basename(task_dir) == task_id
         ):
             found.append(task_dir)
@@ -258,6 +261,26 @@ def register_task_result(
     ):
         return False
     control_root = find_harness_root(cwd) or ""
+    roots = workspace_roots(control_root) if control_root else []
+    if not roots:
+        return False
+    data = _payload_data(payload)
+    tool_input = data.get("tool_input", {})
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except ValueError:
+            return False
+    requested_workspace = tool_input.get("workspace") if isinstance(tool_input, dict) else None
+    if requested_workspace is not None:
+        response = data.get("tool_response", data.get("tool_result", data.get("toolResult")))
+        candidate = response.get("structuredContent", response)
+        if candidate.get("workspace") != requested_workspace:
+            return False
+        try:
+            control_root = resolve_registered_worktree(roots[0], requested_workspace) or roots[0]
+        except (ValueError, RuntimeError):
+            return False
     expected_parent = os.path.realpath(os.path.join(control_root, "doc", "harness", "tasks"))
     canonical_task = os.path.realpath(task_dir)
     if (
@@ -269,13 +292,23 @@ def register_task_result(
     ):
         return False
     try:
-        with active_session_transaction(control_root):
-            marker = read_active_session_marker(control_root, thread_id)
-            lock_dirs = sorted(set(
-                [canonical_task] + _conflict_task_dirs(control_root, marker)
-            ))
+        with active_session_transaction(roots[0]), ExitStack() as workspace_locks:
+            roots = workspace_roots(roots[0])
+            if control_root not in roots:
+                return False
+            for root in sorted(roots[1:]):
+                workspace_locks.enter_context(active_session_transaction(root))
+            # One shared transaction serializes binding and conflict fencing
+            # across every validated checkout of this repository.
+            markers = {root: read_active_session_marker(root, thread_id) for root in roots}
+            bindings = {root: resolve_session_task_binding(root, thread_id) for root in roots}
+            lock_dirs = {canonical_task}
+            for root in roots:
+                lock_dirs.update(_conflict_task_dirs(root, markers[root]))
+                if bindings[root]:
+                    lock_dirs.add(bindings[root]["task_dir"])
             with ExitStack() as locks:
-                for locked_task in lock_dirs:
+                for locked_task in sorted(lock_dirs):
                     locks.enter_context(receipt_stream_transaction(locked_task))
                 control = read_task_control(canonical_task)
                 if (
@@ -283,34 +316,35 @@ def register_task_result(
                     or control.get("run_id") != run_id
                 ):
                     return False
-                live_conflicts = _live_conflicts(control_root, marker)
                 candidate_binding = {
                     "task_dir": canonical_task, "task_id": task_id, "run_id": run_id,
                 }
-                if len(live_conflicts) >= 2:
-                    return False
-                if len(live_conflicts) == 1:
-                    live = live_conflicts[0]
-                    if live != candidate_binding:
-                        write_binding_conflict_fence(
-                            control_root, thread_id, [live, candidate_binding],
-                        )
-                        invalidate_registration(control_root, thread_id)
-                        return False
-                existing = resolve_session_task_binding(control_root, thread_id)
-                if existing and os.path.realpath(existing["task_dir"]) != canonical_task:
-                    write_binding_conflict_fence(control_root, thread_id, [{
-                        "task_dir": os.path.realpath(existing["task_dir"]),
-                        "task_id": os.path.basename(existing["task_dir"]),
-                        "run_id": existing["run_id"],
-                    }, candidate_binding])
-                    invalidate_registration(control_root, thread_id)
+                live = []
+                for root in roots:
+                    live.extend(_live_conflicts(root, markers[root]))
+                    binding = resolve_session_task_binding(root, thread_id)
+                    if binding:
+                        live.append({"task_dir": binding["task_dir"],
+                                     "task_id": os.path.basename(binding["task_dir"]),
+                                     "run_id": binding["run_id"]})
+                distinct = {tuple(sorted(item.items())) for item in live}
+                different = next((item for item in live if item != candidate_binding), None)
+                if different or len(distinct) >= 2:
+                    conflicts = ([dict(item) for item in sorted(distinct)]
+                                 if len(distinct) >= 2 else [different, candidate_binding])
+                    for root in roots:
+                        if root == control_root or markers[root]:
+                            write_binding_conflict_fence(
+                                root, thread_id, conflicts,
+                            )
+                            invalidate_registration(root, thread_id)
                     if status_out is not None:
                         status_out.update({
                             "status": NOT_APPLICABLE,
                             "reason": "conflicting open tasks invalidated exact session binding",
                         })
                     return False
+                existing = resolve_session_task_binding(control_root, thread_id)
                 if not existing and not invalidate_registration(control_root, thread_id):
                     return False
                 write_active_marker(
@@ -385,6 +419,15 @@ def restore_watcher_registration(
         _record(NOT_APPLICABLE, missing)
         return False
     generation_bound = bind_fn is None and ensure_fn is ensure
+    bound_roots = (_call_with_deadline(
+        lambda: [root for root in workspace_roots(control_root)
+                 if resolve_session_task_binding(root, thread_id)], deadline, [],
+    ) if generation_bound else [])
+    if len(bound_roots) > 1:
+        _record(NOT_APPLICABLE, "conflicting workspace bindings")
+        return False
+    if bound_roots:
+        control_root = bound_roots[0]
     if bind_fn is None:
         bind_fn = (
             _bind_active_task_to_root_session

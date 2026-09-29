@@ -2792,7 +2792,7 @@ class TestRegistrationOutcomeIsTriState(unittest.TestCase):
             with mock.patch.object(
                 module, "restore_watcher_registration", lambda *a, **k: True,
             ), mock.patch.object(
-                module, "registration_host_live", lambda *a, **k: True,
+                module, "_watcher_host_live", lambda *a, **k: True,
             ), mock.patch.object(sys, "stdin", _BytesStdin(payload)):
                 self.assertEqual(module.main(), 0)
 

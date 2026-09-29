@@ -455,6 +455,16 @@ def observation(repo, item):
     return result
 
 
+def require_unused_task_ids(repo, requests, records):
+    ids = {x['task_id'] for data in records.values() for x in data['requests']}
+    for item in requests:
+        task_id = 'TASK__' + item['slug']
+        require(task_id not in ids
+                and not os.path.lexists(os.path.join(repo, 'doc/harness/archive/batch', task_id))
+                and not os.path.lexists(os.path.join(repo, 'doc/harness/tasks', task_id)),
+                'task/archive identity already used')
+
+
 def execute(args, directory, records):
     repo, batch_id = args.repo, args.batch_id
     path = os.path.join(directory, batch_id + '.json')
@@ -470,11 +480,9 @@ def execute(args, directory, records):
             return {'status': 'ok', 'batch': old}
         require(len(records) < MAX_BATCHES, 'batch history limit reached')
         ref, head = main_boundary(repo)
-        ids = {x['task_id'] for d in records.values() for x in d['requests']}
+        require_unused_task_ids(repo, normalized, records)
         for item in normalized:
             task_id = 'TASK__' + item['slug']
-            require(task_id not in ids and not os.path.lexists(os.path.join(repo, 'doc/harness/archive/batch', task_id))
-                    and not os.path.lexists(os.path.join(repo, 'doc/harness/tasks', task_id)), 'task/archive identity already used')
             resolved, _ = preflight(repo, item)
             item.update(status='queued', task_id=task_id, resolved_scopes=resolved)
         data = dict(schema_version=2 if any(x.get('submodules') for x in normalized) else 1, batch_id=batch_id, repo=repo, destination_ref=ref, initial_head=head,
@@ -510,6 +518,11 @@ def execute(args, directory, records):
         no_main_task(repo)
         claims, reasons = [], {}
         slots = data['max_leads'] - sum(x['status'] in {'reserved', 'running'} for x in data['requests'])
+        available = getattr(args, 'available_slots', None)
+        if available is not None:
+            require(isinstance(available, int) and not isinstance(available, bool)
+                    and available >= 0, 'available slots must be a nonnegative integer')
+            slots = min(slots, available)
         by_slug = {x['slug']: x for x in data['requests']}
         for item in data['requests']:
             if item['status'] != 'queued':
@@ -790,8 +803,11 @@ def main(argv=None):
     init = commands.add_parser('init')
     init.add_argument('--requests-file', required=True)
     init.add_argument('--max-leads')
-    for name in ('status', 'claim', 'close'):
+    for name in ('status', 'close'):
         commands.add_parser(name)
+    claim = commands.add_parser('claim')
+    claim.add_argument('--available-slots', type=int,
+                       help='Actual free host agent slots; further bounds lead reservations.')
     for name in ('bootstrap', 'bind', 'result', 'finish', 'recover', 'resume', 'abandon', 'release'):
         command = commands.add_parser(name)
         command.add_argument('--slug', required=True)

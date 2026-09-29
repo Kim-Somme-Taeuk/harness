@@ -12,7 +12,7 @@ invalidated_by_paths:
   - tests/test_bytecode_cache_cannot_disable_receipts.py
   - tests/conftest.py
   - tests/test_source_checkout_bytecode.py
-freshness_updated: 2026-09-18T08:10:49Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # Bytecode cache cannot disable receipts

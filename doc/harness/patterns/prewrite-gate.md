@@ -7,7 +7,7 @@ invalidated_by_paths:
   - plugin/scripts/_lib.py
   - plugin/hooks/hooks.json
 tier: 2
-freshness_updated: 2026-09-28T08:01:12Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # prewrite_gate
@@ -107,13 +107,23 @@ tool to route through (for example `write_plan` for `PLAN.md`).
 
 ## Cross-checkout protection
 
-A `harness:batch` lead runs with its cwd in a linked worktree
+A Claude `harness:batch` lead runs with its cwd in a linked worktree
 (`<main>/.claude/worktrees/<name>`). The gate's control root is then the
 worktree, so the main checkout and sibling worktrees lie outside it. Without
 this rule, writes to those checkouts' protected artifacts were allowed. The same
 applies to a main-checkout session writing into an out-of-tree worktree.
 
-How the gate handles a target outside the cwd's Harness root:
+Before ordinary target rules, the gate walks the target's lexical parents and
+validates a same-repository registered worktree using its canonical gitfile,
+back-pointer and Harness manifest. For a validated target it uses that
+checkout's root for C-05, plan-first, workflow-control, REQ and scope-lock
+checks, including when Codex's native cwd remains main. This also protects
+in-tree worktree task-local REVIEWS.jsonl. The original cwd root's symlink
+escape denial takes precedence; lexical traversal retains the owning worktree
+boundary when a symlink inside it points elsewhere.
+
+For targets not routed to a validated same-repository worktree, the gate
+handles a target outside the cwd's Harness root as follows:
 
 1. It skips targets whose name cannot be a protected artifact: the basename is
    not a `PROTECTED_ARTIFACTS` key, the path is not goal JSON, and it is not
@@ -132,10 +142,9 @@ How the gate handles a target outside the cwd's Harness root:
    - extra sentence: `The target belongs to another Harness checkout: <root>.`;
    - tail `path=`: relative to that other root.
 
-Only C-05 crosses checkouts. Plan-first, workflow-control-surface, REQ and
-scope-lock rules belong to the checkout that holds the active task. An ordinary
-source file of another checkout therefore stays a silent allow from a worktree
-cwd. So does that checkout's `plugin/scripts/prewrite_gate.py`.
+Only C-05 applies in this foreign-checkout fallback. Ordinary source files
+outside the selected root are allowed by that fallback. Validated registered
+worktree targets instead receive the full rules above using their own task.
 
 Behavior that does not change:
 - A cwd outside any Harness root keeps its early return.
@@ -145,10 +154,6 @@ Behavior that does not change:
   over the remaining paths of the same tool call.
 
 Known limits:
-- From the main checkout, an in-tree worktree is inside the main root, so the
-  in-root rules apply to it. The task-local `REVIEWS.jsonl` test is then
-  relative to the main checkout's task dir, so an in-tree worktree's
-  `REVIEWS.jsonl` is not denied from main.
 - A directory symlink inside a foreign root that points out of every Harness
   root is allowed.
 - A foreign root with an invalid manifest is not treated as a valid root, so

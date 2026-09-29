@@ -5,7 +5,7 @@ invalidated_by_paths:
   - plugin/scripts/drift_warn.py
   - plugin/mcp/harness_server.py
   - plugin/hooks/hooks.json
-freshness_updated: 2026-09-23T00:42:07Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — a harness that cannot record receipts must say so
@@ -125,7 +125,7 @@ install.
 With no explicit config directory, the helper first identifies the active
 runtime. Under Codex (`HARNESS_RUNTIME=codex` or a valid `CODEX_THREAD_ID`) it
 does not inspect `~/.claude/plugins/installed_plugins.json`; Codex readiness is
-clean only when the current root thread has a live, validated lifecycle-watcher
+clean only when the current coordinator thread has a live, validated lifecycle-watcher
 registration. Missing, failed, or indeterminate registration is non-clean and
 must warn without preventing review/QA lens launch. Under Claude, or when a Claude config
 directory is explicitly supplied, the all-candidates registered-tree inspection

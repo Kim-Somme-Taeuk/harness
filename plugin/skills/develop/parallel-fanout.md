@@ -42,7 +42,8 @@ Whenever two or more verification, judgment, or executor calls have no dependenc
 
 Concretely:
 - Issue every parallel `Agent(...)` call as a separate tool-use block in one assistant turn.
-- Collect every return value before mutating shared state (PROGRESS.md).
+- Collect each AC's required writer returns before promoting that AC in
+  PROGRESS.md; unrelated sibling results do not block completed-lane updates.
   Executors return status, changed paths, and blockers in their final response;
   the coordinator is the only writer to PROGRESS.md.
 - A `TeamCreate` + N `Task` worker spawns: emit `TeamCreate` in turn 1; emit all N `Task` calls in turn 2 — never split worker spawns across multiple turns.
@@ -107,6 +108,12 @@ spawn site is passing `name=` and should stop. See
 
 ## Batch cap
 
+Read `ready-lanes.md` and use the executable `parallel_dispatch.py` admission
+helper before spawning and after each completed lane. The configured cap is
+an upper bound on AC lanes; actual available host agent slots also bound every
+spawn, including paired test authors and nested workers. Refill ready lanes
+without an unrelated-sibling completion barrier.
+
 Read `develop.fanout_cap` from `doc/harness/manifest.yaml` once at Phase 3.0:
 
 ```yaml
@@ -137,8 +144,10 @@ cap C, for N>C spawn batches of up to C.
 Merge cost controls batch size only. It does not justify collapsing two or more
 independent ACs into one executor below the cap.
 
-Worst case concurrent agents: 1 ac-worker + 1 test-author + 3 sub-workers per
-lane = 5 x cap: 20 agents at the default cap 4, 40 agents at the maximum cap 8.
+Theoretical demand without a host bound is 1 ac-worker + 1 test-author + 3
+sub-workers per lane = 5 x cap: 20 agents at the default cap 4, 40 agents at the
+maximum cap 8. Never spawn that demand without actual available slots; nested
+workers use only explicitly assigned spare capacity.
 
 ---
 
@@ -267,8 +276,10 @@ Lane table notation: the `Files` cell lists both sets and the `Lane` cell
 notes "+test-author"; the Route vocabulary is unchanged (the pair shares its
 AC's `Agent(...)` row).
 
-Reconciliation, once the whole batch returns: the coordinator runs each
-paired AC's `**Tests:**` and full `Verify:` command on the combined tree and reconciles:
+Reconciliation starts when that AC's implementation and test author return,
+without waiting for unrelated siblings. The coordinator runs its scoped
+`**Tests:**`; a full-tree `Verify:` command waits for all relevant writers.
+Refill independent ready lanes after each verified AC, and reconcile:
 
 | Result | Handling |
 |--------|----------|

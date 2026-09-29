@@ -52,10 +52,10 @@ def test_codex_user_visible_skill_tree_contains_only_public_skills():
     internal = {path.parent.name for path in CODEX_INTERNAL_ROOT.glob("*/SKILL.md")}
 
     assert visible == CODEX_PUBLIC_SKILLS
-    assert internal == INTERNAL_SKILLS
+    assert internal == INTERNAL_SKILLS | {"batch"}
     assert _frontmatter(CODEX_SKILL_ROOT / "setup" / "SKILL.md").get("user-invocable") == "true"
     assert "user-invocable" not in _frontmatter(CODEX_SKILL_ROOT / "run" / "SKILL.md")
-    for skill in sorted(INTERNAL_SKILLS):
+    for skill in sorted(INTERNAL_SKILLS | {"batch"}):
         assert _frontmatter(CODEX_INTERNAL_ROOT / skill / "SKILL.md").get("user-invocable") == "false"
 
 

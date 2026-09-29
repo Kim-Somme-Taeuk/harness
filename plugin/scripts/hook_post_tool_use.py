@@ -141,8 +141,9 @@ def _goal_routing_hint(payload: bytes) -> str:
     return (
         "[harness-goal] Native Goal was created. Invoke $harness:run; before implementation call "
         "get_goal, then harness goal_start with that objective; call goal_context; "
-        "if no child task exists, call task_start then goal_add_task. Continue with "
-        "goal_next_task. Do not treat create_goal alone as harness activation."
+        "for independent work packs, call goal_add_task with batch_requests before task_start. "
+        "For a sequential child, call task_start then goal_add_task. Continue with "
+        "goal_next_task and follow its route. Do not treat create_goal alone as harness activation."
     )
 
 

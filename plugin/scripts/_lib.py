@@ -812,7 +812,7 @@ def start_harness_goal(
         })
 
 
-def add_goal_task(repo_root: str, task_id: str, *, title: str = "", status: str = "queued", task_dir: str = "") -> dict:
+def add_goal_task(repo_root: str, task_id: str, *, title: str = "", status: str = "queued", task_dir: str = "", batch_requests: list | None = None) -> dict:
   with goal_transaction(repo_root):
     current = read_current_goal(repo_root)
     if not current:
@@ -827,6 +827,27 @@ def add_goal_task(repo_root: str, task_id: str, *, title: str = "", status: str 
     tid = os.path.basename(canonical_dir)
     stored_task_dir = os.path.relpath(canonical_dir, repo_root).replace(os.sep, "/")
     tasks = current.get("tasks") if isinstance(current.get("tasks"), list) else []
+    batch_spec = None
+    if batch_requests is not None:
+        from goal_batch import make_spec
+        batch_spec = make_spec(repo_root, current["goal_id"], tid, batch_requests)
+        existing = next((task for task in tasks if isinstance(task, dict)
+                         and task.get("task_id") == tid), {})
+        if existing.get("batch") not in (None, batch_spec):
+            raise ValueError("Goal batch intake is immutable; use a new integration child")
+        if not existing.get("batch") and os.path.lexists(canonical_dir):
+            raise ValueError("declare the Goal work pack before creating its integration task")
+    new_ids = {tid}
+    if batch_spec is not None:
+        new_ids.update("TASK__" + item["slug"] for item in batch_spec["requests"])
+    for other in tasks:
+        if not isinstance(other, dict) or other.get("task_id") == tid:
+            continue
+        other_ids = {other.get("task_id")}
+        other_ids.update("TASK__" + item["slug"]
+                         for item in other.get("batch", {}).get("requests", []))
+        if new_ids & other_ids:
+            raise ValueError("Goal task identity already reserved by another child")
     updated = False
     for task in tasks:
         if isinstance(task, dict) and task.get("task_id") == tid:
@@ -835,6 +856,8 @@ def add_goal_task(repo_root: str, task_id: str, *, title: str = "", status: str 
             if status:
                 task["status"] = status
             task["task_dir"] = stored_task_dir
+            if batch_spec is not None:
+                task["batch"] = batch_spec
             updated = True
             break
     if not updated:
@@ -843,6 +866,7 @@ def add_goal_task(repo_root: str, task_id: str, *, title: str = "", status: str 
             "title": title or tid,
             "status": status or "queued",
             "task_dir": stored_task_dir,
+            **({"batch": batch_spec} if batch_spec is not None else {}),
         })
     current["tasks"] = tasks
     return write_goal_state(repo_root, current)
@@ -850,11 +874,28 @@ def add_goal_task(repo_root: str, task_id: str, *, title: str = "", status: str 
 
 def next_goal_task(repo_root: str) -> dict:
     current = read_current_goal(repo_root)
+    if current.get("status") != "active":
+        return {"goal": current, "task": None}
     tasks = current.get("tasks") if isinstance(current.get("tasks"), list) else []
     for task in tasks:
         if isinstance(task, dict) and task.get("status") in {"queued", "active"}:
-            return {"goal": current, "task": task}
+            result = {"goal": current, "task": task}
+            if "batch" in task:
+                from goal_batch import route
+                result["dispatch"] = route(repo_root, current["goal_id"], task["task_id"], task["batch"])
+            return result
     return {"goal": current, "task": None}
+
+
+def require_goal_batch_integrated(repo_root: str, task_id: str) -> None:
+    """Do not open or close an integration child before its work pack lands."""
+    current = read_current_goal(repo_root)
+    if current.get("status") != "active":
+        return
+    for task in current.get("tasks", []):
+        if isinstance(task, dict) and task.get("task_id") == task_id and "batch" in task:
+            from goal_batch import require_integrated
+            require_integrated(repo_root, current["goal_id"], task_id, task["batch"])
 
 
 def finish_harness_goal(repo_root: str, *, status: str = "complete") -> dict:
@@ -892,6 +933,9 @@ def finish_harness_goal(repo_root: str, *, status: str = "complete") -> dict:
             ):
                 blockers.append(task_id or "<missing task_id>")
             else:
+                if "batch" in task:
+                    from goal_batch import require_integrated
+                    require_integrated(repo_root, current["goal_id"], task_id, task["batch"])
                 validated.append((task_id, task_dir))
         if not blockers:
             for task_id, task_dir in validated:
@@ -2269,7 +2313,7 @@ def write_active_marker(repo_root, task_dir, session_id=None, *, publish_legacy=
 
 
 def write_binding_conflict_fence(repo_root, session_id, conflicts):
-    """Replace task authority with two exact conflicting task generations."""
+    """Replace task authority with the exact conflicting task generations."""
     if not _trusted_control_writer(marker=True):
         raise _control_writer_error("binding recovery requires the task-control runtime", marker=True)
     sid = sanitize_session_id(session_id)

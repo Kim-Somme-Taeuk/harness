@@ -100,8 +100,10 @@ def goal_hint_main() -> int:
     sys.stdout.write(
         "[harness-goal] Native Goal was created. Invoke $harness:run; before "
         "implementation call get_goal, then harness goal_start with that "
-        "objective; call goal_context; if no child task exists, call task_start "
-        "then goal_add_task. Continue with goal_next_task. Do not treat "
+        "objective; call goal_context; declare independent work with "
+        "goal_add_task with batch_requests before task_start, then follow "
+        "goal_next_task dispatch. For ordinary work, create and attach a child "
+        "task with task_start then goal_add_task. Do not treat "
         "create_goal alone as harness activation."
     )
     return 0

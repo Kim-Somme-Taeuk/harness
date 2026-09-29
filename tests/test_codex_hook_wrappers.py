@@ -78,6 +78,7 @@ class TestCodexHookWrappers(unittest.TestCase):
         self.assertIn("goal_start", context)
         self.assertIn("task_start", context)
         self.assertIn("goal_add_task", context)
+        self.assertIn("goal_add_task with batch_requests before task_start", context)
 
     def test_post_tool_use_create_goal_is_silent_outside_harness_repo(self):
         mod = _load("hook_post_tool_use")

@@ -1,6 +1,6 @@
 ---
 freshness: current
-freshness_updated: 2026-09-28T08:01:12Z
+freshness_updated: 2026-09-29T05:30:50Z
 invalidated_by_paths:
   - plugin/scripts/prewrite_gate.py
 ---
@@ -66,6 +66,10 @@ exits 0 in every case; see `prewrite-gate.md` for the envelope.
    logged as `gate-parse-fail` in `doc/harness/learnings.jsonl`. A parse or
    enforcement exception is logged the same way and the write is allowed
    (C-12).
+
+A validated same-repository worktree target uses that checkout's active task
+and relative paths even when the native cwd remains main; see the target-root
+routing in `prewrite-gate.md`.
 
 Matching is `fnmatch` on the repo-relative path, plus a directory prefix match
 for entries ending in `/` and a `<entry>/**` match.

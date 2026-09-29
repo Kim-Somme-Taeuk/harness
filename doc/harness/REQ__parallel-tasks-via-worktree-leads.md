@@ -1,7 +1,7 @@
 ---
 tags: [harness, lifecycle, worktree, batch, mcp, contracts]
-summary: 한 Claude 세션이 과제마다 격리 worktree 리드 서브에이전트를 띄워 여러 harness 과제를 병렬로 진행한다. MCP task 도구는 검증된 workspace 인자로 worktree 안의 과제를 다루고, 세션 식별은 본 체크아웃에 남는다. 병합 후 통합 과제가 전체 검증과 설치를 맡는다.
-updated: 2026-09-28
+summary: 한 세션이 과제마다 worktree 리드를 띄워 병렬로 진행한다. Claude는 native isolation을, Codex는 검증된 workspace와 native coordinator 신원 연결을 사용한다. 병합 후 통합 과제가 전체 검증과 설치를 맡는다.
+updated: 2026-09-29
 freshness: current
 invalidated_by_paths:
   - plugin/mcp/harness_server.py
@@ -16,7 +16,7 @@ invalidated_by_paths:
   - plugin/agents/task-lead.md
   - plugin/skills/batch/SKILL.md
   - CONTRACTS.md
-freshness_updated: 2026-09-29T00:49:58Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — parallel tasks in one session via worktree leads
@@ -49,6 +49,11 @@ freshness_updated: 2026-09-29T00:49:58Z
   task, and each lead runs in its own linked git worktree (Claude Code
   `isolation: worktree`, under `<repo>/.claude/worktrees/<name>`; see
   "Worktree location").
+- Codex uses the same pool with explicitly created registered worktrees and
+  native lead agents. Its task tools pass canonical workspace while native cwd
+  may remain main; trusted hooks bind the authenticated coordinator to the
+  worktree. See `plugin-codex/internal-skills/batch/SKILL.md` and the
+  [Codex receipt protocol](patterns/ADR__single-direct-codex-receipt-protocol.md).
 - Each linked worktree is a separate checkout with its own write focus (C-09).
   Task state under `doc/harness/tasks/` is gitignored, so every worktree has
   its own task namespace, focus markers, and `RECEIPTS.jsonl`.
@@ -245,20 +250,27 @@ linked worktree of the repository the MCP server controls:
   `harness_root_resolution(workspace)` returns the workspace itself.
 
 Anything else is refused with `WORKSPACE_NOT_REGISTERED_WORKTREE` and nothing
-is written; a non-string value is refused with `reason: wrong_type`. On the
-Claude runtime a `workspace` equal to the control root is the same as omitting
-it. On the Codex runtime any `workspace` is refused
-(`reason: unsupported_runtime`). Omitting it keeps the previous behavior
-exactly.
+is written; a non-string value is refused with `reason: wrong_type`. A
+`workspace` equal to the control root resolves to that root. Codex echoes an
+explicit workspace and defers exact native identity to PostToolUse, even when
+the shared MCP process has a thread ID. Omitting workspace selects the control
+root. Without an exact environment thread identity that call also defers;
+with one, main retains eager binding under shared session locks that exclude
+conflicting open bindings in other workspaces.
 
 Task paths, focus markers, scaffolds, and `request_file` resolve under the
 workspace. Session identity (the Claude session hint), watcher diagnostics, and
 gate-warn learnings stay on the control root, because only the main checkout
-receives `UserPromptSubmit` and every lead shares the main session id.
+receives `UserPromptSubmit` and every Claude lead shares the main session id.
+Codex leads instead have distinct authenticated native coordinator threads;
+their exact markers and registrations live under their own task workspaces.
 
-Hooks need no argument: they already resolve the repo from the payload `cwd`,
+Claude hooks need no argument: they already resolve the repo from the payload `cwd`,
 and a nested reviewer/QA subagent spawned by a lead runs with the worktree as
 its cwd, so its receipts bind to the worktree task.
+Codex instead uses the exact echoed workspace/task/run and native hook identity;
+the authenticated lead's direct reviewer/QA children inherit that binding.
+Native cwd alone does not select a Codex worktree task.
 
 ## Host visibility
 
@@ -553,18 +565,26 @@ remain outside S1 and use the ordinary sequential route.
   lead oversubscribes CPU and IO, so leads pass `-n 4`.
 - Leads run the installed harness plugin, not the `plugin/` tree in their own
   worktree.
-- Claude Code only. Goal tools stay on the control root; batch leads are not
+- Claude uses native isolated leads; Codex uses registered worktrees and
+  authenticated native coordinator ancestry with explicit workspace binding.
+  The Codex internal batch workflow requires actual spawn/continuation
+  capabilities and reserves room for independent review/QA. Goal tools stay on the control root; batch leads are not
   Goal children. `task_close` links a closed task only to the Goal of the
   checkout that owns it, and a lead's worktree has no Goal, so closing a lead
-  never changes the coordinator's Goal. The MCP server refuses `workspace` on
-  the Codex runtime (`reason: unsupported_runtime`).
+  never changes the coordinator's Goal. Goal work packs link to one canonical
+  integration child; it opens only after all requests integrate and the pool
+  closes. Codex MCP returns canonical workspace without eagerly binding its
+  own process identity; exact PostToolUse/native rollout validation owns that
+  binding. Missing identity never grants a receipt or successful close.
 - Cross-checkout protection: when a lead's Edit/Write target lies outside its
   worktree, the prewrite gate resolves the target's own harness root and
   applies the C-05 protected-artifact rules there, so the main checkout's or a
   sibling worktree's `TASK.json`/`PLAN.md`/`RECEIPTS.jsonl`/`REVIEWS.jsonl`,
-  goal state, and focus markers are denied from a lead. Ordinary source files
-  of another checkout are not gated (Claude Code's worktree isolation refuses
-  such Write calls, observed above), and C-05 leaves Bash unguarded. Remaining
+  goal state, and focus markers are denied from a lead. Validated same-repository
+  worktree targets receive that checkout's source gates as well, even when native
+  cwd remains main; the original symlink escape denial still takes precedence.
+  Other foreign-checkout source targets remain outside the C-05 fallback,
+  and Bash remains unguarded. Remaining
   limits are listed in `doc/harness/patterns/prewrite-gate.md`
   ("Cross-checkout protection").
 - A failed or blocked lead's worktree is kept and reported while its work is
@@ -620,7 +640,7 @@ and blocker.
 
 - `tests/test_worktree_workspace.py`: accepted registered worktree; refusals for
   plain directory, other repository, relative/symlinked path, missing manifest,
-  forged back-pointer, non-string value, and the Codex runtime; control root
+  forged back-pointer and non-string value; Codex routing defers exact binding; control root
   treated as omitted; marker file named after the control-root session hint;
   `task_blocked` and full-lifecycle `task_close` leave the main checkout
   byte-identical; a lead close never touches the coordinator Goal; hook

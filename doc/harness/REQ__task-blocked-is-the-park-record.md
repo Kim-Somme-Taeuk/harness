@@ -8,6 +8,7 @@ invalidated_by_paths:
   - plugin/hooks/hooks.json
   - CONTRACTS.md
   - plugin/skills/setup/templates/CONTRACTS.md
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — task_blocked is the park record, not a turn-end escape

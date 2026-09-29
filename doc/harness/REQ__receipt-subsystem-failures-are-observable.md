@@ -14,7 +14,7 @@ invalidated_by_paths:
   - tests/test_task_context_binds_resuming_session.py
   - tests/regression/task__unified_install/test_install_py.py
   - tests/conftest.py
-freshness_updated: 2026-09-28T08:01:12Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — 영수증 서브시스템의 실패는 관측 가능하다
@@ -271,9 +271,14 @@ current_session_id()` 를 한 번 구한 뒤, 태스크 상태가 `open` 이고
 열려 있지 않은 태스크를 가리키거나, 이미 이 `task_dir` 로 resolve 될 때 —
 `write_active_marker(repo_root, td, session_id=session_id)` 를 호출한다.
 판정과 쓰기가 같은 `session_id` 를 쓰는 것이 이 구현의 핵심 불변이다.
-(2026-09-27 보강: task 도구에 `workspace` 가 오면 hint 는 여전히 control root
+(Claude 경로, 2026-09-27 보강: task 도구에 `workspace` 가 오면 hint 는 여전히 control root
 에서 읽고, 판정과 마커 쓰기는 그 worktree 를 `repo_root` 로 삼는다 — 불변은 같다.
 `doc/harness/REQ__parallel-tasks-via-worktree-leads.md` 참고.)
+Codex의 명시적 workspace 호출과 exact 환경 thread ID 없는 main 호출은
+성공한 task 결과와 trusted native PostToolUse 신원으로 exact 바인딩한다.
+exact 환경 identity가 있는 main 호출은 공유 세션 잠금 안에서 다른 worktree의
+열린 바인딩을 배제한 뒤 eager 바인딩을 유지한다. hint는 사용하지 않는다. 현재 규약은
+`patterns/ADR__single-direct-codex-receipt-protocol.md`를 따른다.
 다른 허용 항목, `authorized()`, `_lib` 의 어댑터 정체성 guard 는
 건드리지 않았다.
 

@@ -17,6 +17,8 @@ try:
 except ImportError:  # pragma: no cover - Codex currently ships POSIX hooks
     fcntl = None
 import json
+import io
+from itertools import islice
 import os
 from pathlib import Path
 import re
@@ -33,6 +35,7 @@ sys.path.insert(0, SCRIPTS_DIR)
 
 from _lib import (  # type: ignore
     _REVIEW_DETAIL_MAX_BYTES,
+    _read_regular_text_file,
     _infer_receipt_lens,
     active_session_transaction,
     extract_qa_verdict,
@@ -46,11 +49,12 @@ from _lib import (  # type: ignore
     task_control_status,
     uuid7_timestamp_ms,
     resolve_active_task_dir,
+    resolve_registered_worktree,
 )
 
 THREAD_RE = re.compile(r"^[0-9a-fA-F-]{16,80}$")
 CALL_RE = re.compile(r"^[A-Za-z0-9_.-]{6,160}$")
-AGENT_PATH_RE = re.compile(r"^/root/[A-Za-z0-9_.-]{1,120}$")
+AGENT_PATH_RE = re.compile(r"^/root(?:/[A-Za-z0-9_.-]{1,120}){1,16}$")
 TASK_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 TASK_ID_RE = re.compile(r"^TASK__[A-Za-z0-9_.-]{1,180}$")
 # A 2 MiB UTF-8 final can expand sixfold when control characters are escaped
@@ -64,7 +68,7 @@ REGISTRATION_TTL_SECONDS = IDLE_SECONDS
 MAX_WATCHER_THREADS = 16
 MAX_RECORD_OBSERVATION_ATTEMPTS = 3
 RUNTIME_SUBDIR = os.path.join("harness", "codex-watchers")
-REGISTRATION_VERSION = 12
+REGISTRATION_VERSION = 13
 REGISTRATION_OWNER = "codex_root_hook"
 
 
@@ -234,24 +238,195 @@ def _load_json_line(raw: bytes) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _root_meta_from_handle(handle: Any, thread_id: str, session_cwd: str) -> bool:
+def _native_meta(handle: Any) -> dict[str, Any]:
     handle.seek(0)
-    for _ in range(8):
-        raw = handle.readline(MAX_LINE_BYTES + 1)
-        if not raw:
-            break
-        event = _load_json_line(raw)
-        if not event or event.get("type") != "session_meta":
-            continue
-        payload = event.get("payload") or {}
-        if (
-            str(payload.get("id") or "") == thread_id
-            and str(payload.get("session_id") or "") == thread_id
-            and os.path.realpath(str(payload.get("cwd") or "")) == session_cwd
-            and payload.get("thread_source") != "subagent"
+    event = _load_json_line(handle.readline(MAX_LINE_BYTES + 1))
+    payload = event.get("payload") if event and event.get("type") == "session_meta" else None
+    return payload if isinstance(payload, dict) else {}
+
+
+class _AncestryPending(RuntimeError):
+    """A native parent changed while its ancestry proof was being read."""
+
+
+def _coordinator_identity(thread_id: str, session_cwd: str, seen=()) -> dict[str, Any]:
+    """Authenticate every edge against native metadata and parent's spawn records."""
+    if thread_id in seen or len(seen) > 16:
+        return {}
+    path = _find_rollout(thread_id)
+    opened = _open_trusted_file(path, _sessions_root(), max_size=MAX_CHILD_BYTES) if path else None
+    if opened is None:
+        return {}
+    handle, _ = opened
+    try:
+        meta = _native_meta(handle)
+        if meta.get("id") != thread_id or os.path.realpath(str(meta.get("cwd") or "")) != session_cwd:
+            return {}
+        if meta.get("thread_source") != "subagent":
+            if meta.get("session_id") != thread_id or meta.get("parent_thread_id"):
+                return {}
+            return {"session_id": thread_id, "agent_path": "/root", "depth": 0}
+        source = meta.get("source")
+        spawn = source.get("subagent", {}).get("thread_spawn", {}) if isinstance(source, dict) else {}
+        parent_id = meta.get("parent_thread_id")
+        if not isinstance(parent_id, str) or spawn.get("parent_thread_id") != parent_id:
+            return {}
+        parent = _coordinator_identity(parent_id, session_cwd, (*seen, thread_id))
+        agent_path = str(meta.get("agent_path") or "")
+        if not parent or not AGENT_PATH_RE.fullmatch(agent_path) or (
+            meta.get("session_id") != parent["session_id"]
+            or spawn.get("agent_path") != agent_path
+            or type(spawn.get("depth")) is not int
+            or spawn.get("depth") != parent["depth"] + 1
+            or agent_path.rsplit("/", 1)[0] != parent["agent_path"]
         ):
-            return True
-    return False
+            return {}
+        if not _parent_spawn_proof(parent_id, thread_id, agent_path):
+            return {}
+        return {"session_id": parent["session_id"], "agent_path": agent_path, "depth": parent["depth"] + 1}
+    finally:
+        valid = _path_matches_handle(path, _sessions_root(), handle)
+        handle.close()
+        if not valid:
+            return {}
+
+
+# Cached proofs never outlive any metadata/content change to the trusted parent
+# file. Descriptor identity and path safety are checked even on cache hits.
+_PARENT_SPAWN_CACHE: dict[tuple[str, str, str], tuple[tuple[int, ...], bool]] = {}
+_PARENT_SPAWN_LOCK = threading.Lock()
+
+
+def _file_generation(info: Any) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _parent_spawn_proof(parent_id: str, thread_id: str, agent_path: str) -> bool:
+    path = _find_rollout(parent_id)
+    opened = _open_trusted_file(path, _sessions_root(), max_size=MAX_CHILD_BYTES) if path else None
+    if opened is None:
+        return False
+    handle, info = opened
+    handle = io.BufferedReader(handle, buffer_size=1024 * 1024)
+    key = (str(path), thread_id, agent_path)
+    generation = _file_generation(info)
+    try:
+        with _PARENT_SPAWN_LOCK:
+            cached = _PARENT_SPAWN_CACHE.get(key)
+        if cached and cached[0] == generation:
+            if not _path_matches_handle(path, _sessions_root(), handle):
+                return False
+            if _file_generation(os.fstat(handle.fileno())) != generation:
+                raise _AncestryPending()
+            return cached[1]
+        task_name = agent_path.rsplit("/", 1)[1]
+        child_bytes = thread_id.encode("ascii")
+        call_ids = set()
+        for raw in handle:
+            if len(raw) > MAX_LINE_BYTES:
+                return False
+            if not raw.endswith(b"\n"):
+                raise _AncestryPending()
+            if b'"SubAgentActivity"' not in raw or child_bytes not in raw:
+                continue
+            event = _load_json_line(raw)
+            if not event:
+                return False
+            activity = _spawn_activity(event)
+            if activity and activity[1:] == (thread_id, agent_path):
+                call_ids.add(activity[0])
+        if len(call_ids) != 1:
+            if _file_generation(os.fstat(handle.fileno())) != generation:
+                raise _AncestryPending()
+            return False
+        call_bytes = next(iter(call_ids)).encode("ascii")
+        handle.seek(0)
+        calls, outputs, activities, order = {}, {}, {}, {}
+        for raw in handle:
+            if len(raw) > MAX_LINE_BYTES:
+                return False
+            if not raw.endswith(b"\n"):
+                raise _AncestryPending()
+            # Decode only exact candidate call IDs. Both passes stay bounded;
+            # strict structured parsing remains the authority, never this filter.
+            if call_bytes not in raw:
+                continue
+            event = _load_json_line(raw)
+            if not event:
+                return False
+            for value, target, kind in (
+                (_spawn_call(event, lens_only=False), calls, "call"),
+                (_spawn_output(event), outputs, "output"),
+                (_spawn_activity(event), activities, "activity"),
+            ):
+                if value:
+                    target.setdefault(value[0], []).append(value[1:])
+                    order.setdefault(value[0], []).append(kind)
+        if not _path_matches_handle(path, _sessions_root(), handle):
+            return False
+        if _file_generation(os.fstat(handle.fileno())) != generation:
+            raise _AncestryPending()
+        matches = [key for key, value in calls.items()
+                   if value == [(task_name,)]
+                   and outputs.get(key) == [(agent_path,)]
+                   and activities.get(key) == [(thread_id, agent_path)]
+                   and order.get(key) == ["call", "activity", "output"]]
+        valid = len(matches) == 1
+        with _PARENT_SPAWN_LOCK:
+            if len(_PARENT_SPAWN_CACHE) >= 256:
+                _PARENT_SPAWN_CACHE.clear()
+            _PARENT_SPAWN_CACHE[key] = (generation, valid)
+        return valid
+    finally:
+        handle.close()
+
+
+def _root_meta_from_handle(handle: Any, thread_id: str, session_cwd: str) -> bool:
+    meta = _native_meta(handle)
+    if meta.get("thread_source") == "subagent":
+        try:
+            return bool(_coordinator_identity(thread_id, session_cwd))
+        except _AncestryPending:
+            return False
+    return bool(meta.get("id") == thread_id and meta.get("session_id") == thread_id
+                and not meta.get("parent_thread_id")
+                and os.path.realpath(str(meta.get("cwd") or "")) == session_cwd)
+
+
+def workspace_roots(control_root: str) -> list[str]:
+    """Enumerate only revalidated linked worktrees, with a bounded registry scan."""
+    root = os.path.realpath(control_root)
+    gitfile = Path(root) / ".git"
+    if gitfile.is_file():
+        try:
+            target = _read_regular_text_file(str(gitfile), max_size=4096).strip().removeprefix("gitdir: ")
+            common = (Path(root) / target).resolve().parent.parent
+            main = str(common.parent)
+            if resolve_registered_worktree(main, root) == root:
+                root = main
+        except (OSError, ValueError, RuntimeError):
+            return [root]
+    found = [root]
+    registry = Path(root) / ".git" / "worktrees"
+    if registry.is_dir() and not registry.is_symlink():
+        entries = list(islice(registry.iterdir(), 257))
+        if len(entries) > 256:
+            return []
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    continue
+                target = str(Path(_read_regular_text_file(str(entry / "gitdir"), max_size=4096).strip()).parent)
+                if target not in found and resolve_registered_worktree(root, target) == target:
+                    found.append(target)
+            except (OSError, ValueError, RuntimeError):
+                continue
+    return found
+
+
+def _workspace_matches(session_cwd: str, repo_root: str) -> bool:
+    native_root = _authorized_control_root(session_cwd)
+    return bool(native_root and repo_root in workspace_roots(native_root))
 
 
 def _root_meta(path: Path, thread_id: str, session_cwd: str) -> bool:
@@ -444,7 +619,7 @@ def _valid_current_registration(
         and (not task_id or state.get("task_id") == task_id)
         and (not run_id or state.get("run_id") == run_id)
         and isinstance(session_cwd, str)
-        and _authorized_control_root(session_cwd) == repo_root
+        and _workspace_matches(session_cwd, repo_root)
         and isinstance(offset, int)
         and not isinstance(offset, bool)
         and offset >= 0
@@ -562,7 +737,7 @@ def ensure(
         return False
     repo_root = os.path.realpath(repo_root)
     session_cwd = os.path.realpath(session_cwd or repo_root)
-    if _authorized_control_root(session_cwd) != repo_root:
+    if not _workspace_matches(session_cwd, repo_root):
         return False
     if not _registration_binding_matches(repo_root, thread_id, task_id, run_id):
         return False
@@ -686,7 +861,7 @@ def registrations(repo_root: str) -> list[dict[str, Any]]:
             or os.path.basename(str(binding.get("task_dir") or "")) != task_id
             or binding.get("run_id") != run_id
             or not isinstance(session_cwd, str)
-            or _authorized_control_root(session_cwd) != repo_root
+            or not _workspace_matches(session_cwd, repo_root)
             or path.name != f"{thread_id}.json"
             or rollout is None
             or state.get("rollout") != str(rollout)
@@ -846,6 +1021,12 @@ def _require_task_binding(
     if not binding.get("task_dir") or not binding.get("run_id"):
         raise _BindingUnavailable("binding unavailable")
     if expected_generation is not None:
+        roots = workspace_roots(repo_root)
+        if any(root != repo_root and _active_task_binding_for_session(root, root_id)
+               for root in roots):
+            raise _BindingUnavailable("conflicting workspace bindings")
+        if not _workspace_matches(session_cwd or repo_root, repo_root):
+            raise _BindingUnavailable("workspace binding unavailable")
         current = _current_registration_generation(
             repo_root, root_id, session_cwd or repo_root,
         )
@@ -894,7 +1075,7 @@ def _json_arguments(payload: dict[str, Any]) -> dict[str, Any] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
-def _spawn_call(event: dict[str, Any]) -> tuple[str, str] | None:
+def _spawn_call(event: dict[str, Any], *, lens_only: bool = True) -> tuple[str, str] | None:
     payload = _event_payload(event, "response_item")
     if (
         not payload
@@ -913,7 +1094,7 @@ def _spawn_call(event: dict[str, Any]) -> tuple[str, str] | None:
     if not TASK_NAME_RE.fullmatch(task_name):
         return None
     lens = _infer_receipt_lens(task_name)
-    if not lens.startswith(("review-", "qa-", "ux-")):
+    if lens_only and not lens.startswith(("review-", "qa-", "ux-")):
         return None
     return call_id, task_name
 
@@ -939,7 +1120,7 @@ def _spawn_output(event: dict[str, Any]) -> tuple[str, str] | None:
     if not CALL_RE.fullmatch(call_id):
         return None
     output = _structured_tool_output(payload.get("output"))
-    if not isinstance(output, dict):
+    if not isinstance(output, dict) or output.get("isError") is True or output.get("success") is False:
         return None
     identity = str(
         output.get("agent_id")
@@ -973,12 +1154,12 @@ def _spawn_activity(event: dict[str, Any]) -> tuple[str, str, str] | None:
     return call_id, child_id, agent_path
 
 
-def _root_delivery(event: dict[str, Any]) -> tuple[str, str] | None:
+def _root_delivery(event: dict[str, Any], coordinator_path: str = "/root") -> tuple[str, str] | None:
     payload = _event_payload(event, "response_item")
     if not payload or payload.get("type") != "agent_message":
         return None
     author = str(payload.get("author") or "")
-    if not _valid_agent_identity(author) or payload.get("recipient") != "/root":
+    if not _valid_agent_identity(author) or payload.get("recipient") != coordinator_path:
         return None
     text_parts = []
     for item in payload.get("content") or []:
@@ -998,6 +1179,15 @@ def _child_status(
     agent_path: str,
     session_cwd: str,
 ) -> tuple[str, Path | None, str]:
+    try:
+        coordinator = ({"session_id": root_id, "agent_path": "/root", "depth": 0}
+                       if agent_path.count("/") == 2 else _coordinator_identity(root_id, session_cwd))
+    except _AncestryPending:
+        return "pending", None, ""
+    if not coordinator:
+        return "invalid", None, ""
+    if agent_path.rsplit("/", 1)[0] != coordinator["agent_path"]:
+        return "invalid", None, ""
     path = _find_rollout(child_id)
     trust_root = _sessions_root()
     if path is None:
@@ -1028,17 +1218,19 @@ def _child_status(
                 source = payload.get("source") or {}
                 spawn = source.get("subagent", {}).get("thread_spawn", {}) if isinstance(source, dict) else {}
                 if (
-                    payload.get("session_id") == root_id
+                    payload.get("thread_source") == "subagent"
+                    and payload.get("session_id") == coordinator["session_id"]
                     and payload.get("parent_thread_id") == root_id
                     and os.path.realpath(str(payload.get("cwd") or "")) == session_cwd
                     and payload.get("agent_path") == agent_path
                     and spawn.get("parent_thread_id") == root_id
                     and spawn.get("agent_path") == agent_path
-                    and spawn.get("depth") == 1
+                    and type(spawn.get("depth")) is int
+                    and spawn.get("depth") == coordinator["depth"] + 1
                 ):
                     matching_meta += 1
             if event.get("type") == "response_item" and payload.get("type") == "agent_message":
-                if payload.get("author") == "/root" and payload.get("recipient") == agent_path:
+                if payload.get("author") == coordinator["agent_path"] and payload.get("recipient") == agent_path:
                     content = payload.get("content") or []
                     texts = [
                         str(item.get("text") or "") for item in content
@@ -1220,6 +1412,17 @@ class Watcher:
             return
         if item.get("invalid") or item.get("started"):
             return
+        try:
+            identity = _coordinator_identity(self.root_id, self.session_cwd)
+        except _AncestryPending:
+            return
+        if not identity and item["agent_path"].count("/") > 2:
+            self._invalidate(item, "coordinator ancestry is unavailable")
+            return
+        coordinator_path = identity.get("agent_path", "/root")
+        if item["agent_path"] != coordinator_path + "/" + item["task_name"]:
+            self._invalidate(item, "spawn path was not the exact coordinator child")
+            return
         task_dir = str(item.get("task_dir") or "")
         binding = _require_task_binding(
             self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
@@ -1320,7 +1523,7 @@ class Watcher:
 
     def _maybe_complete(self, item: dict[str, Any]) -> None:
         root_final = str(item.get("root_final") or "")
-        if not root_final or item.get("completed") or item.get("invalid"):
+        if not item.get("started") or not root_final or item.get("completed") or item.get("invalid"):
             return
         binding = _require_task_binding(
             self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
@@ -1442,14 +1645,24 @@ class Watcher:
             self._set_once(item, "output_path", agent_path)
             self._maybe_start(call_id)
             return
-        delivery = _root_delivery(event)
+        if not payload or payload.get("type") != "agent_message":
+            return
+        recipient = str(payload.get("recipient") or "")
+        delivery = _root_delivery(event, recipient)
         if not delivery:
             return
         agent_path, root_final = delivery
+        # Preserve this original observed delivery across an ancestry retry.
+        # The native coordinator/child proof and final equality remain mandatory
+        # before _maybe_complete can publish any receipt.
+        if recipient != agent_path.rsplit("/", 1)[0]:
+            return
         self._deliver(agent_path, root_final)
 
     def _deliver(self, agent_path: str, root_final: str) -> dict[str, Any] | None:
-        item = self.by_agent.get(agent_path)
+        item = self.by_agent.get(agent_path) or next(
+            (entry for entry in self.calls.values() if entry.get("agent_path") == agent_path), None,
+        )
         if not item:
             return None
         if item.get("root_final") is not None:
@@ -1516,7 +1729,7 @@ def watch(
     """Tail one registered root rollout inside an MCP-owned thread."""
     repo_root = os.path.realpath(repo_root)
     session_cwd = os.path.realpath(session_cwd or repo_root)
-    if _authorized_control_root(session_cwd) != repo_root:
+    if not _workspace_matches(session_cwd, repo_root):
         return 2
     path = Path(rollout)
     trust_root = _sessions_root()
@@ -1741,7 +1954,7 @@ class WatcherManager:
             with self._lock:
                 recovering = bool(self.worker_errors.get(thread_id))
             result = watch(
-                self.repo_root,
+                str(registration["repo_root"]),
                 thread_id,
                 str(registration["rollout"]),
                 int(registration["offset"]),
@@ -1783,7 +1996,8 @@ class WatcherManager:
         """Start one daemon worker for every newly registered root thread."""
         started = 0
         try:
-            items = registrations(self.repo_root)
+            items = [dict(item, repo_root=root) for root in workspace_roots(self.repo_root)
+                     for item in registrations(root)]
         except Exception:
             return 0
         with self._lock:
@@ -1812,7 +2026,7 @@ class WatcherManager:
                 generation = _registration_generation(item)
                 if self.seen.get(thread_id) == generation:
                     continue
-                lease = _acquire_registration_lease(self.repo_root, thread_id)
+                lease = _acquire_registration_lease(str(item["repo_root"]), thread_id)
                 if lease is None:
                     continue
                 self.seen[thread_id] = generation

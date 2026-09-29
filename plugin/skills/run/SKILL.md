@@ -71,8 +71,22 @@ harness task yourself and continue through this flow.
 
 ### Native Goal continuation
 
-Add Goal children by dependency/risk; future IDs are valid. Use `goal_add_task`;
-`goal_next_task` selects first queued/active. Present the selected next task as status.
+Before opening a main-checkout task, cut a broad Goal into declared requests
+with literal path scopes and dependencies. When two or more requests can run
+independently, call `goal_add_task` with a new integration child ID and
+`batch_requests: [{slug, request, scopes, depends_on}]`; future child IDs are
+valid. This records intent without opening the integration task. Do not require
+the user to ask for batch mode. Reuse known file ownership, never infer it from
+titles. Unsupported or genuinely dependent work keeps the ordinary task route.
+
+Call `goal_next_task` and follow its `dispatch`: `route: batch` runs
+`harness:batch` using the exact returned batch ID and requests, resuming that
+pool if it exists. Do not open the integration child while leads run.
+`route: integration` starts that canonical child and reviews/tests the combined
+result before close. Goal completion rechecks integration/archive evidence and
+the closed integration child; abandoned work never counts as completion.
+Without a work pack, `goal_next_task` selects first queued/active as before.
+Present the selected route and effective capacity as status.
 
 ### Phase 0: Resume detection
 

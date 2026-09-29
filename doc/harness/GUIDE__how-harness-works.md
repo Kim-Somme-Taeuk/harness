@@ -67,7 +67,7 @@ invalidated_by_paths:
   - doc/CLAUDE.md
   - doc/harness/critics/
   - doc/harness/review-overlays/
-freshness_updated: 2026-09-29T00:49:58Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # GUIDE — 하네스는 어떻게 동작하는가
@@ -423,11 +423,11 @@ TASK.json 유효?
 |---|---|---|---|
 | `goal_start` | **objective**, goal_id, source | Goal 생성·동기화. `goals/<GOAL__id>.json`, `current.json` | 예 |
 | `goal_context` | 없음 | 활성 Goal과 child 목록 | 아니오 |
-| `goal_add_task` | **task_id**, title, status, task_dir | child upsert. 활성 Goal이 있어야 하고, terminal Goal이면 거부 | 예 |
-| `goal_next_task` | 없음 | 첫 번째 queued 또는 active child | 아니오 |
+| `goal_add_task` | **task_id**, title, status, task_dir, batch_requests | child upsert. batch_requests는 독립 작업 묶음을 선언한다. 활성 Goal이 있어야 하고, terminal Goal이면 거부 | 예 |
+| `goal_next_task` | 없음 | 첫 번째 queued 또는 active child; batch child는 batch/integration dispatch를 함께 반환 | 아니오 |
 | `goal_finish` | status(complete/blocked) | Goal 종료. 활성 Goal이어야 한다. complete는 child가 1개 이상이고, 각 child가 Goal 기록과 `task_control_status` 양쪽에서 closed여야 한다(검증 뒤 한 번 더 확인) | 예 |
 | `task_start` | task_dir / task_id / slug 중 하나 이상, request_file, fresh_run, execution_mode, workspace | 생성, 재개, run 리셋(§3.6). `request_file`은 내용이 아니라 경로이고, 파일이 없거나 읽을 수 없으면 조용히 무시된다 | 예 |
-| `task_context` | **task_id**, workspace | task pack, `run_id`, `watcher_status` 반환. 다음 조건을 모두 만족할 때만 이 세션 마커와 legacy `.active`를 다시 쓴다: 과제가 열려 있고, 이 세션의 focus가 다른 열린 과제에 잡혀 있지 않고, Codex 기본 호스트(thread id 없음)가 아니다. 그 밖에는 읽기 전용 | 조건부(마커) |
+| `task_context` | **task_id**, workspace | task pack, `run_id`, `watcher_status` 반환. 다음 조건을 모두 만족할 때만 이 세션 마커와 legacy `.active`를 다시 쓴다: 과제가 열려 있고, 이 세션의 focus가 다른 열린 과제에 잡혀 있지 않고, Codex의 명시적 workspace 호출이나 exact thread id 없는 main 호출이 아니다. Codex main exact 바인딩은 다른 worktree의 열린 바인딩도 거절한다. 그 밖에는 읽기 전용 | 조건부(마커) |
 | `task_verify` | **task_id**, run_commands, parallel, max_workers, workspace | verdict 계산. `run_commands`면 `verify_runner.py --json` 실행(§6.9) | 아니오 |
 | `task_close` | **task_id**, workspace | close 게이트, fingerprint 기록, 마커 삭제, Goal 갱신 | 예 |
 | `task_blocked` | **task_id**, **blocked_reason**, **unblock_condition**, workspace | BLOCKED.md 작성, 마커 삭제 | 예 |
@@ -510,7 +510,7 @@ TASK.json 유효?
 
 **write focus(C-09).** `_session_resumes`는 focus가 비어 있거나, 열려 있지 않거나, 지금 시작하려는 과제와 같을 때만 True다. 다른 열린 과제가 focus를 쥐고 있으면 `task_start`는 `task_start refused: another open task owns the resolvable session focus`로 거부하고, next_action은 "Finish or park the currently focused task"다(`harness_server.py:1196-1204, 1338-1347, 1612-1646`).
 
-> C-09는 세션 focus 충돌을 거부하며 queue는 `goal_add_task`의 Goal child에만 있다. Codex MCP에 `CODEX_THREAD_ID`가 없으면 `task_start`의 거부를 건너뛰고 PostToolUse가 충돌하는 두 과제를 fence하여 thread binding을 지운다(`CONTRACTS.md` C-09).
+> C-09는 세션 focus 충돌을 거부하며 queue는 `goal_add_task`의 Goal child에만 있다. Codex MCP는 명시적 workspace 호출 또는 exact `CODEX_THREAD_ID` 없는 main 호출에서 exact-session 검사를 PostToolUse로 미룬다. main exact identity가 있으면 공유 잠금 안에서 다른 worktree의 열린 바인딩도 검사하고 충돌 시 거절한다. PostToolUse가 발견한 충돌은 관련 과제를 fence하여 thread binding을 지운다(`CONTRACTS.md` C-09).
 
 주의할 점:
 
@@ -523,22 +523,21 @@ TASK.json 유효?
 
   `plugin/CLAUDE.md:31`은 "clears this session's active marker"라고 설명하지만, 현재 코드는 MCP 프로세스의 `current_session_id()` 마커와 legacy `.active`만 지운다(§17.2에 관찰로 기록).
 
-**Codex의 바인딩.** 보통의 Codex MCP 호스트에는 thread ID가 없다(`defer_codex_binding`). 이 경우 동작은 다음과 같다(`harness_server.py:1188-1193, 1450-1458, 1649-1661`, `_lib.py:2245-2268`, `codex_hook_registration.py:213-330`, `hook_post_tool_use.py:96-154`).
+**Codex의 바인딩.** 명시적 workspace 호출은 공유 MCP 호스트의 thread ID를 lead 신원으로 사용하지 않는다. 이 호출과 exact 환경 thread ID가 없는 main 호출은 바인딩을 미룬다(`defer_codex_binding`). main에 exact 환경 identity가 있으면 기존 eager 바인딩을 유지하되, 공통 root와 등록 worktree의 세션 잠금 안에서 다른 열린 바인딩을 배제한다. 바인딩을 미루는 경로의 동작은 다음과 같다(`harness_server.py:1188-1193, 1450-1458, 1649-1661`, `_lib.py:2245-2268`, `codex_hook_registration.py:213-330`, `hook_post_tool_use.py:96-154`).
 
-1. `task_start`는 focus 검사를 미루고, `current_session_id()`(대개 `default`)로 `default.json`과 legacy `.active`를 쓴다(`publish_legacy=True`).
+1. `task_start`는 focus 검사를 미루고 세션 마커와 legacy `.active`를 쓴다(`publish_legacy=True`). 명시적 workspace 호출은 고정 `default`를 쓰며, exact thread ID 없는 main 호출은 `current_session_id()`를 쓴다(보통 `default`, 다른 지원 환경 identity가 있으면 그 값).
 2. 같은 조건에서 `task_context`는 마커를 쓰지 않는다.
 3. 그 뒤 PostToolUse 훅이 `register_task_result`로 도구 결과를 파싱한다. 과제가 열려 있고 run_id가 같은지 확인한 다음, legacy 없이(`publish_legacy=False`) exact-thread 마커를 쓰고 watcher를 등록한다.
 4. 서로 충돌하는 열린 과제가 있으면 마커 대신 binding-conflict fence를 쓰고 등록을 무효화한다.
 
-영수증 바인딩에 쓰이는 것은 3단계의 exact-thread 마커뿐이다.
+영수증 바인딩은 exact-thread 마커만 사용한다. default/legacy 마커는 권한이 아니다.
 
 ### 3.8 workspace: control root와 task root
 
 `_task_roots(args)`는 `(control_root, task_root)`를 돌려준다(`harness_server.py:1057-1087`).
 
-- `workspace`를 생략하면 둘 다 control root다. control root와 같은 값을 주면 Claude/generic 런타임에서는 둘 다 control root가 되지만, Codex 런타임에서는 아래의 `unsupported_runtime` 거부가 먼저 적용된다.
+- `workspace`를 생략하거나 control root와 같은 값을 주면 두 root가 같다. Codex도 이 경로를 지원한다. 명시적 workspace 호출이나 exact 환경 thread ID 없는 main 호출은 native PostToolUse가 바인딩하며, exact main identity가 있으면 공유 잠금 아래 eager 바인딩한다.
 - 문자열이 아니면 `wrong_type`으로 거부한다.
-- Codex 런타임에서는 `unsupported_runtime`으로 거부한다. Codex receipt watcher가 control root 하나에만 묶이기 때문이다.
 - 나머지 경우는 `resolve_registered_worktree`를 통과해야 한다(`_lib.py:1886-1936`). 조건:
   - 절대 정규 경로
   - `<ws>/.git`이 일반 gitfile
@@ -548,7 +547,7 @@ TASK.json 유효?
 
   하나라도 어긋나면 `GitBindingError WORKSPACE_NOT_REGISTERED_WORKTREE`.
 
-task dir, scaffold, request_file, focus 마커는 task root에 쓰인다. 세션 identity(hint), watcher 진단, gate 경고 learnings는 control root에 남는다(`harness_server.py:1188-1209`).
+task dir, scaffold, request_file, focus 마커는 task root에 쓰인다. Claude 세션 identity(hint), watcher 진단, gate 경고 learnings는 control root에 남는다. Codex exact coordinator 마커와 watcher 등록은 바인딩된 task workspace에 있고 native cwd는 main에 남을 수 있다(`harness_server.py:1188-1209`).
 
 **root 해석.** `_control_root()`는 MCP 프로세스 cwd의 git root에 `harness_root_resolution`을 적용한 값이다(`harness_server.py:134-139`). 훅 쪽의 `find_repo_root`는 프로세스 cwd보다 payload `cwd`를 먼저 본다(`_lib.py:1736-1747`). `harness_root_resolution`은 위로 올라가며 가장 가까운 일반 파일 manifest를 찾는다. manifest가 잘못되어 있으면(예: symlink) `harness_root_resolution`은 예외 없이 `(root, error)`로 오류를 돌려준다. MCP의 `_control_root()`는 이를 `RuntimeError`로 바꿔 내고, prewrite gate는 `invalid-harness-workspace`로 거부한다. 중첩 저장소는 따로 다룬다. cwd와 그 manifest 사이에 다른 `.git`(중첩 git 저장소)이 있으면, 바깥 manifest는 **현재 세션**(`current_session_id()`)이 바깥 root에 열린 과제를 가리키는 살아 있는 마커를 가진 동안에만 그 중첩 저장소를 소유한다. 그렇지 않으면 `('', '')`를 돌려준다. 그러면 `_control_root`는 중첩 저장소의 git root로 돌아가고, 훅과 prewrite gate는 그 저장소를 non-harness로 본다. 쓰기는 검사 없이 통과하고 영수증도 남지 않는다(`_lib.py:1939-1995, 1998-2012`).
 
@@ -726,7 +725,7 @@ gate는 전체 payload를 UTF-8 `surrogateescape`로 읽는다. 크기 때문에
 | 2 | 일반 파일 `doc/harness/manifest.yaml`이 없음 | 허용 | — | harness 저장소가 아니다 |
 | 3 | 대상이 Claude transcript(`…/projects/**/subagents/agent-*.jsonl`)나 Codex rollout(`…/sessions/**/rollout-*.jsonl`) | 거부 | `C-05-protected-artifact` (owner `claude-runtime`) | 영수증 출처 증거를 보호한다 |
 | 4 | 요청 경로는 root 안인데 realpath가 root 밖 | 거부 | `symlink-outside-control` | symlink 우회 방지 |
-| 5 | 대상이 실제로 root 밖 | 그 대상의 Harness root를 파일 검사로 찾아 **보호 아티팩트만** 거부하고 나머지는 허용 | `C-05-protected-artifact` | 다른 checkout(worktree)의 제어 파일 보호. 오류는 기록하고 허용 |
+| 5 | 등록된 같은 저장소 worktree로 라우팅되지 않은 대상이 실제로 root 밖 | 그 대상의 Harness root를 파일 검사로 찾아 **보호 아티팩트만** 거부하고 나머지는 허용 | `C-05-protected-artifact` | 다른 checkout(worktree)의 제어 파일 보호. 오류는 기록하고 허용 |
 | 6 | 보호 아티팩트(§5.2) | 거부 | `C-05-protected-artifact` | 쓰는 주체가 따로 정해져 있다 |
 | 7 | 그 밖에 `doc/harness/tasks/` 안의 경로 | 허용 | — | MAINTENANCE, PROGRESS.md 등 |
 | 8 | `EXEMPT_PREFIXES` | 허용 | — | learnings, qa, checkpoints, patterns, retros, visual-baselines |
@@ -739,7 +738,7 @@ gate는 전체 payload를 UTF-8 `surrogateescape`로 읽는다. 크기 때문에
 | 15 | PROGRESS.md `forbidden_paths`에 걸림 | 거부 | `scope-lock-forbidden` (owner `developer`) | 범위 고정 |
 | 16 | 그 밖 | 조용히 허용 | — | — |
 
-**1-2행 보충.** root는 대상 파일이 아니라 payload `cwd`에서 해석한다. cwd가 Harness root 아래의 중첩 git 저장소 안에 있으면, 이 세션이 바깥 root에 열린 과제 마커를 가진 동안에만 gate가 적용된다. 그렇지 않으면 root 해석 결과가 비어서 gate는 모든 쓰기를 허용한다(`_lib.py:1939-1995`, `prewrite_gate.py:640-663`, §3.8).
+**1-2행 보충.** 초기 root는 payload `cwd`에서 해석한다. 그 뒤 대상의 lexical 조상에서 같은 저장소의 등록된 worktree가 검증되면 그 checkout의 root로 C-05와 source gate를 적용한다. 기존 cwd root의 symlink 이탈 거부는 유지한다. cwd가 Harness root 아래의 중첩 git 저장소 안에 있으면, 이 세션이 바깥 root에 열린 과제 마커를 가진 동안에만 gate가 적용된다. 그렇지 않으면 root 해석 결과가 비어서 gate는 모든 쓰기를 허용한다(`_lib.py:1939-1995`, `prewrite_gate.py:640-663`, §3.8).
 
 **9행 보충.** MAINTENANCE가 있으면 gate는 그 자리에서 허용을 돌려준다. 그래서 workflow-control 파일에는 10-15행(plan-first, REQ, scope-lock forbidden_paths)이 전혀 적용되지 않는다. 이 파일들 중 여럿은 `.py`다(`_lib.py`, `prewrite_gate.py`, `harness_server.py`). MAINTENANCE 조회는 `resolve_active_task_dir`를 거친다. 이 함수는 세션 마커가 없으면 legacy `.active`로 넘어가는데, 이때 열린 과제인지 확인하지 않는다. 그래서 오래된 `.active`가 가리키는 닫힌 과제나 주차된 과제에 MAINTENANCE 파일이 있어도 이 쓰기가 허용된다(`prewrite_gate.py:733-749`, `_lib.py:2370-2386`).
 
@@ -1132,16 +1131,16 @@ PENDING이고 `receipts_recordable`이 False가 아니면 next_action은 다음 
 
 ```
 task_start/task_context 성공 ──PostToolUse──▶ register_task_result
-     └ .active_sessions/<thread>.json (legacy 없음) + ensure(): root rollout 을 현재 offset 으로 등록
+     └ .active_sessions/<thread>.json (legacy 없음) + ensure(): coordinator rollout 을 현재 offset 으로 등록
 spawn_agent ──PreToolUse──▶ review 이름 검증, 등록 복구
 MCP 안의 WatcherManager 가 rollout 을 tail:
-  started  : root spawn_agent function_call (task_name → lens, run cutoff 이후)
+  started  : coordinator spawn_agent function_call (task_name → lens, run cutoff 이후)
            + SubAgentActivity item_completed kind=started (child thread, /root/<path>)
            + structured function_call_output (agent path)
-           + child rollout: depth-1 session_meta 1개, NEW_TASK 경계 1개
+           + child rollout: 인증된 coordinator의 direct-child session_meta 1개, NEW_TASK 경계 1개
            → 모두 맞고 바인딩이 그대로면 started 행
-             (agent_id=agent_path, agent_type=task_name, runtime_id codex:<root>:<call_id>:<child>)
-  completed: /root 에 전달된 FINAL_ANSWER == child 의 task_complete last_agent_message
+             (agent_id=agent_path, agent_type=task_name, runtime_id codex:<coordinator-thread>:<call_id>:<child>)
+  completed: coordinator 에 전달된 FINAL_ANSWER == child 의 task_complete last_agent_message
            → 같은 record() writer 로 completed 행
            root/child 불일치, 완료 전 바인딩 변경
              → 행을 쓰지 않음 (메모리에서 invalid 표시만). started 행만 남아
@@ -1155,9 +1154,9 @@ MCP 안의 WatcherManager 가 rollout 을 tail:
 
 근거: `codex_hook_registration.py:213-330`, `codex_lifecycle_watcher.py:544-653, 844-1383, 1087-1145, 1257-1290, 1385-1397`, `_lib.py:4487-4505`.
 
-등록 파일(version 12, owner `codex_root_hook`)의 offset은 한 번 쓰면 바뀌지 않는다.
+등록 파일(version 13, owner `codex_root_hook`)의 offset은 한 번 쓰면 바뀌지 않는다.
 
-**Codex에서 hint와 마커.** Codex MCP의 세션 식별은 hint를 읽지 않는다(`_current_session_identity`는 `CODEX_THREAD_ID`만 본다). 예외는 `CODEX_THREAD_ID`가 없을 때 hint로 대신하는 Codex 등록 확인(`hook_tree_health.py:72-76`)뿐이다. 그러나 UserPromptSubmit 래퍼가 `prompt_memory.py`를 거쳐 hint를 쓴다. thread id가 없는 MCP의 `task_start`는 `<current_session_id()>.json`(대개 `default.json`)과 legacy `.active`를 쓴다. 같은 조건에서 `task_context`는 마커를 쓰지 않는다. legacy를 쓰지 않는 것은 PostToolUse `register_task_result`가 쓰는 exact-thread 마커뿐이고, 영수증 바인딩은 그 마커만 사용한다(`hook_user_prompt_submit.py:70-78`, `prompt_memory.py:228-235`, `harness_server.py:193-215, 1450-1458`, `_lib.py:2245-2268`, `codex_hook_registration.py:316-321`).
+**Codex에서 hint와 마커.** hint는 exact 바인딩에 사용하지 않는다. 명시적 workspace 또는 exact 환경 thread ID 없는 main 호출은 성공한 task 결과와 trusted native PostToolUse의 coordinator 신원으로 `.active_sessions/<thread>.json`과 watcher 등록을 만든다. exact `CODEX_THREAD_ID`가 있는 main 호출은 공유 세션 잠금 안에서 다른 worktree의 열린 바인딩을 배제한 뒤 기존 eager 바인딩을 유지한다. hint/default/legacy 마커는 영수증 권한이 아니다. 중첩 lead는 모든 조상 spawn/activity/output와 native 메타데이터를 검증하고, review/QA child는 그 coordinator에 직접 속해야 한다. native cwd는 main에 남아도 된다. 같은 coordinator의 동시 열린 바인딩은 fence된다. 상세 규약은 [Codex receipt ADR](patterns/ADR__single-direct-codex-receipt-protocol.md)을 따른다.
 
 > 코드에서 도출, 테스트 없음: watcher는 `ux-` lens를 받아들이지만 `record()`는 SUPPORTED_LENSES 밖이라 거부한다. 3번 재시도한 뒤 sticky worker error로 건너뛰는데, 이때 `receipts_recordable`이 False로 바뀔 수 있다(`codex_lifecycle_watcher.py:863, 1174, 1576-1598`).
 
@@ -1305,7 +1304,7 @@ full:    0 → 1: deferred-scope.md 생성, 전제 추출, 코디네이터가 pl
 
 **8과 8.5-8.7의 순서.** 스킬 본문이 모순된다. `:80`은 "Phases run in strict order"라고 하는데, 번호와 위치가 8.5보다 앞선 Phase 8이 "Call `task_close`"라고 한다(`:433`). 반면 8.5("record it before close", `:459-461`)와 8.6("cannot close with unresolved durable-doc gaps", "Call task_verify", `:482, :489-490`)은 close 전에 해야 하는 일처럼 쓰여 있다. 이 문서는 8.5·8.6의 문구를 따라 **8.5-8.7을 `task_close` 전에 한다**고 해석한다(§7.9).
 
-**병렬 규칙**(`parallel-fanout.md` Batch cap): Phase 3.0은 AC lane을 기본 4개씩 실행한다. manifest `develop.fanout_cap` 정수 1–8을 쓰며 8 초과는 8, 누락·그 밖의 값은 4다. cap은 에이전트 수가 아니라 AC lane 수이며 paired test-author는 같은 lane에 속한다. AC마다 `Files`, `Tests`, `Depends on`, `Verify`를 선언하고 소유 경로를 겹치지 않게 나눈다. 공용 선행 변경은 별도 AC로 끝낸 뒤 소비 AC를 실행한다. test-author는 PLAN 의도에서 Tests 경로만 작성하며 두 lane이 모두 돌아온 뒤 코디네이터가 전체 AC Verify를 실행한다. ac-worker는 자기 Files를 최대 3개의 한 단계 sub-worker로 나눌 수 있지만 오직 `harness:ac-worker`만 스폰하고, sub-worker는 추가 스폰이나 형제 작성 중 전체 AC Verify를 하지 않는다. `name=`은 넘기지 않는다. 근거: [병렬 폭 ADR](patterns/ADR__within-task-parallel-width.md), `plan/write-artifacts.md` Per-AC shape, `agents/ac-worker.md` Sub-split.
+**병렬 규칙**(`parallel-fanout.md` Batch cap): Phase 3.0은 AC lane을 기본 4개씩 실행한다. manifest `develop.fanout_cap` 정수 1–8을 쓰며 8 초과는 8, 누락·그 밖의 값은 4다. cap은 에이전트 수가 아니라 AC lane 수이며 paired test-author는 같은 lane에 속한다. AC마다 `Files`, `Tests`, `Depends on`, `Verify`를 선언하고 소유 경로를 겹치지 않게 나눈다. 공용 선행 변경은 별도 AC로 끝낸 뒤 소비 AC를 실행한다. test-author는 PLAN 의도에서 Tests 경로만 작성하며 해당 AC의 두 writer가 돌아오면 코디네이터가 scoped 검증을 실행한다. full-tree Verify는 관련 writer가 모두 끝난 뒤 실행한다. 실제 host slot inventory에는 coordinator, paired writer, nested worker와 아직 해제되지 않은 슬롯을 모두 세며, 완료된 AC 뒤에는 독립 ready lane을 즉시 채운다. ac-worker는 자기 Files를 최대 3개의 한 단계 sub-worker로 나눌 수 있지만 오직 `harness:ac-worker`만 스폰하고, sub-worker는 추가 스폰이나 형제 작성 중 전체 AC Verify를 하지 않는다. `name=`은 넘기지 않는다. 근거: [병렬 폭 ADR](patterns/ADR__within-task-parallel-width.md), `plan/write-artifacts.md` Per-AC shape, `agents/ac-worker.md` Sub-split.
 
 ### 7.5 Phase 6.6 리뷰: 깊이, hunter, formal reviewer
 
@@ -1475,16 +1474,16 @@ Goal child라면 이 모든 것이 `goal_next_task`보다 먼저다.
 
 ## 9. Goal
 
-Goal은 여러 child 과제를 순서대로 담는 컨테이너다. 넓은 목표는 native `/goal`이 소유하고, 그 상태는 MCP goal 도구가 저장한다(`doc/harness/patterns/native-goals.md`).
+Goal은 여러 child 과제를 담는 컨테이너다. 선언한 독립 work pack은 batch pool에서 병렬 실행하고 이후 canonical integration child를 연다. 일반 child는 순차 경로를 유지한다. 넓은 목표는 native `/goal`이 소유하고, 그 상태는 MCP goal 도구가 저장한다(`doc/harness/patterns/native-goals.md`).
 
 - **저장**: `doc/harness/goals/<GOAL__id>.json`과 `current.json`. goal 트랜잭션(flock) 안에서만 쓴다(`_lib.py:272-273, 319-412`).
 - **goal_id**: `GOAL__<safe-id>`이거나, 자유 텍스트에서 `GOAL__<첫 6단어>-<sha1[:8]>`로 만든다. 단어는 ASCII `[A-Za-z0-9]+` 토큰만 소문자로 센다. 그래서 한국어 objective는 `GOAL__goal-<hash>`가 된다. 해시는 sanitize된 objective 전체로 계산한다(`_lib.py:319-343, 764-790`).
-- **child**: `{task_id, title, status, task_dir}`. status 도구 스키마의 enum은 `queued`/`active`/`closed`/`blocked`지만 서버는 검증하지 않는다. `goal_add_task`는 임의의 문자열 status도 저장하고, `goal_next_task`는 queued|active만 고르므로 철자가 틀린 child는 조용히 건너뛴다. `goal_finish`는 complete/blocked가 아닌 status 인자를 complete로 처리한다(`harness_server.py:2086-2104, 2167-2171`, `_lib.py:815-848, 867`).
+- **child**: `{task_id, title, status, task_dir}` 및 선언한 work pack의 선택적 `batch` 메타데이터. status 도구 스키마의 enum은 `queued`/`active`/`closed`/`blocked`지만 서버는 검증하지 않는다. `goal_add_task`는 임의의 문자열 status도 저장하고, `goal_next_task`는 queued|active만 고르므로 철자가 틀린 child는 조용히 건너뛴다. `goal_finish`는 complete/blocked가 아닌 status 인자를 complete로 처리한다(`harness_server.py:2086-2104, 2167-2171`, `_lib.py:815-848, 867`).
 - **순서**: `goal_next_task`는 목록 순서에서 첫 번째 queued 또는 active child를 돌려준다. 이미 알고 있는 child들은 선언 순서를 유지한다(`_lib.py:851-857`).
 
 ```
 goal_start(objective)          ← 같은 Goal 을 이어 가려면 첫 응답의 goal_id 를 넘긴다
-  └ goal_context → child 없음 → task_start → goal_add_task(task_id, status=queued/active)
+  └ goal_context → 일반 child 없음 → task_start → goal_add_task(task_id, status=queued/active)
   ┌───────────────────────────────────────────────────────────┐
   │ child: task_start → write_plan → develop → review → QA     │
   │        → task_verify → task_close  (Goal 의 child 를 closed 로 자동 표시)
@@ -1500,7 +1499,7 @@ goal_start(objective)          ← 같은 Goal 을 이어 가려면 첫 응답�
 
 근거: `_lib.py:793-911`, `harness_server.py:1579-1609, 1829-1836`.
 
-단계가 여러 개로 알려져 있으면, task 디렉터리가 생기기 전에 child를 queued로 미리 추가할 수 있다("future IDs are valid"). 순서는 사용자가 준 로드맵 순서를 따르고, 없으면 의존/위험 순서를 따른다. `goal_next_task`가 고른 child는 `task_start`가 실제로 만든다. 활성 과제가 없을 때 UserPromptSubmit이 넣는 `[harness-goal]` 블록은 `get_goal → goal_start`, 일반 변경 요청의 `task_start`, child가 없을 때의 `task_start → goal_add_task`, 그리고 `goal_next_task`를 안내하고 현재 Goal id·child 수·다음 child를 보여 준다. Goal 상태는 쓰지 않는다(`doc/harness/patterns/native-goals.md:34-40, 49-60`, `plugin/skills/run/SKILL.md:74-75, 93`, `_lib.py:2040-2080`, `prompt_memory.py:73-106`).
+단계가 여러 개로 알려져 있으면, task 디렉터리가 생기기 전에 child를 queued로 미리 추가할 수 있다("future IDs are valid"). 순서는 사용자가 준 로드맵 순서를 따르고, 없으면 의존/위험 순서를 따른다. 일반 child는 `task_start`가 실제로 만든다. 독립 work pack은 먼저 `goal_add_task(batch_requests)`로 미래 integration child를 선언하고 `goal_next_task.dispatch`를 따른다. `route: batch`는 정확한 pool을 생성/재개하며, 모든 request 통합·보관 증거·cleanup과 pool close 뒤 `route: integration`에서만 child를 시작한다. task start/close와 Goal finish가 이 증거를 재검증한다. API·거부·resume 계약은 [자동 병렬 라우팅](REQ__automatic-parallel-routing.md)을 따른다. 활성 과제가 없을 때 UserPromptSubmit이 넣는 `[harness-goal]` 블록은 `get_goal → goal_start`, 일반 변경 요청의 `task_start`, child가 없을 때의 `task_start → goal_add_task`, 그리고 `goal_next_task`를 안내하고 현재 Goal id·child 수·다음 child를 보여 준다. Goal 상태는 쓰지 않는다(`doc/harness/patterns/native-goals.md:34-40, 49-60`, `plugin/skills/run/SKILL.md:74-75, 93`, `_lib.py:2040-2080`, `prompt_memory.py:73-106`).
 
 **Goal 규칙**(`_lib.py:772-911`, `harness_server.py:1557-1609, 1824-1836, 1856-1918`):
 
@@ -1529,7 +1528,7 @@ goal_start(objective)          ← 같은 Goal 을 이어 가려면 첫 응답�
 
 규범: `plugin/skills/batch/SKILL.md`(절차), `plugin/agents/task-lead.md`(lead 규칙), `doc/harness/REQ__parallel-tasks-via-worktree-leads.md`(모델과 근거).
 
-**Claude 전용이다.** Codex 트리에는 batch 스킬도 task-lead도 없다. `plugin-codex/skills/`에는 run과 setup만 있고, `plugin-codex/internal-skills/`에는 batch가 없으며, `plugin-codex/agents/`에는 `task-lead.md`가 없다. 런타임 쪽에서도 Codex MCP가 `workspace`를 거부한다(`doc/harness/runtime-matrix.md:40`, `harness_server.py:1076-1086`).
+Claude는 native worktree isolation을 사용한다. Codex는 `internal-skills/batch/SKILL.md`와 `agents/task-lead.md`를 통해 등록된 worktree를 명시적으로 만들고, workspace를 반환하는 task 도구와 인증된 native coordinator 신원을 연결한다. 실제 spawn·같은 에이전트 continuation·독립 review/QA 용량이 필요하다. 프로토콜 fixture는 live 실행 증명이 아니다. 상세 계약: [자동 병렬 라우팅](REQ__automatic-parallel-routing.md).
 
 C-09 batch 조항: linked git worktree는 각각 별도 checkout이므로 write focus도 각자 가진다(`CONTRACTS.md:152`).
 
@@ -1643,7 +1642,7 @@ task_start(workspace=W) → write_plan(workspace=W) → develop (pytest -n 4,
   - install_verified(생략), goal_*.
   - `git submodule`은 status만 허용하고, `--recurse-submodules`는 금지한다.
   - 선택되지 않은 submodule, nested repo, off-limits 경로 편집. 준비 완료된 S1 모듈만 지정 범위에서 수정하고, 제공된 named branch에서 먼저 커밋한 뒤 outer gitlink를 커밋한다.
-- 훅은 workspace 인자를 받지 않고 payload `cwd`에서 저장소를 해석한다. 그래서 W에서 스폰한 reviewer/QA의 영수증은 worktree 과제에 기록된다(`tests/test_worktree_workspace.py:377`).
+- Claude 훅은 payload `cwd`에서 저장소를 해석한다. Codex는 exact workspace/task/run 결과와 native coordinator 신원을 검증하고 그 coordinator의 direct reviewer/QA를 연결한다. Codex native cwd만으로 worktree 과제를 선택하지 않는다.
 - `task_verify(run_commands=true, workspace=…)`는 과제 root를 cwd로 두고 `verify_runner`를 돌린다. `verify_runner`는 `.git` gitfile에서 탐색을 멈추므로 worktree 안에서 실행된다.
 - Claude Code는 agent isolation worktree를 항상 `<repo>/.claude/worktrees/<name>`에 만든다(`worktree.location` 설정은 읽지 않는다). wave 1의 branch 이름은 `worktree-agent-<id>`였다.
 
@@ -2021,18 +2020,18 @@ root CLAUDE.md의 `## Memory` 규칙:
 | 훅 실행 트리 | plugin cache(Claude Code CLI가 채움) | plugin cache(install.py가 씀) |
 | MCP 실행 트리 | 플러그인 서버는 cache, 사용자 수준 서버는 mirror | Codex mirror(config.toml `[mcp_servers.harness]`) |
 | MCP 세션 identity | `.session-hint`를 읽음 | `CODEX_THREAD_ID`만. hint는 읽지 않지만 UserPromptSubmit 래퍼가 여전히 씀 |
-| 활성 마커 | 세션 마커 + legacy `.active`(`task_start`/`task_context`가 씀) | MCP `task_start`(thread id 없음)가 `default.json` + legacy `.active`를 쓰고, `task_context`는 쓰지 않음. PostToolUse `register_task_result`가 legacy 없는 exact-thread 마커를 씀(영수증 바인딩은 이것만). 충돌 시 fence |
+| 활성 마커 | 세션 마커 + legacy `.active`(`task_start`/`task_context`가 씀) | 명시적 workspace 또는 exact main thread id 없음: `task_start`는 default/legacy 마커, `task_context`는 마커 없음, PostToolUse가 exact 마커를 씀. exact main identity가 있으면 공유 잠금 아래 eager 바인딩. 충돌 시 거절/fence |
 | 영수증 수집 | SubagentStart/Stop 훅 → `background_hook.py` | MCP 안의 `codex_lifecycle_watcher`가 rollout을 tail |
-| 영수증 source / runtime_id | `claude_hook` / `claude:<sid>:<aid>` | `codex_session_watcher:collaboration` / `codex:<root>:<call_id>:<child>` |
+| 영수증 source / runtime_id | `claude_hook` / `claude:<sid>:<aid>` | `codex_session_watcher:collaboration` / `codex:<coordinator-thread>:<call_id>:<child>` |
 | lens 결정 | Agent `subagent_type`(→ agent_type). `name=`을 주면 대개 영수증 없음 | `spawn_agent`의 `task_name`(명명 규칙 필수) |
-| completion 증거 | transcript 출처와 start attachment(final text 비교 없음) | root FINAL_ANSWER == child task_complete 메시지 |
+| completion 증거 | transcript 출처와 start attachment(final text 비교 없음) | coordinator FINAL_ANSWER == child task_complete 메시지 |
 | prewrite gate | PreToolUse `Write\|Edit\|MultiEdit`에서 직접 실행(10초) | 래퍼가 3.0초 자식으로 실행. `apply_patch` 포함. 출력 없는 실패 시 C-05만 in-process fallback으로 거부, 다른 쓰기는 허용 |
 | 훅 정의 | `plugin/hooks/hooks.json`(`\|\| true`, timeout ≤10) | `install.py`가 생성(`\|\| true` 없음, SessionStart 20초) |
 | SessionStart | 배너 + gap + format + drift | watcher 등록 복구(1.25초 예산) + gap + format |
 | UserPromptSubmit | `prompt_memory.py`(hint 기록) | `[harness-route]` + `prompt_memory.py`(`HARNESS_RUNTIME=codex`, hint 기록) |
 | PostToolUse 힌트 | 평문 stdout(모델에 보이지 않을 가능성, §4.4) | additionalContext로 감쌈 |
 | spawn 전 검사 | 없음 | `spawn_agent`의 bind 불가 review 이름 거부 |
-| workspace / batch | 지원(`harness:batch`, task-lead) | `workspace`는 `unsupported_runtime`. batch 스킬과 task-lead 없음 |
+| workspace / batch | 지원(`harness:batch`, task-lead) | internal batch와 task-lead, 등록된 workspace 및 인증된 native coordinator 지원; 실제 host capability 필요 |
 | 에이전트 정의 | 17개(model, tools, isolation) | 15개(name/description만. 방법론 참고) |
 | 스킬 본문 | `plugin/skills/*/SKILL.md` | 손으로 관리하는 별도 포트. 공용 보조 문서만 `plugin/skills`에서 복사(§2.2) |
 | 설치 cache version | 내용 해시 `<base>+h<sha8>` | 수동 관리 version 문자열 |
@@ -2213,8 +2212,8 @@ close 뒤에 RECEIPTS.jsonl 바이트가 바뀌었거나, 이 행들을 거부�
 **`start_status: ready_with_warnings` + `TASK_CONTEXT_DEFERRED`**
 `task_start`를 다시 부르지 말고 `task_context`를 부른다.
 
-**`WORKSPACE_NOT_REGISTERED_WORKTREE` / `unsupported_runtime` / `wrong_type`**
-workspace가 정규 절대경로가 아니거나, 등록된 worktree가 아니거나, worktree에 manifest가 없다. Codex에서는 workspace 자체가 지원되지 않는다.
+**`WORKSPACE_NOT_REGISTERED_WORKTREE` / `wrong_type`**
+workspace가 정규 절대경로가 아니거나, 등록된 같은 저장소 worktree가 아니거나, worktree에 manifest가 없다. Codex도 workspace를 지원하지만 정확한 task/run 바인딩은 native PostToolUse 신원 검증이 맡는다.
 
 **goal 도구 오류에 `field: selector`가 붙어 있다**
 포장 방식 때문이다(§3.5). message의 실제 원인(`no active goal`, `goal is terminal`, `no child tasks`, `unfinished or unverified child tasks`)을 읽는다.

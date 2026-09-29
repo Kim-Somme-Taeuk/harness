@@ -128,11 +128,13 @@ editing:
 | AC | Files | Depends on | Lane | Route | Reason |
 |----|-------|------------|------|-------|--------|
 
+Read `${HARNESS_PLUGIN_ROOT}/internal-skills/develop/ready-lanes.md` before dispatch. Use `parallel_dispatch.py` with current host slot inventory and the PLAN graph; refresh after each completion. `develop.fanout_cap` applies as on Claude, with actual agent capacity taking precedence.
+
 `Route` is `spawn_agent(worker)` for every disjoint lane; spawn one worker per lane. Use one worker per independent AC. Do not assign multiple independent ACs to one worker. This is capability-gated, not user-request-gated: The user does not need to ask for delegation, `user did not ask for delegation` is an invalid reason, `delegation was not requested` is not a fallback, and Do not wait for the user to request delegation. User request is
 not a condition for parallel routing; this is mandatory capability/task-shape routing.
-Sequential fallback must state `ac_count`, `conflict` (specific files/dependency), `estimated_lines`, `estimated_seconds`, and the fallback in task state or final response. Valid reasons are only `spawn_agent-unavailable`, `dependency-conflict`, or `small-task`.
+Sequential fallback must state `ac_count`, `conflict` (specific files/dependency), `estimated_lines`, `estimated_seconds`, and the fallback in task state or final response. Valid reasons are `spawn_agent-unavailable`, `dependency-conflict`, `small-task`, or concrete host-capacity limits from `ready-lanes.md`.
 Workers read `${HARNESS_PLUGIN_ROOT}/agents/developer.md`, stay inside explicit ownership, do not edit PROGRESS, and return paths/tests/blockers. Prompts must say: return the exact status `needs-coordinator-review` when ownership, lane, or approved scope needs coordinator judgment.
-When an AC declares both `**Files:**` and `**Tests:**` paths (neither `none`), spawn its test author in the same batch as its worker with `spawn_agent(task_name="test_author_ac_<NNN>")` (only digits after `test_author_ac_`: the AC number, plus `_<n>` on a retry, so the watcher infers no lens) and a prompt to read `${HARNESS_PLUGIN_ROOT}/agents/test-author.md` and write only the `**Tests:**` paths; the worker's prompt says it owns only `**Files:**` and leaves the AC's `Verify:` to the coordinator, overriding the developer.md verification step for that AC only; once the batch returns, the coordinator runs the `**Tests:**` and full `Verify:` command on the combined tree and sends each red result or error to the lane that owns the file.
+When an AC declares both `**Files:**` and `**Tests:**` paths (neither `none`), reserve its worker/test-author pair via `ready-lanes.md`; use its explicit unpaired fallback only when host capacity requires it. For a pair, spawn `spawn_agent(task_name="test_author_ac_<NNN>")` with its worker (only digits after `test_author_ac_`, plus `_<n>` on retry, so the watcher infers no lens). The author reads `${HARNESS_PLUGIN_ROOT}/agents/test-author.md` and owns only `**Tests:**`; the worker owns only `**Files:**` and leaves the AC's `Verify:` to the coordinator, overriding developer.md verification for that AC only. After both writers return, run scoped tests and send failures to the owning lane; full-tree `Verify:` waits for all relevant writers.
 Handle `needs-coordinator-review` before generic rollback: never retry with the same ownership; reassign ownership, amend PLAN, or escalate to the user. Keep successful independent siblings promoted.
 
 ### Phase 3.1: Scope Lock
@@ -158,9 +160,8 @@ rewritten. Declare allowed / test / forbidden paths before each file edit:
 
 ### Phase 3: Implement
 
-1. For sequential batches, work **one AC at a time**, in order. For parallel
-   batches, wait for all sibling worker results, then merge progress once. Skip
-   ACs in `completed_acs`.
+1. For sequential batches, work **one AC at a time**, in order. For parallel work, consume completed AC results and refill dependency-ready lanes using `parallel_dispatch.py`; do not wait for unrelated sibling workers.
+   Verify a paired AC after both its writers finish. Full-tree commands wait for all writers. Skip ACs in `completed_acs`.
 2. **Follow existing patterns.** Smallest coherent diff. No speculative features.
    Apply `${HARNESS_PLUGIN_ROOT}/agents/developer.md` minimum-sufficient ladder in the
    coordinator and every spawned worker. A generic worker prompt must tell the

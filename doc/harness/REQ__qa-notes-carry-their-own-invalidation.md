@@ -9,6 +9,7 @@ invalidated_by_paths:
   - doc/harness/qa/QA_KNOWLEDGE.yaml
   - plugin/skills/develop/SKILL.md
   - plugin-codex/internal-skills/develop/SKILL.md
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — qa_notes 는 자기 무효화 조건을 들고 다닌다

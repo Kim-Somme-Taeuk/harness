@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Extended 2026-09-29 to authenticated native worktree coordinators.
 
 ## Normative scope
 
@@ -20,10 +20,10 @@ adding stronger evidence.
 
 ## Decision
 
-The MCP-hosted root-rollout watcher is the only Codex receipt owner and accepts
+The MCP-hosted coordinator-rollout watcher is the only Codex receipt owner and accepts
 one acquisition path:
 
-1. The registered root calls direct `collaboration.spawn_agent` with a valid
+1. The registered coordinator calls direct `collaboration.spawn_agent` with a valid
    structured `task_name`.
 2. A matching exact `SubAgentActivity` start supplies the child thread identity
    and agent path.
@@ -33,22 +33,31 @@ one acquisition path:
 Missing, malformed, or mismatched child evidence fails closed. A child that is
 already complete when a delayed watcher replays may establish a start only when
 the immutable registration offset precedes the exact root spawn and the replay
-contains the matching activity, structured output, and trusted depth-1 child
+contains the matching activity, structured output, and trusted direct-child
 rollout. Activity cannot authorize a lifecycle by itself.
 
-The watcher binds the active `TASK.json` generation, canonical repository, root session,
-root rollout, child thread, child agent path, structured task name, and derived
-review or QA lens. The root session's active-task marker and current
+For the ordinary root coordinator, a direct child has depth 1. A worktree lead
+may itself be a native subagent: every ancestor edge must match trusted native
+metadata, the parent's exact structured spawn call/output and activity, the
+top-level session, immediate parent, full agent path and depth increment.
+The review/QA child is direct relative to that authenticated coordinator.
+Arbitrary nested paths, prompt text, and a workspace argument cannot establish
+coordinator identity. Bounded ancestry validation replaces a hard-coded depth-1
+assumption without adding a second receipt acquisition protocol.
+
+The watcher binds the active `TASK.json` generation, canonical repository/worktree,
+native coordinator thread and rollout, child thread, child agent path, structured task name, and derived
+review or QA lens. The coordinator's exact active-task marker and current
 `TASK.json` are the only task authorities. MCP output and prompt text are not
 task authorities.
 
 The persisted compact identity is one namespaced `runtime_id`:
-`codex:<root-session>:<spawn-event>:<child-thread>`. Separate runtime event,
+`codex:<coordinator-thread>:<spawn-event>:<child-thread>`. Separate runtime event,
 session, and thread fields are not stored. This is a storage projection only;
 all bounded rollout checks above still run before a receipt is appended.
 
 Completion requires one child `task_complete` final and one direct child
-`FINAL_ANSWER` delivered to the root. Their final text must match exactly. If
+`FINAL_ANSWER` delivered to that coordinator. Their final text must match exactly. If
 the child rollout also contains a distinct child final-answer event, it must
 match the same text. Duplicate, conflicting, historical, cross-run, or
 out-of-order boundaries invalidate the lifecycle rather than selecting a
@@ -80,12 +89,24 @@ conflict, their freshness is ambiguous, so the current marker is removed and
 the old watcher registration is invalidated; neither result becomes receipt
 authority. A later unambiguous bind creates a new registration at the
 then-current rollout offset instead of reusing events from the ambiguous
-interval. The conflict marker is non-authoritative and retains only the two
-exact task/run generations needed to test whether ambiguity still exists.
-Neither can rebind while both remain open; once task state leaves exactly one
+interval. The conflict marker is non-authoritative and retains the conflicting
+exact task/run generations needed to test whether ambiguity still exists
+(up to the bounded main plus 256 registered workspaces).
+None can rebind while multiple generations remain open; once task state leaves exactly one
 of them live, a valid result for that sole generation may recover authority.
-Recovery holds both task receipt locks in canonical path order through state
+Recovery holds all relevant task receipt locks in canonical path order through state
 revalidation, marker publication, and registration refresh.
+
+An explicit workspace binding additionally requires the successful task result
+to echo the exact requested canonical workspace and the target to be a
+revalidated linked worktree of the same repository. Explicit-workspace calls defer exact binding to native PostToolUse regardless
+of MCP process identity. Main calls without an exact environment thread identity
+also defer; main calls with that identity retain eager binding under shared
+session locks that exclude conflicting open bindings in other workspaces. Native cwd may remain the shared main checkout. The hook
+serializes binding across registered workspaces and rejects simultaneous open
+bindings for the same coordinator. The manager discovers only validated
+worktrees and applies one shared watcher-thread cap; worktree-local registrations
+cannot manufacture an independent unlimited manager budget.
 Work remains fail-open while
 attestation fails closed until a later unambiguous exact result rebinds the
 session. An eligible new generation checkpoints the rollout at the new current

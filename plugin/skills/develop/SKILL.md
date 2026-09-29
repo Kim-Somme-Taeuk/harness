@@ -190,8 +190,9 @@ rewritten. Declare allowed / test / forbidden paths before each file edit:
 ### Phase 3: Implement
 
 1. For sequential batches, work **one AC at a time**, in order. For parallel
-   batches, wait for all sibling executor result files, then merge progress once.
-   Skip ACs in `completed_acs`.
+   work, consume completed AC results and refill dependency-ready lanes using
+   `parallel_dispatch.py`; do not wait for unrelated sibling executors.
+   Verify a paired AC after both its writers finish. Full-tree commands wait for all writers. Skip ACs in `completed_acs`.
 2. **Follow existing patterns.** Smallest coherent diff. No speculative features.
    Before the first sequential edit, the coordinator Reads the role core of
    `${CLAUDE_PLUGIN_ROOT}/agents/developer.md` and implements under it; parent context is not

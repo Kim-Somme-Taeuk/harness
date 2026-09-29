@@ -64,8 +64,9 @@ def _initialize_instructions(runtime: str) -> str:
             "use Claude display prefixes like mcp__plugin_harness_harness__*. "
             "When native Codex goal context is active, call get_goal to read "
             "the objective, then call goal_start to sync it. Use goal_context; "
-            "if no child task exists, create one with task_start and attach it "
-            "with goal_add_task. Use goal_next_task to continue queued work."
+            "declare independent work packs with goal_add_task(batch_requests) before task_start. "
+            "Use goal_next_task dispatch to run the batch then its integration child; "
+            "ordinary children retain task_start then goal_add_task."
         )
     if runtime == "claude":
         return (
@@ -88,9 +89,11 @@ from _lib import (  # type: ignore
     artifact_exists, canonical_task_dir, canonical_task_id,
     find_harness_root, harness_root_resolution, find_repo_root,
     resolve_registered_worktree,
+    require_goal_batch_integrated,
     write_active_marker, clear_active_marker, read_session_hint,
     current_session_id,
     active_task_binding_matches,
+    active_session_transaction, read_active_session_marker, resolve_session_task_binding,
     resolve_active_task_dir, active_marker_snapshot, restore_active_marker_snapshot,
     receipt_runtime_verdict,
     receipt_review_verdict, required_review_lenses,
@@ -125,10 +128,12 @@ try:
     from codex_hook_registration import (  # type: ignore
         REGISTERED as _REGISTRATION_REGISTERED,
         restore_watcher_registration as _restore_watcher_registration,
+        _live_conflicts as _codex_live_conflicts,
     )
 except Exception:  # pragma: no cover - reported as a positive Codex failure
     _REGISTRATION_REGISTERED = "registered"
     _restore_watcher_registration = None
+    _codex_live_conflicts = None
 
 
 def _control_root() -> str:
@@ -138,9 +143,10 @@ def _control_root() -> str:
         raise RuntimeError(f"invalid Harness workspace at {root}: {error}")
     return root or candidate
 try:
-    from codex_lifecycle_watcher import WatcherManager as _WatcherManager  # type: ignore
+    from codex_lifecycle_watcher import WatcherManager as _WatcherManager, workspace_roots as _codex_workspace_roots  # type: ignore
 except Exception:
     _WatcherManager = None
+    _codex_workspace_roots = None
 
 # ── Watcher diagnostics ──────────────────────────────────────────────────
 #
@@ -1073,17 +1079,8 @@ def _task_roots(args: dict) -> tuple[str, str]:
             rejected_value=repr(workspace)[:160],
             next_action="Pass workspace as an absolute worktree path, or omit it.",
         )
-    if _server_runtime() == "codex":
-        # Codex receipt watchers bind to the single control root this process
-        # hosts; a worktree task could never record its lifecycle there.
-        raise _ToolArgumentError(
-            "workspace is not supported on the Codex runtime",
-            field="workspace",
-            reason="unsupported_runtime",
-            rejected_value=repr(workspace)[:160],
-            expected="no workspace (harness:batch worktree leads are Claude-only)",
-            next_action="Omit workspace and run the task in the main checkout.",
-        )
+    # Codex PostToolUse binds the exact native coordinator to the echoed
+    # workspace. Merely routing this call grants no receipt identity.
     return control_root, resolve_registered_worktree(control_root, workspace) or control_root
 
 
@@ -1143,7 +1140,42 @@ def _task_resume_next_action(status: str) -> str:
 # ── Tool handlers ────────────────────────────────────────────────────────
 
 
+def _with_codex_main_focus(args: dict, operation: Callable[[dict], dict]) -> dict:
+    """Serialize eager process-owned main focus with all worktree hook binds."""
+    if _server_runtime() != "codex" or args.get("workspace") is not None:
+        return operation(args)
+    control_root, repo_root = _task_roots(args)
+    session_id = _current_session_identity(control_root)
+    if not session_id:
+        return operation(args)
+    if _codex_workspace_roots is None or _codex_live_conflicts is None:
+        return _err("Codex session focus validation is unavailable")
+    roots = _codex_workspace_roots(repo_root)
+    if not roots:
+        return _err("Codex workspace registry exceeds the supported bound")
+    with active_session_transaction(roots[0]), ExitStack() as locks:
+        roots = _codex_workspace_roots(roots[0])
+        if repo_root not in roots:
+            return _err("Codex workspace registration changed")
+        for root in sorted(roots[1:]):
+            locks.enter_context(active_session_transaction(root))
+        for root in roots:
+            if root == repo_root:
+                continue
+            if (resolve_session_task_binding(root, session_id)
+                or _codex_live_conflicts(root, read_active_session_marker(root, session_id))):
+                return _err(
+                    "task focus refused: another worktree owns this Codex coordinator",
+                    data={"next_action": "Finish or park the bound worktree task before activating another task."},
+                )
+        return operation(args)
+
+
 def handle_task_start(args: dict) -> dict:
+    return _with_codex_main_focus(args, _handle_task_start)
+
+
+def _handle_task_start(args: dict) -> dict:
     td = _selector_opt(args, "task_dir")
     ti = _selector_opt(args, "task_id")
     sl = _selector_opt(args, "slug")
@@ -1188,10 +1220,16 @@ def handle_task_start(args: dict) -> dict:
     control_root, repo_root = _task_roots(args)
     task_dir = canonical_task_dir(task_id=ti, slug=sl, task_dir=td, repo_root=repo_root)
     tid = canonical_task_id(task_dir=task_dir, repo_root=repo_root)
+    require_goal_batch_integrated(repo_root, tid)
     existing_control_path = task_control_file(task_dir)
     resumed_existing = os.path.lexists(existing_control_path)
     exact_session_id = _current_session_identity(control_root)
+    codex_workspace = _server_runtime() == "codex" and args.get("workspace") is not None
+    if codex_workspace:
+        exact_session_id = ""
     session_id = exact_session_id or current_session_id()
+    if codex_workspace:
+        session_id = "default"
     defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
     if not defer_codex_binding and not resumed_existing and not _session_resumes(repo_root, task_dir, session_id):
         return _err(
@@ -1467,7 +1505,7 @@ def handle_task_start(args: dict) -> dict:
             transaction_stack.close()
         raise
 
-    registration = _register_task_start_watcher(repo_root, task_dir, resumed)
+    registration = None if codex_workspace else _register_task_start_watcher(repo_root, task_dir, resumed)
     if registration is not None and not registration["registered"]:
         warnings.append({
             "code": "RECEIPT_WATCHER_REGISTRATION_FAILED",
@@ -1541,6 +1579,7 @@ def handle_task_start(args: dict) -> dict:
 
     return _ok({
         "task_dir": task_dir, "task_id": tid, "task_context": ctx,
+        **({"workspace": repo_root} if args.get("workspace") is not None else {}),
         "run_id": resumed["run_id"],
         "previous_run_id": superseded_run_id or None,
         "run_action": run_action,
@@ -1565,7 +1604,7 @@ def handle_goal_start(args: dict) -> dict:
         goal_id=_selector_opt(args, "goal_id"),
         source=source,
     )
-    return _ok({"goal": state, "next_action": "Use goal_context; if no child task exists, task_start then goal_add_task."})
+    return _ok({"goal": state, "next_action": "Use goal_context. Declare independent work packs with goal_add_task(batch_requests) before task_start; otherwise task_start then goal_add_task. Follow goal_next_task dispatch."})
 
 
 def handle_goal_context(args: dict) -> dict:
@@ -1578,6 +1617,8 @@ def handle_goal_context(args: dict) -> dict:
 
 def handle_goal_add_task(args: dict) -> dict:
     task_id = _req(args, "task_id")
+    if "batch_requests" in args and not isinstance(args["batch_requests"], list):
+        raise ValueError("batch_requests must be an array of declared requests")
     repo_root = _control_root()
     state = add_goal_task(
         repo_root,
@@ -1585,6 +1626,7 @@ def handle_goal_add_task(args: dict) -> dict:
         title=_opt(args, "title") or "",
         status=_opt(args, "status") or "queued",
         task_dir=_selector_opt(args, "task_dir") or "",
+        batch_requests=args.get("batch_requests"),
     )
     return _ok({"goal": state})
 
@@ -1595,8 +1637,9 @@ def handle_goal_next_task(args: dict) -> dict:
     return _ok({
         "goal": result.get("goal") or None,
         "task": result.get("task"),
+        **({"dispatch": result["dispatch"]} if "dispatch" in result else {}),
         "next_action": (
-            "Start or resume the returned child task."
+            result.get("dispatch", {}).get("next_action", "Start or resume the returned child task.")
             if result.get("task")
             else "No queued goal tasks. If the objective is not proven, create the next child task with task_start then goal_add_task; otherwise call goal_finish."
         ),
@@ -1647,6 +1690,10 @@ def _session_resumes(repo_root: str, task_dir: str, session_id: str) -> bool:
 
 
 def handle_task_context(args: dict) -> dict:
+    return _with_codex_main_focus(args, _handle_task_context)
+
+
+def _handle_task_context(args: dict) -> dict:
     ti = _req(args, "task_id")
     control_root, repo_root = _task_roots(args)
     td = canonical_task_dir(task_id=ti, repo_root=repo_root)
@@ -1656,6 +1703,8 @@ def handle_task_context(args: dict) -> dict:
     # Only a process-owned identity may publish here. Ordinary Codex binding is
     # performed by PostToolUse from this successful structured result.
     exact_session_id = _current_session_identity(control_root)
+    if _server_runtime() == "codex" and args.get("workspace") is not None:
+        exact_session_id = ""
     defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
     session_id = exact_session_id or current_session_id()
     if not defer_codex_binding and task_control_status(td, control) == "open" and _session_resumes(
@@ -1697,6 +1746,7 @@ def handle_task_context(args: dict) -> dict:
     ctx = _gate_next_action(ctx, status)
     return _ok({
         "task_dir": td,
+        **({"workspace": repo_root} if args.get("workspace") is not None else {}),
         "task_id": os.path.basename(os.path.normpath(td)),
         "run_id": context_run_id,
         "task_context": ctx,
@@ -1791,6 +1841,7 @@ def handle_task_close(args: dict) -> dict:
         )
     control_root = find_harness_root(td) or find_repo_root(td)
     with goal_transaction(control_root), receipt_stream_transaction(td):
+        require_goal_batch_integrated(control_root, os.path.basename(td))
         snapshot = receipt_snapshot(td)
         def close_error(message, data):
             return _err(message, data=dict(data))
@@ -2084,12 +2135,19 @@ TOOL_DEFS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
      "handler": handle_goal_context},
     {"name": "goal_add_task", "title": "Add or update a goal child task",
-     "description": "Attach a harness task to the active Goal. Use this after task_start or when new scope is discovered and the Goal needs another child task.",
+     "description": "Attach a task or declare an integration child with batch_requests before task_start. goal_next_task routes its work pack through the batch pool first. Ordinary children remain sequential.",
      "inputSchema": {"type": "object", "properties": {
          "task_id": {"type": "string"},
          "title": {"type": "string"},
          "status": {"type": "string", "enum": ["queued", "active", "closed", "blocked"]},
-         "task_dir": {"type": "string"}},
+         "task_dir": {"type": "string"},
+         "batch_requests": {"type": "array", "minItems": 2, "items": {
+             "type": "object", "properties": {
+                 "slug": {"type": "string"}, "request": {"type": "string"},
+                 "scopes": {"type": "array", "items": {"type": "string"}},
+                 "depends_on": {"type": "array", "items": {"type": "string"}},
+                 "submodules": {"type": "array", "items": {"type": "string"}}},
+             "required": ["slug", "request", "scopes"], "additionalProperties": False}}},
          "required": ["task_id"], "additionalProperties": False},
      "handler": handle_goal_add_task},
     {"name": "goal_next_task", "title": "Return next goal child task",

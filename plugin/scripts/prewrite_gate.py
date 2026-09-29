@@ -50,6 +50,7 @@ try:
         find_repo_root,
         find_harness_root,
         harness_root_resolution,
+        resolve_registered_worktree,
         yaml_array,
         yaml_field,
         now_iso,
@@ -628,6 +629,33 @@ def _has_open_tasks(tasks_dir: str) -> bool:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
+def _target_worktree_root(control_root: str, requested_path: str) -> str:
+    """Resolve only a registered same-repo target, without trusting tool hints.
+
+    Walk lexical parents so a symlink inside W cannot hide W's boundary by
+    resolving into main first. The existing registration helper validates the
+    canonical gitfile, back-pointer and worktree's own Harness manifest.
+    """
+    current = os.path.dirname(requested_path)
+    while True:
+        if os.path.lexists(os.path.join(current, ".git")):
+            canonical = os.path.realpath(current)
+            try:
+                registered = resolve_registered_worktree(control_root, canonical)
+            except (OSError, RuntimeError, ValueError):
+                registered = ""
+            if registered:
+                return registered
+            if canonical == current:
+                return ""
+            # A symlinked directory may lead to another Git root. Continue
+            # lexical ascent to enforce the owning worktree's escape rule.
+        parent = os.path.dirname(current)
+        if parent == current:
+            return ""
+        current = parent
+
+
 def _check_path(data: dict, file_path: str, protected_only: bool = False) -> None:
     """Emit a deny for ``file_path`` on stdout, or nothing to allow it.
 
@@ -682,6 +710,16 @@ def _check_path(data: dict, file_path: str, protected_only: bool = False) -> Non
         physical_common = os.path.commonpath([repo_root, file_path])
     except ValueError:
         physical_common = ""
+    # Preserve the cwd root's symlink escape denial before considering a
+    # different registered checkout. For direct worktree targets, apply all
+    # existing C-05/source gates relative to that checkout, even when Codex's
+    # native cwd remains main and W lives under an otherwise ordinary prefix.
+    if not (requested_common == repo_root and physical_common != repo_root):
+        target_root = _target_worktree_root(repo_root, requested_path)
+        if target_root:
+            repo_root = target_root
+            requested_common = os.path.commonpath([repo_root, requested_path])
+            physical_common = os.path.commonpath([repo_root, file_path])
     if physical_common != repo_root:
         if requested_common == repo_root and not protected_only:
             _deny(

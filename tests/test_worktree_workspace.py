@@ -319,15 +319,21 @@ def test_full_lifecycle_closes_in_worktree_and_leaves_main_untouched(tmp_path):
     assert not (main / "doc/harness/goals").exists()
 
 
-def test_codex_runtime_refuses_workspace(tmp_path):
+def test_codex_runtime_routes_workspace_without_eager_native_binding(tmp_path):
     repo = _setup(tmp_path)
     main, wt = repo
-    with mock.patch.dict(os.environ, {"HARNESS_RUNTIME": "codex"}):
+    with mock.patch.dict(os.environ, {"HARNESS_RUNTIME": "codex", "CODEX_THREAD_ID": SID}):
         result = _call(main, "task_start", {"task_id": "TASK__lead", "workspace": str(wt)})
-    assert result.get("isError"), result
+    assert not result.get("isError"), result
     data = _payload(result)
-    assert data.get("field") == "workspace" and data.get("reason") == "unsupported_runtime", data
-    assert not (wt / TASKS / "TASK__lead").exists()
+    assert data["workspace"] == str(wt)
+    assert data["task_dir"] == str(wt / TASKS / "TASK__lead")
+    assert not lib.resolve_session_task_binding(str(wt), SID)
+    assert not (main / TASKS / "TASK__lead").exists()
+    with mock.patch.dict(os.environ, {"HARNESS_RUNTIME": "codex", "CODEX_THREAD_ID": SID}):
+        context = _payload(_call(main, "task_context", {"task_id": "TASK__lead", "workspace": str(wt)}))
+    assert context["workspace"] == str(wt)
+    assert not lib.resolve_session_task_binding(str(wt), SID)
 
 
 def test_non_string_workspace_is_refused_before_resolution(tmp_path):

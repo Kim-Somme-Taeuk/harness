@@ -81,8 +81,9 @@ AC routed to `harness:ac-worker` that declares both `**Files:**` and
 
 - The paired ac-worker owns only `**Files:**` and leaves the AC's `Verify:` to
   the coordinator.
-- Once the whole batch returns, the coordinator runs each paired AC's tests and
-  full `Verify:` command on the combined tree. Green completes the AC. A red test that matches PLAN.md
+- Once that AC's two writers return, the coordinator runs its scoped tests;
+  full-tree `Verify:` commands wait for all relevant writers. Independent
+  ready lanes refill without waiting for the slowest sibling. Green completes the AC. A red test that matches PLAN.md
   goes back to the `**Files:**` lane; a test that asserts beyond or against
   PLAN.md goes back to the `**Tests:**` lane; when PLAN.md cannot settle it,
   normal `needs-coordinator-review` handling applies.
@@ -129,7 +130,7 @@ spawned in one message, keeping any remainder.
 | Change | Codex |
 |---|---|
 | AC shape and width check | yes, through the payload copy of both plan sub-files |
-| `develop.fanout_cap` | no: Codex develop does not load `parallel-fanout.md` |
+| `develop.fanout_cap` | yes: shared ready-lane dispatcher, constrained by actual host slots |
 | test-author lane | yes: `plugin-codex/agents/test-author.md` plus one Phase 3.0 line |
 | ac-worker sub-split | no: Codex has no ac-worker agent |
 
@@ -155,11 +156,13 @@ follow the prefix.
 
 ## Consequences
 
-- The worst case in one batch is 5 x cap concurrent agents (one ac-worker, one
+- Unbounded theoretical demand is 5 x cap concurrent agents (one ac-worker, one
   test author and three sub-workers per lane): 20 at the default cap and 40 at
-  8.
-- The cap, the pairing, the sub-split bounds and the spawn allowlist are prose
-  rules. No hook or MCP tool enforces them. Frontmatter grants `Agent` as a
+  8. Since 2026-09-29 the shared ready-lane dispatcher additionally bounds
+  actual admission by host slots and requires an atomic paired reservation.
+- The dispatcher rejects invalid graphs and oversubscribed proposals, but
+  the host call and reservation remain coordinator-owned. Sub-split bounds
+  and the spawn allowlist remain workflow rules. No hook or MCP tool enforces them. Frontmatter grants `Agent` as a
   whole, so an ac-worker that ignored its allowlist could still start another
   agent type. A sub-worker reads the same agent file and keeps the same
   `Agent` tool, so only the prompt marker stops it from splitting again, and

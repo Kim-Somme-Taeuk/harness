@@ -997,8 +997,9 @@ def _build_codex_payload(target: Path, final_root: Path) -> None:
     _copytree_clean(PLUGIN_ROOT / "scripts", target / "scripts")
     _copytree_clean(PLUGIN_ROOT / "mcp", target / "mcp")
     shared_skill_files = {
+        "internal-skills/batch": ("shared-procedure.md",),
         "internal-skills/develop": (
-            "fix-first-pattern.md", "runtime-smoke.md",
+            "fix-first-pattern.md", "runtime-smoke.md", "ready-lanes.md",
             "quality-audit-pipeline.md", "verification-gate.md",
             "test-failure-triage.md", "hypothesis-driven-debugging.md",
         ),
@@ -1013,7 +1014,7 @@ def _build_codex_payload(target: Path, final_root: Path) -> None:
         source_dir = PLUGIN_ROOT / "skills" / relative_dir.removeprefix("internal-skills/")
         destination_dir = target / relative_dir
         for name in names:
-            source_path = source_dir / name
+            source_path = source_dir / ("SKILL.md" if relative_dir == "internal-skills/batch" else name)
             destination_path = destination_dir / name
             text = source_path.read_text(encoding="utf-8")
             text = text.replace(

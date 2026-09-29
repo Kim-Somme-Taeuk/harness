@@ -14,7 +14,7 @@ invalidated_by_paths:
   - tests/test_contract_lint.py
   - plugin/skills/develop/verification-gate.md
   - plugin/scripts/mutation_probe.py
-freshness_updated: 2026-09-28T11:32:40Z
+freshness_updated: 2026-09-29T05:30:50Z
 ---
 
 # REQ — a guard is verified where it runs, and its coverage claim is checked
