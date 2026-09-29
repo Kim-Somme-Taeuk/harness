@@ -100,7 +100,8 @@ of them live, a valid result for that sole generation may recover authority.
 Recovery holds all relevant task receipt locks in canonical path order through state
 revalidation, marker publication, and registration refresh.
 Any published conflict fence continues to revoke pre-conflict registrations even
-after competing tasks are parked. Ordinary watcher restoration cannot acknowledge
+after competing tasks are parked. Ordinary task-close and parking marker cleanup
+must preserve these non-authoritative fences. Ordinary watcher restoration cannot acknowledge
 that history. Only a successful exact task result for the sole surviving
 generation may recover: invalidate all surviving registrations before clearing
 acknowledged fences, then register at the current rollout offset. Interruption or

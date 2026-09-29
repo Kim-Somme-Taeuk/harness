@@ -1144,11 +1144,13 @@ def _task_resume_next_action(status: str) -> str:
 def _with_codex_main_focus(args: dict, operation: Callable[..., dict]) -> dict:
     """Serialize eager process-owned main focus with all worktree hook binds."""
     if _server_runtime() != "codex" or args.get("workspace") is not None:
-        return operation(args)
+        with active_session_transaction(_task_roots(args)[1]):
+            return operation(args)
     control_root, repo_root = _task_roots(args)
     session_id = _current_session_identity(control_root)
     if not session_id:
-        return operation(args)
+        with active_session_transaction(repo_root):
+            return operation(args)
     if _codex_workspace_roots is None or _codex_live_conflicts is None:
         return _err("Codex session focus validation is unavailable")
     roots = _codex_workspace_roots(repo_root)
@@ -1188,6 +1190,24 @@ def _with_codex_main_focus(args: dict, operation: Callable[..., dict]) -> dict:
 
 
 def handle_task_start(args: dict) -> dict:
+    # Reject an already invalid control before creating session lock storage.
+    # The implementation rechecks under its receipt lock before any mutation.
+    _, repo_root = _task_roots(args)
+    task_dir = canonical_task_dir(
+        task_id=_selector_opt(args, "task_id"), slug=_selector_opt(args, "slug"),
+        task_dir=_selector_opt(args, "task_dir"), repo_root=repo_root,
+    )
+    if os.path.lexists(task_control_file(task_dir)) and not read_task_control(task_dir):
+        return _err(
+            "task_start refused invalid TASK.json: unsupported task-control schema or unsafe control",
+            data={
+                "task_dir": task_dir,
+                "next_action": (
+                    "Choose a new task_id and call task_start. Harness does not "
+                    "migrate or rewrite an unsupported existing task control."
+                ),
+            },
+        )
     return _with_codex_main_focus(args, _handle_task_start)
 
 
@@ -1856,7 +1876,7 @@ def handle_task_close(args: dict) -> dict:
                   "next_action": _task_resume_next_action(initial_status)},
         )
     control_root = find_harness_root(td) or find_repo_root(td)
-    with goal_transaction(control_root), receipt_stream_transaction(td):
+    with active_session_transaction(control_root), goal_transaction(control_root), receipt_stream_transaction(td):
         require_goal_batch_integrated(control_root, os.path.basename(td))
         snapshot = receipt_snapshot(td)
         def close_error(message, data):
@@ -1934,7 +1954,8 @@ def handle_task_blocked(args: dict) -> dict:
         )
     reason = _blocked_text(args, "blocked_reason")
     unblock = _blocked_text(args, "unblock_condition")
-    with receipt_stream_transaction(td):
+    task_root = find_harness_root(td) or find_repo_root(td)
+    with active_session_transaction(task_root), receipt_stream_transaction(td):
         return _handle_task_blocked_locked(td, reason=reason, unblock=unblock)
 
 

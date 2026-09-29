@@ -4,6 +4,8 @@ import subprocess
 from unittest import mock
 
 def pytest_generate_tests(metafunc):
+    if "fence_kind" in metafunc.fixturenames:
+        metafunc.parametrize("fence_kind", ["normal", "overflow"])
     if "corruption" in metafunc.fixturenames:
         metafunc.parametrize("corruption", ["depth", "parent", "session", "path", "spawn_output", "missing_activity", "prompt_only"])
     if "field" in metafunc.fixturenames:
@@ -495,6 +497,7 @@ def test_overflow_elsewhere_blocks_old_worktree_registration_recovery(tmp_path, 
 
 def test_partial_fence_recovery_discards_ambiguous_history_and_old_generation(tmp_path, monkeypatch):
     from test_codex_hook_wrappers import _load as load_hook
+    from test_worktree_workspace import _call
     from test_codex_lifecycle_watcher import (
         _write_exact_session_binding, _spawn_events, _delivery, _child_events,
         _write_jsonl, _rollout_path, _snapshot,
@@ -504,6 +507,8 @@ def test_partial_fence_recovery_discards_ambiguous_history_and_old_generation(tm
     main, lead, _ = worktrees(tmp_path)
     home = tmp_path / "codex"
     monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("CODEX_SESSION_ID", LEAD)
+    monkeypatch.setenv("HARNESS_RUNTIME", "codex")
     monkeypatch.setenv("CODEX_HOME", str(home))
     _, lead_rollout, _ = native_tree(home, main)
     task_id, run_id = _write_exact_session_binding(lead, LEAD)
@@ -528,7 +533,10 @@ def test_partial_fence_recovery_discards_ambiguous_history_and_old_generation(tm
     delivery = _delivery("/root/lead/qa_cli", final)
     delivery["payload"]["recipient"] = "/root/lead"
     append(_spawn_events(LEAD, LENS, "qa_cli", "/root/lead/qa_cli", "call_ambiguous_lens") + [delivery])
-    (main / "doc/harness/tasks/TASK__other/BLOCKED.md").write_text("blocked\n")
+    parked = _call(main, "task_blocked", {"task_id": "TASK__other",
+        "blocked_reason": "park conflicting task", "unblock_condition": "resume separately"})
+    assert not parked.get("isError"), parked
+    assert "conflicts" in hook.read_active_session_marker(str(main), LEAD)
     assert not hook.restore_watcher_registration(json.dumps({"cwd": str(main), "thread_id": LEAD}).encode())
     assert not watcher.ensure(str(lead), LEAD, session_cwd=str(main), task_id=task_id, run_id=run_id)
     try:
@@ -580,3 +588,98 @@ def test_partial_fence_recovery_discards_ambiguous_history_and_old_generation(tm
     assert [receipt["event"] for receipt in receipts] == ["started", "completed"]
     assert receipts[-1]["verdict"] == "PASS"
     assert all(receipt["agent_id"] == fresh_path for receipt in receipts)
+
+
+def test_real_close_preserves_normal_and_overflow_fences(tmp_path, monkeypatch, fence_kind):
+    from test_worktree_workspace import _setup, _call, _payload
+    from test_harness_mcp_server import _record_receipt_fixture
+    from test_codex_hook_wrappers import _load as load_hook
+    hook = load_hook("codex_hook_registration")
+    main, _ = _setup(tmp_path)
+    monkeypatch.setenv("HARNESS_RUNTIME", "codex")
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("CODEX_SESSION_ID", LEAD)
+    started = _call(main, "task_start", {"task_id": "TASK__close_fence"})
+    assert not started.get("isError"), started
+    task = main / "doc/harness/tasks/TASK__close_fence"
+    assert not _call(main, "write_plan", {"task_id": task.name, "plan": "# Plan\n\nSmall.\n", "required_lenses": ["review-code", "qa-cli"]}).get("isError")
+    for agent, lens, final in (("review-fence", "harness:code-reviewer", "VERDICT: PASS\nFINDING_COUNTS: FIX_NOW=0 INVESTIGATE=0 OPTIONAL=0"), ("qa-fence", "harness:qa-cli", "VERDICT: PASS")):
+        for event in ("started", "completed"):
+            _record_receipt_fixture(str(task), {"agent_id": agent, "agent_type": lens,
+                "event": event, "verdict": "PASS" if event == "completed" else "",
+                "summary": final if event == "completed" else "",
+                "source": "claude_hook", "runtime_id": f"claude:{LEAD}:{agent}"})
+    current = {"task_dir": str(task), "task_id": task.name,
+               "run_id": json.loads((task / "TASK.json").read_text())["run_id"]}
+    other = _conflict_task(main, "TASK__close_other")
+    fence = {"session_id": LEAD, "conflicts": [current, other]}
+    if fence_kind == "overflow":
+        fence.update(conflicts=[], conflicts_overflow=True)
+    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+    marker.write_text(json.dumps(fence))
+    result = _call(main, "task_close", {"task_id": task.name})
+    assert not result.get("isError"), result
+    assert _payload(result)["closed"] is True
+    assert json.loads(marker.read_text()) == fence
+    assert not hook.restore_watcher_registration(json.dumps({"cwd": str(main), "thread_id": LEAD}).encode())
+
+
+def test_marker_writers_lock_session_before_receipts_in_deferred_routes(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from test_worktree_workspace import _setup, _call, harness_server
+    main, lead = _setup(tmp_path)
+    monkeypatch.setenv("HARNESS_RUNTIME", "codex")
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    monkeypatch.delenv("CODEX_SESSION_ID", raising=False)
+    real_session = harness_server.active_session_transaction
+    real_receipt = harness_server.receipt_stream_transaction
+    held = []
+    observed = []
+
+    @contextmanager
+    def session(root):
+        with real_session(root):
+            held.append(root)
+            try:
+                yield
+            finally:
+                held.pop()
+
+    @contextmanager
+    def receipt(task):
+        assert any(str(task).startswith(root + "/") for root in held), (task, held)
+        observed.append(str(task))
+        with real_receipt(task):
+            yield
+
+    with mock.patch.object(harness_server, "active_session_transaction", side_effect=session), mock.patch.object(harness_server, "receipt_stream_transaction", side_effect=receipt):
+        for workspace in (None, str(lead)):
+            args = {"task_id": "TASK__locks"}
+            if workspace:
+                args["workspace"] = workspace
+            assert not _call(main, "task_start", args).get("isError")
+            assert not _call(main, "task_context", args).get("isError")
+            assert _call(main, "task_close", args).get("isError")  # no verification yet
+            assert not _call(main, "task_blocked", dict(args, blocked_reason="park", unblock_condition="resume")).get("isError")
+    assert {str(main / "doc/harness/tasks/TASK__locks"), str(lead / "doc/harness/tasks/TASK__locks")} <= set(observed)
+
+
+def test_task_start_rollback_cannot_replace_a_new_conflict_fence(tmp_path, monkeypatch):
+    from test_worktree_workspace import _setup, _call, harness_server
+    main, _ = _setup(tmp_path)
+    monkeypatch.setenv("HARNESS_RUNTIME", "codex")
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("CODEX_SESSION_ID", LEAD)
+    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+    fence = {"session_id": LEAD, "conflicts": [], "conflicts_overflow": True}
+
+    def publish_then_fail(*args, **kwargs):
+        # Simulate a fence becoming current after the rollback snapshot. The
+        # production session lock prevents a concurrent hook from doing this.
+        marker.write_text(json.dumps(fence))
+        raise RuntimeError("publication failed")
+
+    with mock.patch.object(harness_server, "write_active_marker", side_effect=publish_then_fail):
+        result = _call(main, "task_start", {"task_id": "TASK__rollback_fence"})
+    assert result.get("isError"), result
+    assert json.loads(marker.read_text()) == fence

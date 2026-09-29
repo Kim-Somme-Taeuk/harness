@@ -2299,6 +2299,8 @@ def write_active_marker(repo_root, task_dir, session_id=None, *, publish_legacy=
     os.makedirs(tasks_dir, exist_ok=True)
     os.makedirs(_active_sessions_dir(repo_root), exist_ok=True)
     sid = current_session_id() if session_id is None else sanitize_session_id(session_id)
+    if _has_binding_conflict_fence(read_active_session_marker(repo_root, sid)):
+        raise RuntimeError("exact task result recovery must acknowledge the conflict fence first")
     task_run = read_task_control(task_dir)
     payload = {
         "session_id": sid,
@@ -2425,7 +2427,16 @@ def restore_active_marker_snapshot(snapshot):
     """Restore an exact marker snapshot captured by active_marker_snapshot."""
     if not _trusted_control_writer(marker=True):
         raise _control_writer_error("active task restoration requires the task-control runtime", marker=True)
-    _restore_text_snapshots(snapshot)
+    # Ordinary rollback cannot acknowledge a fence published after its snapshot.
+    # Callers hold the session transaction before their receipt transaction.
+    restorable = {}
+    for path, value in snapshot.items():
+        if os.path.basename(os.path.dirname(path)) == ACTIVE_SESSIONS_DIRNAME:
+            sid = os.path.basename(path).removesuffix(".json")
+            if _has_binding_conflict_fence(_read_session_marker(path, sid)):
+                continue
+        restorable[path] = value
+    _restore_text_snapshots(restorable)
 
 
 def _read_regular_marker(path, *, max_size=256 * 1024):
@@ -2548,11 +2559,14 @@ def iter_active_task_dirs(repo_root=None):
 
 
 def clear_active_marker(repo_root, task_dir=None, session_id=None, *, strict=False):
-    """Clear this session's active marker and matching legacy marker."""
+    """Clear task focus under a caller-held session lock, preserving fences."""
     if not _trusted_control_writer(marker=True):
         raise _control_writer_error("active task cleanup requires the task-control runtime", marker=True)
     try:
-        os.unlink(_session_active_path(repo_root, session_id))
+        sid = current_session_id() if session_id is None else sanitize_session_id(session_id)
+        path = _session_active_path(repo_root, sid)
+        if not _has_binding_conflict_fence(_read_session_marker(path, sid)):
+            os.unlink(path)
     except FileNotFoundError:
         pass
     except (OSError, ValueError):
@@ -2573,7 +2587,7 @@ def clear_active_marker(repo_root, task_dir=None, session_id=None, *, strict=Fal
             session_data = _read_session_marker(_session_active_path(repo_root, sid), sid)
         except ValueError:
             session_data = {}
-        if session_data and (
+        if session_data and not _has_binding_conflict_fence(session_data) and (
             task_dir is None
             or os.path.normpath(str(session_data.get("task_dir") or ""))
             == os.path.normpath(task_dir)
