@@ -2312,17 +2312,64 @@ def write_active_marker(repo_root, task_dir, session_id=None, *, publish_legacy=
         _atomic_text_write(_legacy_active_path(repo_root), task_dir)
 
 
-def write_binding_conflict_fence(repo_root, session_id, conflicts):
+MAX_BINDING_CONFLICTS = 257
+MAX_CONFLICT_BYTES = 128 * 1024
+
+
+def _binding_conflicts_overflow(marker):
+    raw = marker.get("conflicts")
+    return marker.get("conflicts_overflow") is True or (
+        isinstance(raw, list) and (
+            len(raw) > MAX_BINDING_CONFLICTS
+            or len(json.dumps(raw, ensure_ascii=True).encode("utf-8")) > MAX_CONFLICT_BYTES
+        )
+    )
+
+
+class _BindingConflictOverflow(RuntimeError):
+    pass
+
+
+def _live_binding_conflicts(marker, workspace_roots):
+    """Read only live canonical generations in already validated workspaces."""
+    if _binding_conflicts_overflow(marker):
+        raise _BindingConflictOverflow("coordinator conflict fence exceeds its bound")
+    raw = marker.get("conflicts")
+    if not isinstance(raw, list) or len(raw) < 2:
+        return []
+    tasks_roots = {os.path.realpath(os.path.join(root, "doc", "harness", "tasks"))
+                   for root in workspace_roots}
+    found = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        task_dir = os.path.realpath(str(item.get("task_dir") or ""))
+        task_id = str(item.get("task_id") or "")
+        run_id = str(item.get("run_id") or "")
+        if (not re.fullmatch(r"TASK__[A-Za-z0-9_.-]{1,180}", task_id)
+            or os.path.dirname(task_dir) not in tasks_roots
+            or os.path.basename(task_dir) != task_id):
+            continue
+        control = read_task_control(task_dir)
+        if task_control_status(task_dir, control) == "open" and control.get("run_id") == run_id:
+            found.append({"task_dir": task_dir, "task_id": task_id, "run_id": run_id})
+    return found
+
+
+def write_binding_conflict_fence(repo_root, session_id, conflicts, *, overflow=False):
     """Replace task authority with the exact conflicting task generations."""
     if not _trusted_control_writer(marker=True):
         raise _control_writer_error("binding recovery requires the task-control runtime", marker=True)
     sid = sanitize_session_id(session_id)
     if sid != session_id or sid == "default":
         raise ValueError("invalid exact session id")
+    overflow = overflow or _binding_conflicts_overflow({"conflicts": conflicts})
+    conflicts = [] if overflow else conflicts
     os.makedirs(_active_sessions_dir(repo_root), exist_ok=True)
     _publish_session_marker(repo_root, sid, {
         "session_id": sid,
         "conflicts": conflicts,
+        **({"conflicts_overflow": True} if overflow else {}),
         "updated": now_iso(),
     })
 

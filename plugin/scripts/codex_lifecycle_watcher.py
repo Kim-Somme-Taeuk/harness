@@ -36,6 +36,7 @@ sys.path.insert(0, SCRIPTS_DIR)
 from _lib import (  # type: ignore
     _REVIEW_DETAIL_MAX_BYTES,
     _read_regular_text_file,
+    _live_binding_conflicts, _BindingConflictOverflow, read_active_session_marker,
     _infer_receipt_lens,
     active_session_transaction,
     extract_qa_verdict,
@@ -1022,6 +1023,14 @@ def _require_task_binding(
         raise _BindingUnavailable("binding unavailable")
     if expected_generation is not None:
         roots = workspace_roots(repo_root)
+        try:
+            for root in roots:
+                conflicts = _live_binding_conflicts(read_active_session_marker(root, root_id), roots)
+                if any(item["task_dir"] != binding["task_dir"] or item["run_id"] != binding["run_id"]
+                       for item in conflicts):
+                    raise _BindingUnavailable("conflicting workspace fence")
+        except _BindingConflictOverflow as exc:
+            raise _BindingUnavailable("coordinator conflict fence overflow") from exc
         if any(root != repo_root and _active_task_binding_for_session(root, root_id)
                for root in roots):
             raise _BindingUnavailable("conflicting workspace bindings")

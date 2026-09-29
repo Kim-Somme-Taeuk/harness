@@ -95,6 +95,8 @@ Known ceiling: Large cold ancestry scans may exceed the existing 0.5-second hook
 
 Known ceiling: Nested native ancestors must share cwd; explicit worktree targeting and separate native worktree roots are supported — upgrade when native spawning supports isolated child cwd.
 
+Known ceiling: More than 257 conflicting task generations or 128 KiB of serialized conflict entries permanently fences that coordinator; account for the retained tasks and continue from a new coordinator.
+
 No helper
 can prove host capacity from an invented inventory. Runtime fixtures prove
 protocol handling, not a live end-to-end worktree run or measured throughput.

@@ -90,8 +90,11 @@ the old watcher registration is invalidated; neither result becomes receipt
 authority. A later unambiguous bind creates a new registration at the
 then-current rollout offset instead of reusing events from the ambiguous
 interval. The conflict marker is non-authoritative and retains the conflicting
-exact task/run generations needed to test whether ambiguity still exists
-(up to the bounded main plus 256 registered workspaces).
+exact task/run generations needed to test whether ambiguity still exists,
+including each newly returned candidate. The record is bounded to 257
+generations and 128 KiB of serialized conflict entries; exceeding either bound
+publishes a non-authoritative overflow fence and revokes registrations. An
+overflowed coordinator cannot regain authority and requires a new coordinator.
 None can rebind while multiple generations remain open; once task state leaves exactly one
 of them live, a valid result for that sole generation may recover authority.
 Recovery holds all relevant task receipt locks in canonical path order through state

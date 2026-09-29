@@ -323,8 +323,10 @@ def test_codex_develop_sequential_fallback_requires_skip_evidence_payload():
     assert "state `ac_count`" in body
     assert "`conflict` (specific" in body
     assert "`estimated_lines`, `estimated_seconds`" in body
-    assert "Valid reasons are only `spawn_agent-unavailable`" in body
-    assert "`dependency-conflict`, or `small-task`" in body
+    assert "Valid reasons are `spawn_agent-unavailable`, `dependency-conflict`, `small-task`" in body
+    assert "or concrete host-capacity limits from `ready-lanes.md`" in body
+    assert "current host slot inventory" in body
+    assert "actual agent capacity taking precedence" in body
 
 
 def test_codex_review_gate_has_risk_proportional_fanout_before_formal_verifier():

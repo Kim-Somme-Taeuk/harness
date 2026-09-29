@@ -1160,10 +1160,22 @@ def _with_codex_main_focus(args: dict, operation: Callable[[dict], dict]) -> dic
         for root in sorted(roots[1:]):
             locks.enter_context(active_session_transaction(root))
         for root in roots:
+            try:
+                conflicts = _codex_live_conflicts(root, read_active_session_marker(root, session_id))
+            except RuntimeError:
+                return _err("task focus refused: coordinator conflict fence overflow requires a new coordinator")
+            unresolved = False
+            if conflicts:
+                requested = canonical_task_dir(
+                    task_id=args.get("task_id"), slug=args.get("slug"),
+                    task_dir=args.get("task_dir"), repo_root=repo_root,
+                )
+                unresolved = len(conflicts) != 1 or conflicts[0]["task_dir"] != requested
             if root == repo_root:
+                if unresolved:
+                    return _err("task focus refused: unresolved coordinator task conflicts")
                 continue
-            if (resolve_session_task_binding(root, session_id)
-                or _codex_live_conflicts(root, read_active_session_marker(root, session_id))):
+            if resolve_session_task_binding(root, session_id) or unresolved:
                 return _err(
                     "task focus refused: another worktree owns this Codex coordinator",
                     data={"next_action": "Finish or park the bound worktree task before activating another task."},

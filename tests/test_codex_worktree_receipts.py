@@ -373,3 +373,151 @@ def _assert_parent_append_retry(tmp_path, monkeypatch, *, completion):
         watcher.retry()
     assert [receipt["event"] for receipt in receipts] == ["started", "completed"]
     assert receipts[-1]["verdict"] == "PASS"
+
+
+def _conflict_task(root, name):
+    from test_codex_lifecycle_watcher import _write_task_control, RUN_ID
+    task = root / "doc/harness/tasks" / name
+    task.mkdir(parents=True, exist_ok=True)
+    _write_task_control(task)
+    return {"task_dir": str(task), "task_id": name, "run_id": RUN_ID}
+
+
+def _task_hook_payload(root, task):
+    return json.dumps({"cwd": str(root), "thread_id": LEAD,
+        "tool_name": "mcp__harness__task_start",
+        "tool_response": {"structuredContent": task}}).encode()
+
+
+def test_three_successful_results_remain_fenced_after_only_one_is_parked(tmp_path, monkeypatch):
+    from test_codex_hook_wrappers import _load as load_hook
+    from test_worktree_workspace import _call
+    hook = load_hook("codex_hook_registration")
+    main, lead, _ = worktrees(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("HARNESS_RUNTIME", "codex")
+    tasks = [_conflict_task(main, "TASK__" + name) for name in ("a", "b", "c")]
+    with mock.patch.object(hook, "_ensure_with_deadline", return_value=True):
+        assert hook.register_task_result(_task_hook_payload(main, tasks[0]))
+        assert not hook.register_task_result(_task_hook_payload(main, tasks[1]))
+        assert not hook.register_task_result(_task_hook_payload(main, tasks[2]))
+        assert len(hook.read_active_session_marker(str(main), LEAD)["conflicts"]) == 3
+        (main / "doc/harness/tasks/TASK__b/BLOCKED.md").write_text("blocked\n")
+        assert not hook.register_task_result(_task_hook_payload(main, tasks[0]))
+        assert not hook.resolve_session_task_binding(str(main), LEAD)
+        before = hook.read_active_session_marker(str(main), LEAD)
+        foreign_marker = lead / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+        foreign_marker.parent.mkdir(parents=True, exist_ok=True)
+        foreign_marker.write_text(json.dumps(before))
+        result = _call(main, "task_start", {"task_id": "TASK__a"})
+        assert result.get("isError"), result
+        assert hook.read_active_session_marker(str(main), LEAD) == before
+        (main / "doc/harness/tasks/TASK__c/BLOCKED.md").write_text("blocked\n")
+        # The one surviving exact task can still resume via eager main focus.
+        result = _call(main, "task_context", {"task_id": "TASK__a"})
+        assert not result.get("isError"), result
+        assert hook.resolve_session_task_binding(str(main), LEAD)["task_dir"] == tasks[0]["task_dir"]
+
+
+def test_conflict_union_overflow_stays_fenced_for_hook_and_eager_main(tmp_path, monkeypatch):
+    from test_codex_hook_wrappers import _load as load_hook
+    from test_worktree_workspace import _call
+    hook = load_hook("codex_hook_registration")
+    main, _, _ = worktrees(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("HARNESS_RUNTIME", "codex")
+    conflicts = [_conflict_task(main, f"TASK__overflow_{index}")
+                 for index in range(hook.MAX_BINDING_CONFLICTS)]
+    candidate = _conflict_task(main, "TASK__overflow_next")
+    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+    marker.parent.mkdir()
+    marker.write_text(json.dumps({"session_id": LEAD, "conflicts": conflicts}))
+    assert not hook.register_task_result(_task_hook_payload(main, candidate))
+    overflow = hook.read_active_session_marker(str(main), LEAD)
+    assert overflow["conflicts_overflow"] is True and overflow["conflicts"] == []
+    assert marker.stat().st_size < 1024
+    assert not hook.register_task_result(_task_hook_payload(main, candidate))
+    overflow = hook.read_active_session_marker(str(main), LEAD)
+    assert not hook.restore_watcher_registration(json.dumps({"cwd": str(main), "thread_id": LEAD}).encode())
+    for tool in ("task_start", "task_context"):
+        result = _call(main, tool, {"task_id": candidate["task_id"]})
+        assert result.get("isError"), result
+        assert hook.read_active_session_marker(str(main), LEAD) == overflow
+    assert not hook.resolve_session_task_binding(str(main), LEAD)
+
+
+def test_oversized_existing_conflict_fences_cannot_be_read_as_empty(tmp_path, monkeypatch):
+    from test_codex_hook_wrappers import _load as load_hook
+    hook = load_hook("codex_hook_registration")
+    main, _, _ = worktrees(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    candidate = _conflict_task(main, "TASK__candidate")
+    oversized = ([candidate] * (hook.MAX_BINDING_CONFLICTS + 1),
+                 [dict(candidate, retained="x" * hook.MAX_CONFLICT_BYTES), candidate])
+    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+    marker.parent.mkdir()
+    for raw in oversized:
+        marker.write_text(json.dumps({"session_id": LEAD, "conflicts": raw}))
+        assert not hook.register_task_result(_task_hook_payload(main, candidate))
+        assert hook.read_active_session_marker(str(main), LEAD)["conflicts_overflow"] is True
+        assert not hook.resolve_session_task_binding(str(main), LEAD)
+
+
+def test_overflow_elsewhere_blocks_old_worktree_registration_recovery(tmp_path, monkeypatch):
+    from test_codex_hook_wrappers import _load as load_hook
+    from test_codex_lifecycle_watcher import _write_exact_session_binding
+    import codex_lifecycle_watcher as watcher
+    hook = load_hook("codex_hook_registration")
+    main, lead, _ = worktrees(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    native_tree(tmp_path / "codex", main)
+    task_id, run_id = _write_exact_session_binding(lead, LEAD)
+    assert watcher.ensure(str(lead), LEAD, session_cwd=str(main), task_id=task_id, run_id=run_id)
+    generation = watcher._registration_generation(watcher.registrations(str(lead))[0])
+    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"session_id": LEAD, "conflicts": [], "conflicts_overflow": True}))
+    for cwd in (main, lead):
+        with mock.patch.object(hook, "_ensure_with_deadline", return_value=True) as ensure:
+            assert not hook.restore_watcher_registration(json.dumps({"cwd": str(cwd), "thread_id": LEAD}).encode())
+            ensure.assert_not_called()
+    try:
+        watcher._require_task_binding(str(lead), LEAD, generation, str(main))
+    except watcher._BindingUnavailable:
+        pass
+    else:
+        raise AssertionError("overflow fence elsewhere retained receipt authority")
+
+
+def test_partial_fence_publication_blocks_until_only_same_binding_remains(tmp_path, monkeypatch):
+    from test_codex_hook_wrappers import _load as load_hook
+    from test_codex_lifecycle_watcher import _write_exact_session_binding
+    import codex_lifecycle_watcher as watcher
+    hook = load_hook("codex_hook_registration")
+    main, lead, _ = worktrees(tmp_path)
+    monkeypatch.setenv("CODEX_THREAD_ID", LEAD)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    native_tree(tmp_path / "codex", main)
+    task_id, run_id = _write_exact_session_binding(lead, LEAD)
+    assert watcher.ensure(str(lead), LEAD, session_cwd=str(main), task_id=task_id, run_id=run_id)
+    generation = watcher._registration_generation(watcher.registrations(str(lead))[0])
+    current = {"task_dir": str(lead / "doc/harness/tasks" / task_id), "task_id": task_id, "run_id": run_id}
+    other = _conflict_task(main, "TASK__other")
+    marker = main / "doc/harness/tasks/.active_sessions" / f"{LEAD}.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"session_id": LEAD, "conflicts": [current, other]}))
+    payload = json.dumps({"cwd": str(main), "thread_id": LEAD}).encode()
+    with mock.patch.object(hook, "_ensure_with_deadline", return_value=True) as ensure:
+        assert not hook.restore_watcher_registration(payload)
+        ensure.assert_not_called()
+        try:
+            watcher._require_task_binding(str(lead), LEAD, generation, str(main))
+        except watcher._BindingUnavailable:
+            pass
+        else:
+            raise AssertionError("partial fence publication retained conflicting receipt authority")
+        (main / "doc/harness/tasks/TASK__other/BLOCKED.md").write_text("blocked\n")
+        assert watcher._require_task_binding(str(lead), LEAD, generation, str(main))["task_dir"] == current["task_dir"]
+        assert hook.restore_watcher_registration(payload)
+        ensure.assert_called_once()
