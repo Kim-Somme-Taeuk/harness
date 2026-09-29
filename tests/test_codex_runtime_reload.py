@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import struct
 import subprocess
@@ -17,6 +18,9 @@ import sys
 import threading
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest import mock
+
+import pytest
 
 
 def _installer():
@@ -275,6 +279,7 @@ def test_no_daemon_endpoint_defers_hooks_to_next_session(tmp_path, monkeypatch):
     ok, detail = module._reload_codex_runtime(None)
     assert ok, detail
     assert "next session" in detail
+    assert "codex app-server daemon version exited with code 1: not running" in detail
 
 
 def test_discovery_error_with_existing_endpoint_fails_closed(tmp_path, monkeypatch):
@@ -289,6 +294,119 @@ def test_discovery_error_with_existing_endpoint_fails_closed(tmp_path, monkeypat
     ok, detail = module._reload_codex_runtime(None)
     assert not ok
     assert "not refreshed" in detail
+    assert "dangling symlink" in detail
+    assert "exited with code 1: permission denied" in detail
+    assert endpoint.is_symlink()
+
+
+@pytest.mark.parametrize("stdout,stderr,expected", [
+    ("stdout ignored", "Error: failed to connect\nCaused by: ENOENT", "Error: failed to connect\nCaused by: ENOENT"),
+    ("stdout error", "  ", "stdout error"),
+    ("", "", "no diagnostic output"),
+])
+@pytest.mark.parametrize("endpoint_kind", ["file", "socket"])
+def test_failed_discovery_reports_diagnostic_and_present_endpoint(
+    tmp_path, monkeypatch, stdout, stderr, expected, endpoint_kind,
+):
+    module = _installer()
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    endpoint = tmp_path / "app-server-control" / "app-server-control.sock"
+    endpoint.parent.mkdir()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        if endpoint_kind == "socket":
+            server.bind(str(endpoint))
+        else:
+            endpoint.write_text("keep this file")
+        with mock.patch.object(module, "_run", return_value=(7, stdout, stderr)) as discover:
+            ok, detail = module._reload_codex_runtime(str(tmp_path / "config.toml"))
+        discover.assert_called_once_with(["codex", "app-server", "daemon", "version"], False)
+        assert not ok
+        assert f"exited with code 7: {expected}" in detail
+        assert str(endpoint) in detail
+        assert ("socket entry exists" if endpoint_kind == "socket" else "not a Unix socket") in detail
+        if stderr.strip():
+            assert "stdout ignored" not in detail
+        if endpoint_kind == "file":
+            assert endpoint.read_text() == "keep this file"
+
+
+@pytest.mark.parametrize("inspection", ["lstat", "stat"])
+def test_endpoint_inspection_error_preserves_discovery_failure(tmp_path, monkeypatch, inspection):
+    module = _installer()
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    endpoint = tmp_path / "app-server-control" / "app-server-control.sock"
+    endpoint.parent.mkdir()
+    endpoint.symlink_to(tmp_path / "missing.sock")
+    original = getattr(Path, inspection)
+
+    def denied(path, *args, **kwargs):
+        if path == endpoint:
+            raise PermissionError(errno.EACCES, "inspection denied", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, inspection, denied)
+    monkeypatch.setattr(module, "_run", lambda *args: (1, "", "discovery error"))
+    ok, detail = module._reload_codex_runtime(str(tmp_path / "config.toml"))
+    assert not ok
+    assert "exited with code 1: discovery error" in detail
+    assert "cannot inspect control endpoint" in detail
+    assert "inspection denied" in detail
+    assert "next session" not in detail
+
+
+def test_failed_daemon_install_renders_ordered_recovery_with_exact_retry(tmp_path, monkeypatch, capsys):
+    module = _installer()
+    # Match the runtime config while exercising shell quoting in its parent path.
+    config = tmp_path / "home with 'quotes' $dollar; semicolon" / "config.toml"
+    monkeypatch.setenv("CODEX_HOME", str(config.parent))
+    source = tmp_path / "mirror" / "plugins" / "harness"
+    manifest = source / ".codex-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"harness","version":"9.9.9"}')
+    monkeypatch.setattr(module, "CODEX_INSTALL_ROOT", tmp_path / "mirror")
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(module, "_normalize_payload_modes", lambda root: [])
+    monkeypatch.setattr(module, "_prune_bytecode_caches", lambda root: [])
+    endpoint = config.parent / "app-server-control" / "app-server-control.sock"
+    endpoint.parent.mkdir(parents=True)
+    endpoint.symlink_to(tmp_path / "missing-runtime.sock")
+    error = "Error: failed to connect to control socket\nCaused by: No such file or directory (os error 2)"
+
+    def cli(command, dry):
+        if command == ["codex", "--version"]:
+            return 0, "codex 0.158.0", ""
+        if command == ["codex", "app-server", "daemon", "version"]:
+            return 1, "", error
+        return 0, "", ""
+
+    monkeypatch.setattr(module, "_run", cli)
+    monkeypatch.setattr(module, "_smoke_installed_runtime", lambda root: (True, []))
+    monkeypatch.setattr(module, "install_codex_hook_trust_state", lambda *args: {"ok": True, "message": "trusted"})
+    backup = str(config) + ".bak"
+    with (
+        mock.patch.object(module, "sync_codex_payload", return_value=source) as publish,
+        mock.patch.object(module, "install_codex_plugin_cache", return_value=tmp_path / "cache") as cache,
+        mock.patch.object(module, "emit_and_install_codex_config", return_value={
+            "ok": True, "message": "merged", "backup_path": backup,
+        }),
+    ):
+        result = module.install_codex(dry_run=False, force=True, config_path=str(config))
+    assert not result.ok
+    assert result.backup_path == backup
+    publish.assert_called_once()
+    cache.assert_called_once()
+    monkeypatch.setattr(module, "install_codex", lambda **kwargs: result)
+    monkeypatch.setattr(sys, "argv", ["install.py", "--codex-only", "--force", "--config-path", str(config)])
+    assert module.main() == 1
+    output = capsys.readouterr().out
+    assert output.count(error) == 1
+    assert "dangling symlink" in output
+    assert "CODEX_HOME" in output and "same shell/runtime" in output
+    assert output.index("repair the Codex daemon installation") < output.index("verify:") < output.index("retry:")
+    assert "repair after correcting the reported cause" not in output
+    retry = output.split("only after it succeeds, retry: ", 1)[1].splitlines()[0]
+    assert shlex.split(retry) == ["python3", "install.py", "--codex-only", "--force", "--config-path", str(config)]
+    assert endpoint.is_symlink()
 
 
 def test_native_reload_rejects_writable_endpoint_parent(tmp_path):
