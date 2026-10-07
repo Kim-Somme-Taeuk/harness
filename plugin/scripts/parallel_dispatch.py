@@ -16,6 +16,11 @@ Results are proposals, not reservations. The caller must reserve each entire
 worker group against fresh host inventory before spawning. On reservation
 failure, spawn none, record reservation_failed, and resnapshot. No task, Goal,
 receipt, or scheduling ledger is written here. Pass JSON on stdin or --input.
+
+Codex snapshots require routing.task_dir and routing.available_models, and each
+AC supplies routing impact/recovery/reason/issue_id/workers (role to unique name).
+Routing is calculated before group admission; the caller prepares each returned
+routing_request through routing_state before its corresponding native spawn.
 """
 from __future__ import annotations
 
@@ -72,9 +77,78 @@ def _overlap(left, right):
                for a in left for b in right)
 
 
+def _routing_config(snapshot):
+    if snapshot.get('runtime') != 'codex':
+        return None
+    config = snapshot.get('routing')
+    _require(isinstance(config, dict), 'codex routing must be an object')
+    _require(isinstance(config.get('task_dir'), str) and config['task_dir'].strip(),
+             'routing.task_dir must be a nonempty path')
+    models = config.get('available_models')
+    _require(isinstance(models, list) and all(isinstance(model, str) and model.strip() for model in models),
+             'routing.available_models must list current host model IDs')
+    return config
+
+
+def _routing_requests(aid, item, config, names, files, tests):
+    routing = item.get('routing')
+    _require(isinstance(routing, dict), f'{aid}: routing must be an object')
+    _require(routing.get('impact') in ('local', 'component', 'critical', 'unknown'),
+             f'{aid}: routing.impact is required and must be valid')
+    _require(routing.get('recovery') in ('easy', 'costly', 'irreversible', 'unknown'),
+             f'{aid}: routing.recovery is required and must be valid')
+    for field in ('reason', 'issue_id'):
+        _require(isinstance(routing.get(field), str) and routing[field].strip(),
+                 f'{aid}: routing.{field} must be nonempty')
+    workers = routing.get('workers')
+    _require(isinstance(workers, dict), f'{aid}: routing.workers must map roles to unique names')
+    requests = {}
+    for role, paths in (('implementation', files), ('test-author', tests)):
+        if not paths:
+            continue
+        name = workers.get(role)
+        _require(isinstance(name, str) and re.fullmatch(r'[a-z0-9_]+', name) and name not in names,
+                 f'{aid}: routing.workers.{role} must be a native task_name and globally unique')
+        names.add(name)
+        requests[role] = dict(worker=name, ac_id=aid, issue_id=routing['issue_id'],
+                              reason=routing['reason'], assessment=dict(
+                                  impact=routing['impact'], recovery=routing['recovery'],
+                                  available_models=list(config['available_models'])))
+    return requests
+
+
+def _route_workers(workers, requests, config):
+    # Sibling imports must also work when callers load this script via importlib.
+    scripts = str(Path(__file__).resolve().parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import routing_state
+
+    decisions = []
+    for worker in workers:
+        request = requests[worker['role']]
+        try:
+            decision = routing_state.calculate(config['task_dir'], request)
+        except (ValueError, OSError) as exc:
+            raise DispatchError(f'{request["ac_id"]}: invalid routing: {exc}') from exc
+        _require(isinstance(decision, dict) and decision.get('action') in ('spawn', 'stop', 'blocked'),
+                 f'{request["ac_id"]}: invalid routing decision')
+        decisions.append((worker, request, decision))
+    for worker, request, decision in decisions:
+        if decision['action'] != 'spawn':
+            return f'routing {decision["action"]} for {request["worker"]}: {decision.get("reason", "no reason supplied")}'
+    for worker, request, decision in decisions:
+        _require(all(key in decision for key in ('worker', 'model', 'risk', 'spawn_args')),
+                 f'{request["ac_id"]}: incomplete routing spawn decision')
+        worker.update({key: decision[key] for key in ('worker', 'model', 'risk', 'spawn_args')})
+        worker['routing_request'] = request
+    return None
+
+
 def schedule(snapshot):
     """Return deterministic dispatch groups and an actionable reason per deferred AC."""
     _require(isinstance(snapshot, dict), 'snapshot must be a JSON object')
+    routing_config = _routing_config(snapshot)
     capacity = _integer(snapshot.get('host_capacity'), 'host_capacity', 1)
     cap = _integer(snapshot.get('ac_cap', 4), 'ac_cap', 1, 8)
     repo = snapshot.get('repo')
@@ -86,7 +160,7 @@ def schedule(snapshot):
     _require(repo is None or repo.is_dir(), 'repo must name an existing directory')
     raw_acs = snapshot.get('acs')
     _require(isinstance(raw_acs, list), 'acs must be a list')
-    acs = {}
+    acs, worker_names = {}, set()
     for item in raw_acs:
         _require(isinstance(item, dict), 'each AC must be an object')
         aid = item.get('id')
@@ -101,6 +175,9 @@ def schedule(snapshot):
         _require(isinstance(deps, list) and all(isinstance(dep, str) for dep in deps)
                  and len(set(deps)) == len(deps), f'{aid}: depends_on must contain unique AC ids')
         acs[aid] = dict(files=files, tests=tests, depends_on=deps)
+        if routing_config is not None:
+            acs[aid]['routing_requests'] = _routing_requests(
+                aid, item, routing_config, worker_names, files, tests)
     # Kahn traversal also rejects self-dependencies without recursion limits.
     unresolved = {aid: set(ac['depends_on']) for aid, ac in acs.items()}
     for aid, deps in unresolved.items():
@@ -188,6 +265,11 @@ def schedule(snapshot):
                     dict(role='test-author', paths=ac['tests'])] if paired else
                    [dict(role='implementation' if ac['files'] else 'test-author',
                          paths=ac['files'] + ac['tests'])])
+        if routing_config is not None:
+            reason = _route_workers(workers, ac['routing_requests'], routing_config)
+            if reason:
+                deferred.append(dict(ac_id=aid, reason=reason))
+                continue
         dispatch.append(dict(ac_id=aid, mode='paired' if paired else 'unpaired',
                              workers=workers, slots=needed,
                              reason='paired reservation' if paired else

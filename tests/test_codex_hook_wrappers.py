@@ -1040,7 +1040,9 @@ class TestCodexHookWrappers(unittest.TestCase):
                     "tool_input": {"task_name": task_name},
                 })
                 output = io.StringIO()
-                with mock.patch.object(mod, "restore_watcher_registration", failing), \
+                # A valid model decision must not turn watcher unavailability into denial.
+                with mock.patch("routing_state.gate", return_value=""), \
+                     mock.patch.object(mod, "restore_watcher_registration", failing), \
                      mock.patch.object(sys, "stdin", _BytesStdin(raw)), \
                      contextlib.redirect_stdout(output), \
                      contextlib.redirect_stderr(io.StringIO()):

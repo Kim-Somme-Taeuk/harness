@@ -83,3 +83,10 @@ with upstream versions. Resolve overlapping upstream changes by comparing the
 protocol behavior, reviewing the resulting diff, and rerunning the receipt and
 contract regressions before accepting a replacement. Model routing is outside
 this port's scope.
+
+### Subsequent model gate
+
+The fork adds a model-decision gate to `hook_pre_tool_use.py` before best-effort
+watcher registration. Existing binding-conflict and receipt behavior remains;
+review/QA model exemptions preserve substantive lenses when watcher registration
+is unavailable. Model-decision failures are separate from receipt failures.

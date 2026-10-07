@@ -695,7 +695,7 @@ def execute(args, directory, records):
         preflight(repo, item)
         if item.get('submodule_manifest'):
             batch_submodules.validate(repo, item['worktree'], item['submodule_manifest'], 'resume')
-        item.update(status='reserved', resuming=True, worker_stopped=True, run_id=run_id)
+        item.update(status='reserved', resuming=True, worker_stopped=True, run_id=run_id, reserved_at=now())
         save()
         handoff = dict(worktree=item['worktree'], branch=item['branch'], task_id=item['task_id'], run_id=item.get('run_id'),
                        worker_id=item['worker_id'], agent='task-lead-resume', fresh_run=False)

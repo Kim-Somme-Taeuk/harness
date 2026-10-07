@@ -340,6 +340,18 @@ def main() -> int:
         if invalid_name and emit_permission_decision is not None:
             emit_permission_decision("deny", invalid_name)
             return 0
+        # Model selection is a spawn gate; watcher recovery remains best-effort.
+        try:
+            from routing_state import gate
+            reason = gate(json.loads(payload.decode("utf-8", errors="surrogateescape")))
+        except Exception as exc:
+            reason = f"Model routing validation failed: {type(exc).__name__}: {exc}"
+        if reason:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason[:2000],
+            }}))
+            return 0
         # Registration stays best-effort — per C-12 this hook must never block
         # the session. Failure is surfaced, but substantive review and QA still
         # run; only attested close remains unavailable.
