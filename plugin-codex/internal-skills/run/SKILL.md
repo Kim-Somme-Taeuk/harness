@@ -138,6 +138,7 @@ harness task yourself and continue through this flow.
 
 ### Native Goal continuation
 
+Apply Phase 0 project-table discovery before selecting or dispatching Goal work.
 Before opening a main-checkout task, cut a broad Goal into declared requests
 with literal path scopes and dependencies. When two or more requests can run
 independently, call `goal_add_task` with a new integration child ID and
@@ -157,6 +158,20 @@ child; abandoned work never counts as completion. Without a work pack,
 Present the selected next task as status, including its route and effective capacity.
 
 ### Phase 0: Resume detection
+
+Before choosing, dispatching, or resuming implementation work, read AGENTS.md and
+the active PLAN, then the project task classification/routing table they explicitly
+link; conversation history is not a substitute. Re-read before each next task.
+For a persistent Sol/Astra session split, select ready tasks assigned to this
+session's role, respecting dependencies and exclusive file ownership. Check the
+actual running model separately; a role mismatch requires reporting both and
+handoff to the matching session or operator resolution before implementation,
+never a claimed model switch. The table cannot override model admission or task
+focus. Resolve a declared missing/ambiguous table or table/router conflict first.
+If no table is declared, continue ordinary routing without inventing a role. When
+the user requests a persistent multi-session division and no table exists,
+persist it under project doc/ and link it from AGENTS.md or the active PLAN before
+implementation.
 
 `task_context` is a binding operation, not a neutral lookup of another session's
 task. Inspect another task's files read-only instead. If a hook reports a binding

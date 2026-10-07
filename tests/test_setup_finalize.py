@@ -243,6 +243,34 @@ def test_project_doc_routing_preserves_unmarked_same_name_section(tmp_path):
     assert "$harness:run" in result
 
 
+def test_project_doc_routing_discovers_declared_task_table(tmp_path):
+    setup_finalize = load_setup_finalize("setup_finalize_task_table_test")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_doc = repo / "AGENTS.md"
+    user_rule = "Read [task assignments](doc/team/tasks.md).\n"
+    project_doc.write_text(user_rule, encoding="utf-8")
+    for _ in range(2):
+        setup_finalize.update_project_doc(
+            repo, "AGENTS.md", ensure_routing=True, ensure_contract_import=False,
+        )
+    result = project_doc.read_text(encoding="utf-8")
+    assert result.startswith(user_rule)
+    assert result.count("### Project task routing") == 1
+    block = result.split("### Project task routing\n", 1)[1].split(
+        "### Durable Decision Documentation Gate", 1,
+    )[0]
+    for required in (
+        "explicitly linked from AGENTS.md or the active PLAN.md",
+        "Re-read it before each next task", "exclusive file ownership",
+        "one persistent Sol session", "one Astra session",
+        "actual running model", "never claim an automatic model switch",
+        "model_routing/routing_state", "If no table is declared",
+        "persist it under doc/", "before implementation",
+    ):
+        assert required in block
+
+
 def test_project_doc_routing_preserves_user_rule_after_legacy_eof_block(tmp_path):
     setup_finalize = load_setup_finalize("setup_finalize_legacy_eof_test")
     repo = tmp_path / "repo"

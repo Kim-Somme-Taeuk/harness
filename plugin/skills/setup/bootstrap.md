@@ -187,6 +187,12 @@ repo-mutating work to `$harness:run` and contains the
 `Durable Decision Documentation Gate`: a durable decision is not handled until it is documented under `doc/`;
 Conversation history is not durable memory, and
 the task records a specific PLAN durable-doc decision when no doc applies.
+The block also requires reading a project task routing table explicitly linked
+from AGENTS.md or the active PLAN before choosing/resuming work and each next
+task. It preserves session-role, dependency and exclusive-ownership intent without
+claiming a model switch or bypassing model admission. No declared table means
+ordinary routing; an explicitly requested persistent multi-session division must
+be documented under doc/ and linked before implementation.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 "${_PLUGIN_ROOT}/scripts/setup_finalize.py" \

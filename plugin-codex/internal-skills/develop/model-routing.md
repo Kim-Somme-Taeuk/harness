@@ -1,5 +1,20 @@
 # Codex failure-cost routing
 
+Before selecting a task/AC, read the project task classification/routing table
+explicitly linked from AGENTS.md or the active PLAN; re-read before each next
+task, rather than relying on conversation history. Use it for assigned session
+role, scope, dependencies and exclusive file ownership. A persistent Sol session
+may handle all ready Sol tasks and an Astra session all ready Astra tasks.
+Check the actual running model separately: report a role/model mismatch and hand
+off or wait for operator resolution before implementation; no role label changes
+the coordinator model. No declared table means ordinary routing, without an
+invented role. An explicitly requested persistent multi-session division must
+be persisted under project doc/ and linked before implementation if absent.
+Resolve a declared missing/ambiguous table before selecting work. The helpers
+below still recompute authoritative model admission, including failure escalation;
+reconcile any table/router conflict before implementation instead of bypassing
+the router. Existing dependency, ownership and active-task focus gates still apply.
+
 Before each implementation/task-lead/test-author spawn, calculate and persist a
 routing decision. `scripts/routing_state.py` calls the shared `model_routing.py`
 and derives retry counts from failed-work history. It does not admit workers:
