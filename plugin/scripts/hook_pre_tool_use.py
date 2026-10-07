@@ -82,7 +82,9 @@ def _tool_name(payload: bytes) -> str:
 
 
 def _is_subagent_spawn_tool(tool_name: str) -> bool:
-    return (tool_name or "").lower() == "collaboration.spawn_agent"
+    # Codex 0.160.1 concatenates namespace and function in hook input.
+    # Keep this exact-name set aligned with install._codex_hooks_config.
+    return tool_name in {"collaboration.spawn_agent", "collaborationspawn_agent", "spawn_agent", "Agent"}
 
 
 def _spawn_task_name(payload: bytes) -> str:

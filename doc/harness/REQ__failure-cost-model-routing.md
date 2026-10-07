@@ -59,21 +59,43 @@ worker names; admitted groups include worker/model/risk/spawn arguments and the
 request to persist at reservation time. Failed model admission defers the whole
 worker group. Claude/default scheduling remains unchanged.
 
-Native enforcement requires the host to invoke and honor PreToolUse. An October
-7 probe in this container started an invalid-review-name worker even though the
-installed hook returned deny for the same input. Therefore local gate tests and
-payload installation alone cannot prove native enforcement. Native model metadata
-and actual denied calls are required for the requested end-to-end acceptance.
+Native enforcement requires the host to invoke and honor PreToolUse. Local gate
+tests and payload installation alone cannot prove native enforcement. Observe
+the actual hook invocation and input tool name before interpreting a worker that
+starts despite a separately executed hook's denial. Native model metadata and
+actual denied calls are required for end-to-end acceptance.
+
+The installer-generated Codex hooks.json matcher and Python spawn classifier
+must accept the observed 0.160.1 hook name `collaborationspawn_agent`, the native
+API spelling `collaboration.spawn_agent`, and documented `spawn_agent` / `Agent`
+names. Other similarly named tools do not enter the model gate. The same routing
+validation applies to all accepted names.
 
 ## Known ceiling
 
-The continuation probe confirmed Low→Sol, High→Astra and an observed Sol
-assertion failure followed by an Astra replacement, using native rollout
-`turn_context.model` metadata. A missing-decision worker still started despite
-local hook denial in both the target and native cwd. Model selection and handoff
-are therefore observed, while host-enforced denial remains unmet. Review/QA
-receipt collection is a separate host capability and cannot be inferred from
-these model probes.
+The first continuation confirmed Low→Sol, High→Astra and observed Sol failure→Astra
+replacement using native rollout `turn_context.model`. Its missing-decision
+worker started, but that did not prove the host ignored a hook result. Subsequent
+metadata-only instrumentation observed working apply_patch PreToolUse and Bash
+PostToolUse, with no spawn invocation under the old matcher. A fresh no-daemon
+diagnostic process using a temporary wildcard matcher observed the concatenated
+`collaborationspawn_agent` name. The old matcher and classifier missed that name.
+
+An installer daemon-socket refresh error is independent of this mismatch. A
+`--no-daemon` session need not have a daemon socket, and starting a daemon is not
+the remedy. Verify loaded definitions separately from disk trust hashes. The
+observed active session retained its old matcher after file/trust updates; leave
+an explicit handoff before any user-controlled reload or restart. Review/QA
+receipt collection remains a separate capability from model gating.
+
+After correcting both names, a fresh Codex 0.160.1 `--no-daemon` session
+confirmed all four native cases: missing routing record and Sol-decision/Astra-
+argument mismatch each returned `Tool call blocked by PreToolUse hook` before
+worker creation; valid Sol and Astra requests each created one worker. Hook
+metadata correlated the two `deny` results with native tool-call IDs, and native
+child rollout `turn_context.model` confirmed both permitted models. Temporary
+observers were removed afterwards. This validates newly loaded definitions,
+not automatic refresh of an already running session's old matcher.
 
 Batch bootstrap is the explicit exception to open-task lookup: a sidecar in
 `doc/harness/runtime/model-routing/` binds the model decision to an existing

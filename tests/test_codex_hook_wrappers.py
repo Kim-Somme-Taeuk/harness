@@ -1061,8 +1061,18 @@ class TestCodexHookWrappers(unittest.TestCase):
         config = install._codex_hooks_config(REPO_ROOT / "installed")
         self.assertEqual(
             config["hooks"]["PreToolUse"][0]["matcher"],
-            "Write|Edit|MultiEdit|apply_patch|collaboration\\.spawn_agent",
+            "^(?:Write|Edit|MultiEdit|apply_patch|collaboration\\.?spawn_agent|spawn_agent|Agent)$",
         )
+        import re
+        spawn_hook = _load("hook_pre_tool_use")
+        matcher = config["hooks"]["PreToolUse"][0]["matcher"]
+        for name in ("collaboration.spawn_agent", "collaborationspawn_agent", "spawn_agent", "Agent"):
+            self.assertIsNotNone(re.search(matcher, name), name)
+            self.assertTrue(spawn_hook._is_subagent_spawn_tool(name), name)
+        for name in ("functions.spawn_agent", "multi_agent_v1__spawn_agent", "collaborationwait_agent",
+                     "spawn_agent_extra", "NotAgent", "agent"):
+            self.assertIsNone(re.search(matcher, name), name)
+            self.assertFalse(spawn_hook._is_subagent_spawn_tool(name), name)
         self.assertEqual(
             config["hooks"]["PostToolUse"][0]["matcher"],
             "Bash|.*create_goal|task_start|task_context|"

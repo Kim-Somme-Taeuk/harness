@@ -115,12 +115,13 @@ def test_gate_current_binding_and_exemptions(task):
             routing.gate(payload)
 
 
-def test_hook_emits_deny_on_routing_error(task):
+@pytest.mark.parametrize('tool_name', ['collaboration.spawn_agent', 'collaborationspawn_agent', 'spawn_agent', 'Agent'])
+def test_hook_emits_deny_on_routing_error(task, tool_name):
     import hook_pre_tool_use as hook
     from io import BytesIO, StringIO
     import contextlib
     class Input:
-        buffer = BytesIO(json.dumps(dict(tool_name='collaboration.spawn_agent',
+        buffer = BytesIO(json.dumps(dict(tool_name=tool_name,
             cwd=str(task.parents[3]), tool_input=arguments())).encode())
     out = StringIO()
     with patch.object(sys, 'stdin', Input()), patch('routing_state.gate', side_effect=ValueError('model mismatch')), \
