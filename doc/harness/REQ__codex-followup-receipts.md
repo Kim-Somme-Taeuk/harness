@@ -90,3 +90,13 @@ The fork adds a model-decision gate to `hook_pre_tool_use.py` before best-effort
 watcher registration. Existing binding-conflict and receipt behavior remains;
 review/QA model exemptions preserve substantive lenses when watcher registration
 is unavailable. Model-decision failures are separate from receipt failures.
+
+### Eager MCP registration
+
+When the MCP process receives its exact native coordinator identity, eager
+registration must preserve the current task/run generation even when the caller
+supplies an additional exact-binding predicate. That predicate supplements the
+session/task checks; it must not select generationless registration. A successful
+registry write with empty task/run is insufficient: the watcher manager rejects
+it. Regression coverage must exercise real MCP registration, restore, registry
+publication, and manager enumeration together, including missing bindings.

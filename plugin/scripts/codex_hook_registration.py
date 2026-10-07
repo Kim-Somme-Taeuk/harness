@@ -438,7 +438,9 @@ def restore_watcher_registration(
         )
         _record(NOT_APPLICABLE, missing)
         return False
-    generation_bound = bind_fn is None and ensure_fn is ensure
+    # A caller's additional predicate (notably MCP eager binding) must not
+    # suppress the generation required by the production watcher manager.
+    generation_bound = ensure_fn is ensure
     unavailable = object()
     bound_roots = (_call_with_deadline(
         lambda: _bound_workspace_roots(control_root, thread_id), deadline, unavailable,

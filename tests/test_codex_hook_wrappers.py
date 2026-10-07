@@ -800,6 +800,7 @@ class TestCodexHookWrappers(unittest.TestCase):
 
     def test_registration_does_not_swallow_a_restored_alarm_exception(self):
         mod = _load("codex_hook_registration")
+        from test_codex_lifecycle_watcher import _write_exact_session_binding
 
         class CallerDeadline(Exception):
             pass
@@ -821,6 +822,9 @@ class TestCodexHookWrappers(unittest.TestCase):
                 manifest = Path(repo) / "doc/harness/manifest.yaml"
                 manifest.parent.mkdir(parents=True)
                 manifest.write_text("type: cli\n", encoding="utf-8")
+                _write_exact_session_binding(
+                    Path(repo), "019f834e-1e91-7662-9024-f548103d751e",
+                )
                 payload = json.dumps({
                     "cwd": repo,
                     "session_id": "019f834e-1e91-7662-9024-f548103d751e",

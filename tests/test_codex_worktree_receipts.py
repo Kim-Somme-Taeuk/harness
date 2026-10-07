@@ -17,6 +17,45 @@ LEAD = "019f82a6-ce64-75a3-b01d-92f7b0b4fe6f"
 LENS = "019f82a6-ce64-75a3-b01d-92f7b0b4fe70"
 
 
+def test_mcp_eager_registration_preserves_generation_with_custom_predicate(tmp_path, monkeypatch):
+    from test_receipt_watcher_fail_closed import _server
+    from test_codex_lifecycle_watcher import _write_exact_session_binding, _rollout_path, _write_jsonl
+    server = _server()
+    import codex_lifecycle_watcher as watcher
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    task_id, run_id = _write_exact_session_binding(repo, ROOT)
+    (repo / "doc/harness/manifest.yaml").write_text("version: 5\ntype: library\n")
+    home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_THREAD_ID", ROOT)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(server, "_server_runtime", lambda: "codex")
+    monkeypatch.setattr(server, "_SERVER", None)
+    rollout = _rollout_path(home, ROOT)
+    _write_jsonl(rollout, [{"type": "session_meta", "payload": {
+        "id": ROOT, "session_id": ROOT, "cwd": str(repo), "thread_source": "user",
+    }}])
+    task = repo / "doc/harness/tasks" / task_id
+    control = server.read_task_control(str(task))
+
+    result = server._register_task_start_watcher(str(repo), str(task), control)
+    assert result["registered"] is True, result
+    registrations = watcher.registrations(str(repo))
+    assert len(registrations) == 1
+    assert registrations[0]["task_id"] == task_id
+    assert registrations[0]["run_id"] == run_id
+    assert registrations[0]["offset"] == rollout.stat().st_size
+
+    marker = repo / "doc/harness/tasks/.active_sessions" / f"{ROOT}.json"
+    marker.unlink()
+    assert watcher.registrations(str(repo)) == []
+    result = server._register_task_start_watcher(str(repo), str(task), control)
+    assert result["registered"] is False
+    assert not (task / "RECEIPTS.jsonl").exists()
+
+
 def native_tree(home, cwd):
     from test_codex_lifecycle_watcher import _rollout_path, _write_jsonl, _child_events, _spawn_events
     root = _rollout_path(home, ROOT)
