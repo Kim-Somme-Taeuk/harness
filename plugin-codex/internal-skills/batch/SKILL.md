@@ -50,7 +50,9 @@ specific capability blocker instead of silently marking the pack complete.
    `git worktree add -b <branch> <W> <spawn_head>`. Never change process-wide
    cwd: all shell calls pass an explicit working directory or `git -C`.
    Recheck the returned branch/HEAD and the worktree registration.
-3. Spawn a bootstrap-only agent with a unique name; prompt it to read
+3. Apply [failure-cost routing](../develop/model-routing.md) to the whole task
+   before bootstrap; use its helper's native spawn arguments and a complete handoff.
+   Spawn a bootstrap-only agent with a unique name; prompt it to read
    `${HARNESS_PLUGIN_ROOT}/agents/task-lead.md`, name its exact W/branch,
    batch ID, slug, exact claim `task_id`, scope, off-limits paths, selected modules and spawn HEAD.
    Bootstrap writes only the shared helper's retention marker and returns.
