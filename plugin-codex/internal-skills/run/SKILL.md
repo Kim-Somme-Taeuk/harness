@@ -158,6 +158,14 @@ Present the selected next task as status, including its route and effective capa
 
 ### Phase 0: Resume detection
 
+`task_context` is a binding operation, not a neutral lookup of another session's
+task. Inspect another task's files read-only instead. If a hook reports a binding
+conflict, resolve ownership before spawning lenses: never park another session's
+work just to clear the fence. Once only the intended task is eligible, obtain a
+successful explicit `task_start`/`task_context` result before review starts.
+Pre-checkpoint reviews cannot be recovered by a later lookup. See
+`doc/harness/REQ__codex-followup-receipts.md` for the separate followup contract.
+
 Before creating a new task, check whether this session already has an active
 harness task. If an active task exists, call `task_context` for that task and
 resume instead of creating a duplicate.

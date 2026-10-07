@@ -117,6 +117,8 @@ def _fixture_record(task: Path, receipt: dict) -> dict:
         "agent_id": agent_id, "agent_type": agent_type, "lens": lens,
         "verdict": verdict, "summary": summary,
     }
+    if "event_order" in receipt:
+        entry["event_order"] = receipt["event_order"]
     if not lib._receipt_entry_semantics_valid(entry):
         raise ValueError("receipt does not satisfy the exact persisted schema")
     with (task / lib.RECEIPTS_NAME).open("a", encoding="utf-8") as handle:

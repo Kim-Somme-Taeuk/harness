@@ -27,7 +27,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -214,19 +214,41 @@ def _safe_regular_file(path: Path, root: Path, *, max_size: int | None = None) -
 
 
 def _find_rollout(thread_id: str, *, deadline: float | None = None) -> Path | None:
+    """Locate a unique trusted rollout across UTC/local calendar partitions."""
     if not THREAD_RE.fullmatch(thread_id):
         return None
     root = _sessions_root()
     try:
         if _deadline_expired(deadline):
             return None
-        created = datetime.fromtimestamp(uuid7_timestamp_ms(thread_id) / 1000).astimezone()
-        direct_root = root / f"{created:%Y}" / f"{created:%m}" / f"{created:%d}"
-        direct = list(direct_root.glob(f"rollout-*{thread_id}.jsonl"))
+        created = datetime.fromtimestamp(uuid7_timestamp_ms(thread_id) / 1000, timezone.utc)
+        candidate = None
+        # Root and child writers can use different timezones. Calendar paths
+        # locate evidence only; trusted readers still authenticate its contents.
+        for delta in (-1, 0, 1):
+            if _deadline_expired(deadline):
+                return None
+            day = created + timedelta(days=delta)
+            directory = root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}"
+            try:
+                entries = os.scandir(directory)
+            except FileNotFoundError:
+                continue
+            with entries:
+                for entry in entries:
+                    if _deadline_expired(deadline):
+                        return None
+                    if not (entry.name.startswith("rollout-")
+                            and entry.name.endswith(f"{thread_id}.jsonl")):
+                        continue
+                    path = directory / entry.name
+                    if _safe_regular_file(path, root):
+                        if candidate is not None:
+                            return None
+                        candidate = path
+        return None if _deadline_expired(deadline) else candidate
     except (OSError, OverflowError, TypeError, ValueError):
         return None
-    valid = [path for path in direct if _safe_regular_file(path, root)]
-    return valid[0] if len(valid) == 1 else None
 
 
 def _load_json_line(raw: bytes) -> dict[str, Any] | None:
@@ -1185,6 +1207,7 @@ def _child_status(
     root_id: str,
     agent_path: str,
     session_cwd: str,
+    *, generation: int = 0, not_before: str = "",
 ) -> tuple[str, Path | None, str]:
     try:
         coordinator = ({"session_id": root_id, "agent_path": "/root", "depth": 0}
@@ -1208,6 +1231,10 @@ def _child_status(
     child_turn = False
     finals: list[str] = []
     completes: list[str] = []
+    native_turns: list[dict[str, Any]] = []
+    native_turn: dict[str, Any] | None = None
+    inherited_prefix = False
+    child_created_ms = 0
     try:
         while True:
             raw = handle.readline(MAX_LINE_BYTES + 1)
@@ -1236,6 +1263,46 @@ def _child_status(
                     and spawn.get("depth") == coordinator["depth"] + 1
                 ):
                     matching_meta += 1
+                    if matching_meta != 1:
+                        return "invalid", path, ""
+                    fork_parent = payload.get("forked_from_id")
+                    if fork_parent is not None:
+                        if fork_parent != root_id:
+                            return "invalid", path, ""
+                        try:
+                            child_created_ms = uuid7_timestamp_ms(child_id)
+                        except (TypeError, ValueError):
+                            return "invalid", path, ""
+                        inherited_prefix = True
+            if inherited_prefix:
+                # Forked history has rewritten event timestamps. Only UUIDv7
+                # creation order proves a turn predates this child. Once own
+                # execution begins, never discard an overlapping native turn.
+                if (event.get("type") != "event_msg"
+                        or payload.get("type") != "task_started"):
+                    continue
+                try:
+                    started_ms = uuid7_timestamp_ms(payload.get("turn_id"))
+                except (TypeError, ValueError):
+                    return "invalid", path, ""
+                if started_ms < child_created_ms:
+                    continue
+                inherited_prefix = False
+            if (matching_meta and event.get("type") == "event_msg"
+                    and payload.get("type") == "task_started"):
+                turn_id = payload.get("turn_id")
+                try:
+                    uuid7_timestamp_ms(turn_id)
+                except (TypeError, ValueError):
+                    return "invalid", path, ""
+                if (not isinstance(turn_id, str) or not THREAD_RE.fullmatch(turn_id)
+                        or any(t["id"] == turn_id for t in native_turns)
+                        or (native_turn is None and child_turn)
+                        or (native_turn is not None and len(native_turn["completes"]) != 1)):
+                    return "invalid", path, ""
+                native_turn = {"id": turn_id, "timestamp": event.get("timestamp"),
+                               "boundaries": 0, "finals": [], "completes": []}
+                native_turns.append(native_turn)
             if event.get("type") == "response_item" and payload.get("type") == "agent_message":
                 if payload.get("author") == coordinator["agent_path"] and payload.get("recipient") == agent_path:
                     content = payload.get("content") or []
@@ -1244,15 +1311,28 @@ def _child_status(
                         if isinstance(item, dict) and item.get("type") == "input_text"
                     ]
                     if any("Message Type: NEW_TASK" in text for text in texts):
+                        if native_turn is not None:
+                            metadata = payload.get("internal_chat_message_metadata_passthrough")
+                            if not isinstance(metadata, dict) or metadata.get("turn_id") != native_turn["id"]:
+                                return "invalid", path, ""
+                            native_turn["boundaries"] += 1
                         child_boundaries += 1
                         child_turn = True
                         finals.clear()
                         completes.clear()
                         continue
             if child_turn and event.get("type") == "event_msg" and payload.get("type") == "agent_message" and payload.get("phase") == "final_answer":
-                finals.append(str(payload.get("message") or ""))
+                value = str(payload.get("message") or "")
+                finals.append(value)
+                if native_turn is not None:
+                    native_turn["finals"].append(value)
             if child_turn and event.get("type") == "event_msg" and payload.get("type") == "task_complete":
-                completes.append(str(payload.get("last_agent_message") or ""))
+                value = str(payload.get("last_agent_message") or "")
+                completes.append(value)
+                if native_turn is not None:
+                    if payload.get("turn_id") != native_turn["id"]:
+                        return "invalid", path, ""
+                    native_turn["completes"].append(value)
     except OSError:
         return "pending", path, ""
     finally:
@@ -1264,14 +1344,37 @@ def _child_status(
         return "pending", path, ""
     if matching_meta != 1:
         return "invalid", path, ""
+    if native_turns:
+        if generation >= len(native_turns):
+            return "pending", path, ""
+        for previous in native_turns[:generation]:
+            if (previous["boundaries"] != 1 or len(previous["completes"]) != 1
+                    or len(previous["finals"]) > 1 or not previous["completes"][0]
+                    or (previous["finals"] and previous["finals"] != previous["completes"])):
+                return "invalid", path, ""
+        selected = native_turns[generation]
+        if not_before:
+            try:
+                lower = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+                started = datetime.fromisoformat(str(selected["timestamp"]).replace("Z", "+00:00"))
+                if lower.tzinfo is None or started.tzinfo is None or started < lower:
+                    return "invalid", path, ""
+            except (ValueError, TypeError, OverflowError):
+                return "invalid", path, ""
+        child_boundaries = selected["boundaries"]
+        finals, completes = selected["finals"], selected["completes"]
+    elif generation:
+        return "invalid", path, ""
     if child_boundaries == 0:
         return "pending", path, ""
     if child_boundaries != 1:
         return "invalid", path, ""
-    if not finals and not completes:
-        return "running", path, ""
-    if len(finals) > 1 or len(completes) != 1:
+    if len(finals) > 1 or len(completes) > 1:
         return "invalid", path, ""
+    if not completes:
+        if finals and not finals[0]:
+            return "invalid", path, ""
+        return "running", path, finals[0] if finals else ""
     child_final = completes[0]
     if not child_final or (finals and finals[0] != child_final):
         return "invalid", path, ""
@@ -1288,8 +1391,10 @@ def _exact_receipt(
     lens: str,
     task_run_id: str,
     agent_type: str,
+    event_order: str | None = None,
 ) -> dict[str, Any] | None:
-    for item in receipt_snapshot(task_dir).entries:
+    entries = receipt_snapshot(task_dir).entries
+    for item in entries:
         if (
             item.get("runtime_id") == runtime_id
             and item.get("event") == event
@@ -1299,6 +1404,33 @@ def _exact_receipt(
             and item.get("task_run_id") == task_run_id
             and item.get("agent_type") == agent_type
         ):
+            if "event_order" in item and item["event_order"] != event_order:
+                # Diagnostics alone cannot revoke a persisted PASS. Preserve
+                # the original rows and use the existing duplicate-terminal
+                # invalidation rule, under the caller's live binding lock.
+                # Do not recurse through _invalidate's exact-replay lookup.
+                identity = {key: item[key] for key in (
+                    "source", "task_run_id", "runtime_id", "agent_id", "agent_type", "lens",
+                )}
+                if not any(
+                    prior.get("event") == "completed" and prior.get("verdict") == "PENDING"
+                    and "event_order" not in prior
+                    and all(prior.get(key) == value for key, value in identity.items())
+                    for prior in entries
+                ):
+                    summary = "VERDICT: PENDING"
+                    if lens.startswith("review-"):
+                        summary += "\nFINDING_COUNTS: FIX_NOW=1 INVESTIGATE=0 OPTIONAL=0"
+                    summary += "\nRuntime watcher invalidated: conflicting native event origin"
+                    # Neither conflicting position is ordering authority.
+                    # Origin-free invalidation makes this run incomparable,
+                    # so another overlapping PASS cannot replace the disputed
+                    # completion merely because its terminals became invalid.
+                    record_subagent_receipt(task_dir, {
+                        **identity, "event": "completed", "verdict": "PENDING",
+                        "summary": summary,
+                    })
+                raise RuntimeError("receipt replay event_order conflicts with native origin")
             return item
     return None
 
@@ -1347,10 +1479,7 @@ class Watcher:
     ) -> None:
         if item.get("invalid"):
             return
-        if (
-            not item.get("completed")
-            and not completion_confirmed
-        ) or not item.get("task_dir"):
+        if not item.get("task_dir"):
             item["invalid"] = True
             return
         lens = _infer_receipt_lens(item.get("task_name", ""))
@@ -1367,9 +1496,28 @@ class Watcher:
         if completion_summary is None:
             summary += f"\nRuntime watcher invalidated: {reason}"
         with active_session_transaction(self.repo_root):
-            _require_task_binding(
+            binding = _require_task_binding(
                 self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
             )
+            if (binding.get("task_dir") != item.get("task_dir")
+                    or binding.get("run_id") != item.get("task_run_id")):
+                item["invalid"] = True
+                return
+            # Replay may encounter contradictory child evidence before memory
+            # recovers a previously persisted terminal. Revoke that exact
+            # identity too, under the same live binding and transaction.
+            if not item.get("completed"):
+                existing = (_exact_receipt(
+                    item["task_dir"], item["runtime_id"], "completed",
+                    source=self._receipt_source(item),
+                    agent_path=self._receipt_agent_id(item), lens=lens,
+                    task_run_id=item.get("task_run_id", ""),
+                    agent_type=item.get("task_name", ""),
+                    event_order=item.get("completed_order"),
+                ) if item.get("runtime_id") else None)
+                if existing is None and not completion_confirmed:
+                    item["invalid"] = True
+                    return
             pending_exists = any(
                 receipt.get("runtime_id") == item.get("runtime_id")
                 and receipt.get("event") == "completed"
@@ -1383,6 +1531,7 @@ class Watcher:
             )
             if not pending_exists:
                 record_subagent_receipt(item["task_dir"], {
+                    **({"event_order": item["completed_order"]} if "completed_order" in item else {}),
                     "source": self._receipt_source(item),
                     "event": "completed",
                     "agent_id": self._receipt_agent_id(item),
@@ -1466,6 +1615,7 @@ class Watcher:
                 lens=lens,
                 task_run_id=item["task_run_id"],
                 agent_type=item["task_name"],
+                event_order=item.get("started_order"),
             )
         if exact_existing is not None:
             self.replay_recovery_progress += 1
@@ -1476,9 +1626,14 @@ class Watcher:
             })
             self.by_agent[item["agent_path"]] = item
             return
-        child_status, _, _ = _child_status(
-            item["child_id"], self.root_id, item["agent_path"], self.session_cwd,
-        )
+        # A correlated followup activity proves new work on the already trusted
+        # child. Publish its pending start even while output/turn files lag, so
+        # the previous PASS cannot survive an unverified followup.
+        child_status = "running"
+        if not item.get("generation"):
+            child_status, _, _ = _child_status(
+                item["child_id"], self.root_id, item["agent_path"], self.session_cwd,
+            )
         if child_status == "pending":
             return
         # The registration offset proves this spawn was observed in order.
@@ -1506,16 +1661,19 @@ class Watcher:
                 lens=lens,
                 task_run_id=item["task_run_id"],
                 agent_type=item["task_name"],
+                event_order=item.get("started_order"),
             )
             if exact_existing is None:
                 record_subagent_receipt(task_dir, {
+                    **({"event_order": item["started_order"]} if "started_order" in item else {}),
                     "source": source,
                     "event": "started",
                     "agent_id": self._receipt_agent_id(item),
                     "agent_type": item["task_name"],
                     "lens": lens,
                     "task_run_id": item.get("task_run_id", ""),
-                    "summary": "Codex runtime spawn observed from the registered rollout checkpoint",
+                    "summary": ("Codex authenticated followup activity observed" if item.get("generation")
+                                else "Codex runtime spawn observed from the registered rollout checkpoint"),
                     "runtime_id": runtime_id,
                 })
                 self.receipt_progress += 1
@@ -1543,10 +1701,14 @@ class Watcher:
         ):
             self._invalidate(item, "active task changed while agent was running")
             return
+        if item.get("generation") and not item.get("followup_success"):
+            return
+        options = ({"generation": item["generation"], "not_before": item["followup_timestamp"]}
+                   if item.get("generation") else {})
         status, transcript, child_final = _child_status(
-            item["child_id"], self.root_id, item["agent_path"], self.session_cwd,
+            item["child_id"], self.root_id, item["agent_path"], self.session_cwd, **options,
         )
-        if status == "pending":
+        if status == "pending" or (status == "running" and (not child_final or root_final == child_final)):
             return
         if status != "complete" or transcript is None or root_final != child_final:
             self._invalidate(item, "root and child completion evidence did not match")
@@ -1585,9 +1747,11 @@ class Watcher:
                 lens=lens,
                 task_run_id=item["task_run_id"],
                 agent_type=item["task_name"],
+                event_order=item.get("completed_order"),
             )
             if exact_existing is None:
                 record_subagent_receipt(item["task_dir"], {
+                    **({"event_order": item["completed_order"]} if "completed_order" in item else {}),
                     "source": self._receipt_source(item),
                     "event": "completed",
                     "agent_id": self._receipt_agent_id(item),
@@ -1609,11 +1773,115 @@ class Watcher:
         for item in list(self.by_agent.values()):
             self._maybe_complete(item)
 
-    def feed(self, event: dict[str, Any]) -> None:
+    def _followup_event(self, event: dict[str, Any], origin_offset: int | None) -> bool:
+        payload = _event_payload(event, "response_item")
+        if (payload and payload.get("type") == "function_call"
+                and payload.get("namespace") == "collaboration"
+                and payload.get("name") == "followup_task"):
+            call_id = payload.get("call_id")
+            arguments = _json_arguments(payload)
+            if not isinstance(call_id, str) or not CALL_RE.fullmatch(call_id) or arguments is None:
+                return True
+            target = arguments.get("target")
+            # A prior final/start may still await independent authentication.
+            # Accepted followup work must also fence that pending generation.
+            known = list(self.by_agent.values()) + [
+                item for item in self.calls.values()
+                if not item.get("started") and not item.get("followup")
+                and not item.get("invalid") and item.get("child_id")
+            ]
+            candidates = [item for item in known
+                          if target in (item.get("task_name"), item.get("agent_path"), item.get("child_id"))]
+            if len(candidates) != 1:
+                return True
+            previous = candidates[0]
+            if call_id in self.calls:
+                self._invalidate(self.calls[call_id], "duplicate followup call identity")
+                return True
+            binding = _require_task_binding(
+                self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
+            )
+            item = {
+                "followup": True, "previous": previous,
+                "task_name": previous["task_name"], "agent_path": previous["agent_path"],
+                "child_id": previous["child_id"], "task_dir": previous["task_dir"],
+                "task_run_id": previous["task_run_id"],
+                "generation": previous.get("generation", 0) + 1,
+                "followup_timestamp": event.get("timestamp", ""),
+            }
+            if origin_offset is not None:
+                item["started_order"] = f"codex:{self.root_id}:{origin_offset}"
+            item["eligible"] = bool(
+                previous.get("completed") and not previous.get("invalid")
+                and binding.get("task_dir") == item["task_dir"]
+                and binding.get("run_id") == item["task_run_id"]
+                and not _event_precedes_run(event, item["task_run_id"])
+            )
+            competing = [candidate for candidate in self.calls.values()
+                         if candidate.get("followup") and candidate.get("eligible")
+                         and candidate["previous"].get("runtime_id") == previous.get("runtime_id")
+                         and ("followup_output" not in candidate or candidate.get("followup_success"))]
+            if competing:
+                item["eligible"] = False
+                for candidate in competing:
+                    candidate["eligible"] = False
+            self.calls[call_id] = item
+            return True
+        activity_payload = _event_payload(event, "event_msg")
+        if activity_payload and activity_payload.get("type") == "item_completed":
+            activity = activity_payload.get("item")
+            if isinstance(activity, dict) and activity.get("type") == "SubAgentActivity":
+                call_id = activity.get("id")
+                item = self.calls.get(call_id) if isinstance(call_id, str) else None
+                if item and item.get("followup"):
+                    if (activity.get("kind") != "interacted"
+                            or activity.get("agent_thread_id") != item["child_id"]
+                            or activity.get("agent_path") != item["agent_path"]):
+                        self._invalidate(item, "followup activity identity did not match")
+                        return True
+                    if not item["eligible"] or item.get("invalid"):
+                        self._invalidate(item["previous"], "overlapping or unbound followup activity")
+                        item["invalid"] = True
+                        return True
+                    if self._set_once(item, "output_path", item["agent_path"]):
+                        self._maybe_start(call_id)
+                    if "followup_output" in item and not item.get("followup_success"):
+                        self._invalidate(item, "followup output was not a native success")
+                    self._maybe_complete(item)
+                    return True
+        if payload and payload.get("type") == "function_call_output":
+            call_id = payload.get("call_id")
+            item = self.calls.get(call_id) if isinstance(call_id, str) else None
+            if item and item.get("followup"):
+                if not self._set_once(item, "followup_output", payload.get("output")):
+                    return True
+                # Native successful followup output is exactly the empty string;
+                # it supplies no identity. Only the interacted activity does.
+                item["followup_success"] = payload.get("output") == ""
+                if item["followup_success"] and not item.get("started"):
+                    # Accepted work voids the old PASS even if its activity is
+                    # missing. This negative evidence cannot authorize a new
+                    # start; a later exact activity may still establish it.
+                    self._invalidate(item["previous"], "successful followup awaits authenticated activity")
+                if not item["followup_success"] and item.get("started"):
+                    self._invalidate(item, "followup output was not a native success")
+                self._maybe_complete(item)
+                return True
+        return False
+
+    def feed(self, event: dict[str, Any], *, origin_offset: int | None = None) -> None:
+        if origin_offset is not None and (
+            not isinstance(origin_offset, int) or isinstance(origin_offset, bool) or origin_offset < 0
+        ):
+            raise ValueError("origin_offset must be a nonnegative native byte position")
+        if self._followup_event(event, origin_offset):
+            return
         spawn = _spawn_call(event)
         if spawn:
             call_id, task_name = spawn
             item = self.calls.setdefault(call_id, {})
+            if origin_offset is not None:
+                item.setdefault("started_order", f"codex:{self.root_id}:{origin_offset}")
             binding = _require_task_binding(
                 self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
             )
@@ -1664,10 +1932,18 @@ class Watcher:
         # before _maybe_complete can publish any receipt.
         if recipient != agent_path.rsplit("/", 1)[0]:
             return
-        self._deliver(agent_path, root_final)
+        self._deliver(agent_path, root_final, origin_offset)
 
-    def _deliver(self, agent_path: str, root_final: str) -> dict[str, Any] | None:
-        item = self.by_agent.get(agent_path) or next(
+    def _deliver(self, agent_path: str, root_final: str, origin_offset: int | None = None) -> dict[str, Any] | None:
+        pending = [entry for entry in self.calls.values()
+                   if entry.get("followup") and entry.get("agent_path") == agent_path
+                   and entry.get("eligible") and not entry.get("invalid")
+                   and not entry.get("started")
+                   and ("followup_output" not in entry or entry.get("followup_success"))]
+        # Keep one early delivery with its unique pending call. Text alone is
+        # never authority: publication still waits for activity/output/turn.
+        item = pending[0] if len(pending) == 1 else self.by_agent.get(agent_path)
+        item = item or next(
             (entry for entry in self.calls.values() if entry.get("agent_path") == agent_path), None,
         )
         if not item:
@@ -1678,6 +1954,8 @@ class Watcher:
             self._invalidate(item, "duplicate or ambiguous root completion delivery")
             return item
         item["root_final"] = root_final
+        if origin_offset is not None:
+            item["completed_order"] = f"codex:{self.root_id}:{origin_offset}"
         self._maybe_complete(item)
         return item
 
@@ -1876,7 +2154,7 @@ def watch(
                 last_data = time.monotonic()
                 continue
             last_data = time.monotonic()
-            if not observe(lambda: watcher.feed(event)):
+            if not observe(lambda: watcher.feed(event, origin_offset=position)):
                 # Retry a transient failure from the rolled-back lifecycle
                 # state, but never let one permanently rejected record blind
                 # the tail to later independent agents. Externally appended

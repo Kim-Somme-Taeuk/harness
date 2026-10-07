@@ -42,7 +42,14 @@ def _register_task_result(payload: bytes) -> None:
             return
         register_task_result = callback
     try:
-        register_task_result(payload, budget_seconds=0.5)
+        from codex_hook_registration import BINDING_CONFLICT, BINDING_CONFLICT_GUIDANCE
+        status = {}
+        register_task_result(payload, budget_seconds=0.5, status_out=status)
+        if status.get("status") == BINDING_CONFLICT:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": BINDING_CONFLICT_GUIDANCE,
+            }}))
     except Exception:
         pass
 

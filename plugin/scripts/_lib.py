@@ -3191,6 +3191,7 @@ RECEIPT_FIELDS = frozenset({
     "ts", "event", "source", "task_run_id", "runtime_id", "agent_id",
     "agent_type", "lens", "verdict", "summary",
 })
+CAUSAL_RECEIPT_FIELDS = RECEIPT_FIELDS | {"event_order"}
 RECEIPT_EVENTS = frozenset({"started", "completed"})
 _RECEIPT_RUNTIME_ID_RE = re.compile(
     r"^(?P<namespace>[a-z][a-z0-9_-]*):"
@@ -3235,6 +3236,43 @@ def _validate_receipt_runtime_id(source, runtime_id):
     return parsed
 
 
+def _receipt_event_order(item):
+    """Parse authenticated Codex origin metadata; absence denotes legacy."""
+    if "event_order" not in item:
+        return None
+    value = item["event_order"]
+    if not isinstance(value, str):
+        raise ValueError("event_order must be a string")
+    match = re.fullmatch(
+        r"codex:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(0|[1-9][0-9]*)", value,
+    )
+    runtime = _validate_receipt_runtime_id(item["source"], item["runtime_id"])
+    if (not match or item["source"] != "codex_session_watcher:collaboration"
+            or runtime[1] != match[1]):
+        raise ValueError("event_order must match the Codex runtime coordinator")
+    return match[1], int(match[2])
+
+
+def _ordered_receipt_events(events):
+    """Return a comparable semantic sequence, or None for unknown ordering."""
+    origins = [_receipt_event_order(item) for item in events]
+    if all(origin is None for origin in origins):
+        return list(events)
+    if any(origin is None for origin in origins) or len({origin[0] for origin in origins}) != 1:
+        return None
+    return sorted(events, key=lambda item: _receipt_event_order(item)[1])
+
+
+def _receipt_precedes(left, right, receipts):
+    """Strict precedence; incomparable origins never establish an edge."""
+    first, second = _receipt_event_order(left), _receipt_event_order(right)
+    if first is None and second is None:
+        return receipts.index(left) < receipts.index(right)
+    if first is None or second is None or first[0] != second[0]:
+        return False
+    return first[1] < second[1]
+
+
 _RECEIPT_DIGEST_RE = re.compile(r"^DETAIL_SHA256:[0-9a-f]{64}$")
 
 
@@ -3243,6 +3281,7 @@ def _receipt_entry_semantics_valid(item):
     try:
         uuid7_timestamp_ms(item["task_run_id"])
         _validate_receipt_runtime_id(item["source"], item["runtime_id"])
+        _receipt_event_order(item)
     except (RecursionError, TypeError, ValueError):
         return False
     if (
@@ -3523,7 +3562,7 @@ def _receipt_snapshot_unlocked(task_dir):
             raise RuntimeError("receipt storage integrity unavailable") from exc
         if not isinstance(item, dict):
             raise RuntimeError("receipt storage integrity unavailable")
-        if set(item) != RECEIPT_FIELDS:
+        if set(item) not in (RECEIPT_FIELDS, CAUSAL_RECEIPT_FIELDS):
             raise _receipt_schema_error(lineno, "unknown-field-set")
         if any(not isinstance(value, str) for value in item.values()):
             raise _receipt_schema_error(lineno, "non-string-value")
@@ -4303,6 +4342,8 @@ def _make_runtime_receipt_writer():
             "agent_id": agent_id, "agent_type": agent_type, "lens": lens,
             "verdict": verdict, "summary": summary,
         }
+        if "event_order" in receipt:
+            entry["event_order"] = receipt["event_order"]
         if not _receipt_entry_semantics_valid(entry):
             raise ValueError("receipt does not satisfy the exact persisted schema")
         path = _receipts_path(task_dir)
@@ -4424,13 +4465,14 @@ del _make_runtime_receipt_writer
 
 
 def _lens_events_by_lens(receipts, prefix, current_run_id):
-    """Group this run's receipts for `prefix` lenses, preserving stream order."""
+    """Group this run's receipts, using causal order when comparable."""
     grouped = {}
     for item in receipts:
         lens = str(item.get("lens") or "").lower()
         if lens.startswith(prefix) and item.get("task_run_id") == current_run_id:
             grouped.setdefault(lens, []).append(item)
-    return grouped
+    return {lens: (_ordered_receipt_events(events) or events)
+            for lens, events in grouped.items()}
 
 
 def _rerun_in_flight(events):
@@ -4441,7 +4483,17 @@ def _rerun_in_flight(events):
     reported yet, and treating its previous PASS as current could close a task
     mid-review. Only completion-versus-completion selection changed.
     """
-    return bool(events) and events[-1].get("event") == "started"
+    ordered = _ordered_receipt_events(events)
+    if ordered is None or not ordered:
+        return False
+    if _receipt_event_order(ordered[0]) is None:
+        return ordered[-1].get("event") == "started"
+    starts = [item for item in ordered if item.get("event") == "started"]
+    if not starts:
+        return False
+    newest = starts[-1]
+    return not any(_receipt_runtime_identity_matches(newest, item)
+                   and _valid_completion(item, ordered) for item in ordered)
 
 
 def _completed_review_by_lens(task_dir, snapshot=None):
@@ -4573,6 +4625,40 @@ def _retained_verdict_token(item):
     return slot[len(prefix):].strip() if slot.startswith(prefix) else ""
 
 
+def _after_codex_followup_start(events):
+    """A resumed native child owns new work, not a restatement of old work."""
+    seen = {}
+    boundary = 0
+    for index, item in enumerate(events):
+        if (item.get("event") != "started"
+                or item.get("source") != "codex_session_watcher:collaboration"):
+            continue
+        runtime = str(item.get("runtime_id") or "").split(":")
+        if len(runtime) != 4 or runtime[0] != "codex":
+            continue
+        key = (runtime[1], runtime[3], item.get("task_run_id"),
+               item.get("agent_id"), item.get("agent_type"), item.get("lens"))
+        previous = seen.get(key)
+        if previous is not None and previous != runtime[2]:
+            boundary = index
+        seen[key] = runtime[2]
+    selected = events[boundary:]
+    if events and _receipt_event_order(events[0]) is not None:
+        # A late delivery from an older turn cannot finish the newer turn.
+        current = {}
+        for item in events:
+            if item.get("event") == "started":
+                runtime = parse_receipt_runtime_id(item.get("runtime_id"))
+                current[(runtime[1], runtime[3])] = item["runtime_id"]
+        filtered = []
+        for item in selected:
+            runtime = parse_receipt_runtime_id(item["runtime_id"])
+            if current.get((runtime[1], runtime[3])) == item["runtime_id"]:
+                filtered.append(item)
+        selected = filtered
+    return selected
+
+
 def _effective_completion(lens, events, receipts):
     """The completion a lens should be judged by. Last *readable* one wins.
 
@@ -4599,6 +4685,18 @@ def _effective_completion(lens, events, receipts):
     line alone made `VERDICT: FAIL — three blockers found.` look like one.
     `_pending_completion_kind` owns that rule.
     """
+    # The same authenticated Codex child can take a new task through followup.
+    # Once that start is observed, even malformed or conflicting new finals
+    # must not resurrect an earlier generation's PASS.
+    ordered = _ordered_receipt_events(events)
+    if ordered is None:
+        # Unknown relative age can never promote PASS or hide actual negatives.
+        for verdict in ("FAIL", "BLOCKED_ENV"):
+            for item in events:
+                if item.get("verdict") == verdict and _valid_completion(item, receipts):
+                    return item
+        return None
+    events = _after_codex_followup_start(ordered)
     fallback = None
     for item in reversed(events):
         if not _valid_completion(item, receipts):
@@ -4624,13 +4722,17 @@ def _valid_completion(item, receipts):
         for prior in receipts
     ) != 1:
         return False
-    completion_index = receipts.index(item)
-    return any(
-        prior is not item
-        and prior.get("event") == "started"
-        and _receipt_runtime_identity_matches(prior, item)
-        for prior in receipts[:completion_index]
-    )
+    starts = [prior for prior in receipts
+              if prior.get("event") == "started"
+              and _receipt_runtime_identity_matches(prior, item)]
+    for start in starts:
+        if _receipt_precedes(start, item, receipts):
+            return True
+        # Incomparable evidence retains authenticated negatives, never PASS.
+        if (item.get("verdict") in {"FAIL", "BLOCKED_ENV"}
+                and _ordered_receipt_events([start, item]) is None):
+            return True
+    return False
 
 
 def _receipt_runtime_identity_matches(start, completion):
@@ -4641,32 +4743,15 @@ def _receipt_runtime_identity_matches(start, completion):
     return all(str(start.get(key) or "") == str(completion.get(key) or "") for key in keys)
 
 
-def _latest_review_pass_index(task_dir, state=None, snapshot=None):
-    st = state or read_task_control(task_dir)
-    snapshot = snapshot or receipt_snapshot(task_dir)
-    if receipt_review_verdict(task_dir, st, snapshot) != "PASS":
-        return -1
-    completed = _completed_review_by_lens(task_dir, snapshot)
-    return max(
-        (snapshot.entries.index(completed[lens]) for lens in required_review_lenses(task_dir, st)),
-        default=-1,
-    )
-
-
-def _qa_started_after_review(snapshot, lens, completion, review_index):
-    agent_id = completion.get("agent_id")
+def _qa_started_after_review(snapshot, lens, completion, reviews):
     receipts = snapshot.entries
-    try:
-        completion_index = receipts.index(completion)
-    except ValueError:
-        return False
     return any(
         item.get("lens") == lens
-        and item.get("agent_id") == agent_id
         and item.get("event") == "started"
         and _receipt_runtime_identity_matches(item, completion)
-        and index > review_index
-        for index, item in enumerate(receipts[:completion_index])
+        and _receipt_precedes(item, completion, receipts)
+        and all(_receipt_precedes(review, item, receipts) for review in reviews)
+        for item in receipts
     )
 
 
@@ -4692,6 +4777,10 @@ def receipt_review_verdict(task_dir, state=None, snapshot=None):
     if any(verdict == "BLOCKED_ENV" for verdict in verdicts):
         return "BLOCKED_ENV"
     if missing:
+        return "PENDING"
+    relevant = [item for item in snapshot.entries
+                if item.get("task_run_id") == st.get("run_id") and item.get("lens") in required]
+    if _ordered_receipt_events(relevant) is None:
         return "PENDING"
     return "PASS" if all(verdict == "PASS" for verdict in verdicts) else "PENDING"
 
@@ -4742,12 +4831,18 @@ def receipt_runtime_verdict(task_dir, state=None, snapshot=None):
         return "BLOCKED_ENV"
     if review_verdict not in {"PASS", "NOT_APPLICABLE"}:
         return "PENDING"
-    review_index = _latest_review_pass_index(task_dir, st, snapshot)
+    selected_reviews = _completed_review_by_lens(task_dir, snapshot)
+    reviews = [selected_reviews[lens] for lens in required_review_lenses(task_dir, st)]
+    relevant = [item for item in snapshot.entries
+                if item.get("task_run_id") == st.get("run_id")
+                and item.get("lens") in required + required_review_lenses(task_dir, st)]
+    if _ordered_receipt_events(relevant) is None:
+        return "PENDING"
     valid = {
         lens: completed[lens] for lens in required
         if (
             lens in completed
-            and _qa_started_after_review(snapshot, lens, completed[lens], review_index)
+            and _qa_started_after_review(snapshot, lens, completed[lens], reviews)
         )
     }
     verdicts = [str(valid[lens].get("verdict") or "").upper() for lens in required if lens in valid]

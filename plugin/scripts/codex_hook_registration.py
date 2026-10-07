@@ -192,6 +192,16 @@ def _conflict_task_dirs(control_root: str, marker: dict) -> list[str]:
 REGISTERED = "registered"
 NOT_APPLICABLE = "not_applicable"
 REGISTRATION_FAILED = "failed"
+BINDING_CONFLICT = "binding_conflict"
+BINDING_CONFLICT_GUIDANCE = (
+    "[harness] Conflicting task bindings prevent receipt recording in this session. "
+    "task_context also binds the session; inspecting another open task can cause "
+    "this conflict. Before new review/QA spawns, resolve the conflicting work "
+    "without altering another session's state, then call task_start or task_context "
+    "for the sole intended open task to establish a fresh checkpoint. An overflow "
+    "fence requires a new coordinator. Recovery records only future starts; "
+    "earlier results remain non-attesting. Do not replay or fabricate receipts."
+)
 
 
 def _bind_active_task_to_root_session(control_root: str, thread_id: str) -> bool:
@@ -298,7 +308,7 @@ def register_task_result(
                         write_binding_conflict_fence(root, thread_id, [], overflow=True)
                         invalidate_registration(root, thread_id)
                 if status_out is not None:
-                    status_out.update({"status": NOT_APPLICABLE,
+                    status_out.update({"status": BINDING_CONFLICT,
                                        "reason": "coordinator conflict fence overflow requires a new coordinator"})
                 return False
             bindings = {root: resolve_session_task_binding(root, thread_id) for root in roots}
@@ -339,7 +349,7 @@ def register_task_result(
                             invalidate_registration(root, thread_id)
                     if status_out is not None:
                         status_out.update({
-                            "status": NOT_APPLICABLE,
+                            "status": BINDING_CONFLICT,
                             "reason": "conflicting open tasks invalidated exact session binding",
                         })
                     return False
@@ -392,7 +402,9 @@ def restore_watcher_registration(
     was made and did not succeed. Callers that report the result pass
     ``status_out`` and receive ``{"status": ..., "reason": ...}``; reporting
     every False as a timeout sends the user to repair a timeout that never
-    happened.
+    happened. A positively observed binding conflict has its own status so
+    callers can explain the required explicit recovery without guessing from
+    an absent registration or an expired observation deadline.
     """
     def _record(status: str, reason: str) -> None:
         if status_out is not None:
@@ -427,11 +439,15 @@ def restore_watcher_registration(
         _record(NOT_APPLICABLE, missing)
         return False
     generation_bound = bind_fn is None and ensure_fn is ensure
+    unavailable = object()
     bound_roots = (_call_with_deadline(
-        lambda: _bound_workspace_roots(control_root, thread_id), deadline, None,
+        lambda: _bound_workspace_roots(control_root, thread_id), deadline, unavailable,
     ) if generation_bound else [])
+    if bound_roots is unavailable:
+        _record(NOT_APPLICABLE, "workspace binding observation unavailable")
+        return False
     if bound_roots is None or len(bound_roots) > 1:
-        _record(NOT_APPLICABLE, "conflicting workspace bindings")
+        _record(BINDING_CONFLICT, "conflicting workspace bindings")
         return False
     if bound_roots:
         control_root = bound_roots[0]

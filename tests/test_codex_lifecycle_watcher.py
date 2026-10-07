@@ -1084,12 +1084,12 @@ def test_child_status_rejects_symlinked_rollout(tmp_path, monkeypatch):
     assert mod._find_rollout(child_id) is None
 
 
-def test_find_rollout_uses_uuid_local_day_without_recursive_fallback(tmp_path, monkeypatch):
+def test_find_rollout_uses_uuid_utc_day_without_recursive_fallback(tmp_path, monkeypatch):
     mod = _load()
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     child_id = "019ff6e0-b765-7aa3-b9cb-e6d4f5c8b1b7"
-    created = mod.datetime.fromtimestamp(mod.uuid7_timestamp_ms(child_id) / 1000).astimezone()
+    created = mod.datetime.fromtimestamp(mod.uuid7_timestamp_ms(child_id) / 1000, timezone.utc)
     rollout = (
         codex_home / "sessions" / f"{created:%Y}" / f"{created:%m}" / f"{created:%d}"
         / f"rollout-now-{child_id}.jsonl"
@@ -1099,7 +1099,7 @@ def test_find_rollout_uses_uuid_local_day_without_recursive_fallback(tmp_path, m
     assert "walk" not in mod._find_rollout.__code__.co_names
 
 
-def test_find_rollout_honors_local_date_at_utc_boundary(tmp_path, monkeypatch):
+def test_find_rollout_rejects_duplicate_adjacent_days_at_utc_boundary(tmp_path, monkeypatch):
     mod = _load()
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
@@ -1112,7 +1112,7 @@ def test_find_rollout_honors_local_date_at_utc_boundary(tmp_path, monkeypatch):
         utc = codex_home / "sessions/2026/08/11" / f"rollout-utc-{thread_id}.jsonl"
         _write_jsonl(local, [{"type": "session_meta", "payload": {"id": thread_id}}])
         _write_jsonl(utc, [{"type": "session_meta", "payload": {"id": thread_id}}])
-        assert mod._find_rollout(thread_id) == local
+        assert mod._find_rollout(thread_id) is None
     finally:
         monkeypatch.delenv("TZ", raising=False)
         if hasattr(mod.time, "tzset"):
@@ -1910,7 +1910,9 @@ def test_watch_continues_after_malformed_record_and_transient_feed_error(
             self.by_agent = {}
             self.receipt_progress = 0
 
-        def feed(self, event):
+        def feed(self, event, *, origin_offset=None):
+            assert origin_offset == (len(session_meta) + 1 + len(b"not-json\n")
+                                     + (len(first) + 1 if event["type"] == "second" else 0))
             self.seen.append(event["type"])
             if event["type"] == "first" and not self.failed:
                 self.failed = True
@@ -1965,7 +1967,9 @@ def test_watch_quarantines_persistent_feed_error_and_reads_next_line(
             self.by_agent = {}
             self.receipt_progress = 0
 
-        def feed(self, event):
+        def feed(self, event, *, origin_offset=None):
+            assert origin_offset == (len(session_meta) + 1
+                                     + (len(first) + 1 if event["type"] == "second" else 0))
             self.seen.append(event["type"])
             if event["type"] == "first":
                 raise RuntimeError("permanent receipt integrity failure")
@@ -2017,7 +2021,9 @@ def test_watch_keeps_discarded_lifecycle_error_after_later_receipt_progress(
             self.by_agent = {}
             self.receipt_progress = 0
 
-        def feed(self, event):
+        def feed(self, event, *, origin_offset=None):
+            assert origin_offset == (len(session_meta) + 1
+                                     + (len(first) + 1 if event["type"] == "receipt-progress" else 0))
             if event["type"] == "first":
                 raise RuntimeError("permanent receipt integrity failure")
             if event["type"] == "receipt-progress":
