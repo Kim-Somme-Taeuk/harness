@@ -13,6 +13,8 @@ sys.path.insert(0, SCRIPTS_DIR)
 
 try:
     from codex_hook_registration import (  # type: ignore
+        BINDING_CONFLICT,
+        BINDING_CONFLICT_GUIDANCE,
         NOT_APPLICABLE,
         REGISTRATION_FAILED,
         restore_watcher_registration,
@@ -21,6 +23,8 @@ try:
 except Exception:  # pragma: no cover - registration recovery is best effort
     restore_watcher_registration = None
     _registration_identity = None
+    BINDING_CONFLICT = "binding_conflict"
+    BINDING_CONFLICT_GUIDANCE = ""
     NOT_APPLICABLE = "not_applicable"
     REGISTRATION_FAILED = "failed"
 
@@ -364,6 +368,15 @@ def main() -> int:
                 _report_registration_failure(payload, reason)
                 return 0
             _clear_registration_failure(payload)
+        elif status.get("status") == BINDING_CONFLICT:
+            _update_diagnostics(payload, {
+                "registration_present": False,
+                "last_registration_error": reason,
+            })
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": BINDING_CONFLICT_GUIDANCE,
+            }}))
         elif status.get("status") == REGISTRATION_FAILED:
             reason = reason or (
                 "watcher registration did not complete within "

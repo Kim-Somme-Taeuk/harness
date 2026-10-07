@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. Extended 2026-09-29 to authenticated native worktree coordinators.
+Accepted. Extended 2026-09-29 to authenticated native worktree coordinators;
+2026-10-07 to native followup generations and causal event positions.
 
 ## Normative scope
 
@@ -21,7 +22,7 @@ adding stronger evidence.
 ## Decision
 
 The MCP-hosted coordinator-rollout watcher is the only Codex receipt owner and accepts
-one acquisition path:
+one native acquisition protocol. Initial child acquisition requires:
 
 1. The registered coordinator calls direct `collaboration.spawn_agent` with a valid
    structured `task_name`.
@@ -52,7 +53,7 @@ review or QA lens. The coordinator's exact active-task marker and current
 task authorities.
 
 The persisted compact identity is one namespaced `runtime_id`:
-`codex:<coordinator-thread>:<spawn-event>:<child-thread>`. Separate runtime event,
+`codex:<coordinator-thread>:<spawn-or-followup-call>:<child-thread>`. Separate runtime event,
 session, and thread fields are not stored. This is a storage projection only;
 all bounded rollout checks above still run before a receipt is appended.
 
@@ -63,6 +64,39 @@ match the same text. Duplicate, conflicting, historical, cross-run, or
 out-of-order boundaries invalidate the lifecycle rather than selecting a
 convenient candidate.
 
+A completed authenticated child may receive a new generation through direct
+`collaboration.followup_task`. Its target must uniquely identify the known child
+by task name, agent path, or thread id. The same exact task/run binding must
+remain current. A matching `SubAgentActivity` of kind `interacted` supplies the
+same child thread and agent path; native successful call output is exactly the
+empty string and supplies no identity. The new call id supplies a new runtime
+identity. Overlapping or unbound accepted activity invalidates the previous
+generation rather than selecting a convenient followup.
+
+Authenticated activity can publish the pending followup start while output or
+child rollout data lags. Successful output before activity invalidates the old
+PASS but cannot establish a start by itself. Completion still requires both
+successful output and independently matched child/root finals; one early root
+delivery can wait on a unique pending call but cannot authorize completion.
+
+Native child `task_started` turn ids must be valid UUIDv7 values. Exactly one
+coordinator NEW_TASK boundary must carry matching turn metadata, and its
+`task_complete` must name the same turn. Prior generations must be complete;
+duplicate or overlapping turns are invalid. A followup selects its own ordinal
+generation whose timezone-aware start timestamp cannot precede the followup
+call. A legacy transcript without native turns cannot attest a followup.
+For a child explicitly forked from this coordinator, only leading turns whose
+UUIDv7 creation time predates the child are excluded as inherited history.
+Rewritten event timestamps do not prove inherited age. Once the child's own
+execution begins, later overlapping turns cannot be discarded as history.
+
+The watcher also records native coordinator byte positions for lifecycle
+origins, so delayed receipt publication cannot change semantic order. The
+optional `event_order` schema, comparison rules, and fail-closed handling of
+incomparable evidence belong to the consolidated-artifacts ADR, not this
+acquisition protocol. See also
+[the observable followup requirement](../REQ__codex-followup-receipts.md).
+
 SessionStart may create the versioned root registration. A successful Harness
 `task_start` or `task_context` PostToolUse event is the binding authority because
 it contains both the exact hook session id and returned task/run. It publishes
@@ -70,8 +104,11 @@ only `.active_sessions/<session-id>.json`. Eligibility is an explicit allowlist
 of the bare Codex ids and exact Harness MCP-qualified ids; suffix matches from
 other tool namespaces are not authority. `.session-hint`, `default.json`, and
 the legacy `.active` file are never promoted into receipt authority. Root and child rollout
-paths are resolved only in the UUIDv7-derived runtime-local day directory used
-by Codex session storage. Spawn-selective
+paths are resolved only across the UUIDv7-derived UTC calendar day and its
+previous and next days. Exactly one trusted matching rollout is required
+across those directories; duplicates or an expired lookup deadline establish
+no authority. This accommodates writers with different timezones without
+scanning session history. Spawn-selective
 PreToolUse may restore a missing registration for that already exact binding
 immediately before a supported spawn, beginning at the current rollout offset.
 Task PostToolUse may register; UserPromptSubmit and Stop do not. A stale registration is recreated, not
@@ -107,6 +144,15 @@ generation may recover: invalidate all surviving registrations before clearing
 acknowledged fences, then register at the current rollout offset. Interruption or
 failed invalidation leaves the fences in force; ambiguity-interval events cannot
 be replayed into receipts.
+
+Positively observed conflicts have a distinct registration status. Task
+PostToolUse and spawn-selective PreToolUse explain that `task_context` also
+binds the session, that conflicting work must be resolved without altering
+another session's state, and that a fresh successful `task_start` or
+`task_context` for the sole intended open task restores only future evidence.
+Overflow requires a new coordinator; earlier results stay non-attesting and
+must not be replayed or fabricated. Unavailable binding observations are not
+reported as known conflicts. Hooks remain fail-open for substantive work.
 
 An explicit workspace binding additionally requires the successful task result
 to echo the exact requested canonical workspace and the target to be a
@@ -175,4 +221,9 @@ cannot see that spawn and cannot manufacture a missing start.
   deduplicated.
 - Wrong task run, repository, session, rollout, thread, agent path, task name,
   lens, order, final, or verdict is rejected.
-- Focused watcher/hook tests and the full suite pass after verified install.
+- Followups cannot reuse earlier finals or PASS; fork history cannot supply a
+  native child turn. Reordered publication preserves native causal gate order.
+- UTC neighboring-day discovery requires a unique trusted candidate, and hook
+  conflict guidance distinguishes positive conflict from unavailable reads.
+- Focused watcher/hook/receipt tests and contract checks validate source changes;
+  this port does not require or perform a live reinstall.

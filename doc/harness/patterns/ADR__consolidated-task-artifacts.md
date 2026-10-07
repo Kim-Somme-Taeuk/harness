@@ -62,12 +62,21 @@ Every task generation uses one append-only `RECEIPTS.jsonl`. It is the only
 supported receipt stream and the only input to verdicts, provenance,
 fingerprints, installation authority, and close authority.
 
-Every line is a JSON object containing exactly these fields:
+Every line is a JSON object containing these required string fields:
 
 ```text
 ts, event, source, task_run_id, runtime_id, agent_id, agent_type, lens,
 verdict, summary
 ```
+
+The only additional supported field is the optional string `event_order`:
+`codex:<coordinator-thread>:<native-byte-offset>`. It is accepted only for
+`codex_session_watcher:collaboration`, with the same coordinator UUID as
+`runtime_id` and a canonical nonnegative decimal offset. The native watcher
+records the coordinator rollout position of the spawn/followup call for a
+start and the direct final delivery for a completion. No other extra fields
+are accepted. Existing rows without this field remain readable; older readers
+cannot consume rows carrying it, so this change does not migrate live streams.
 
 `event` is exactly `started` or `completed`. Category is derived from `lens`;
 lifecycle state is derived from `event`; timestamp role is derived from
@@ -178,10 +187,30 @@ verdict because no lifecycle reader consumes the appendix.
 
 Entries correlate by exact `source`, `task_run_id`, `runtime_id`, `agent_id`,
 `agent_type`, and `lens`. Runtime identity is namespaced and parseable:
-`claude:<session>:<agent>` or `codex:<root>:<event>:<child>`. Append position
-establishes lifecycle order and review-before-QA order; wall-clock comparison
-does not. Transcript paths and digests are verification inputs before append,
-not persistent receipt state.
+`claude:<session>:<agent>` or `codex:<root>:<event>:<child>`. For legacy-only
+evidence, append position establishes lifecycle order and review-before-QA
+order. When all relevant rows carry `event_order` from the same coordinator,
+native byte position establishes that order independently of append timing.
+Precedence is strict: equal offsets establish no edge. Mixed legacy/native
+origins or distinct coordinators are incomparable and cannot establish PASS.
+Valid authenticated FAIL or BLOCKED_ENV evidence remains visible despite
+incomparable ordering; uncertainty cannot promote PASS or hide those negatives.
+Wall-clock comparison does not establish gate order. Transcript paths and
+digests are verification inputs before append, not persistent receipt state.
+
+For PASS, each completion must follow its exact matching start, and each QA
+start must follow every selected required review completion. A later native
+followup start for the same child and lens selects a new runtime generation;
+older-generation completions cannot finish that work. An unfinished new start,
+malformed final, or conflicting completion cannot resurrect the earlier PASS.
+The native watcher authenticates followup acquisition as defined by
+[the Codex protocol ADR](ADR__single-direct-codex-receipt-protocol.md).
+
+Exact replay must preserve a stored native origin. A conflicting origin leaves
+the original rows intact and appends an origin-free PENDING invalidation under
+the live binding transaction. This makes the evidence incomparable and keeps
+the disputed PASS from being replaced by another overlapping PASS; a diagnostic
+alone is insufficient to revoke persisted authority.
 
 Claude runtimes that emit `SubagentStop` without a preceding `SubagentStart`
 use the stop hook as the authoritative lifecycle observation only under the
