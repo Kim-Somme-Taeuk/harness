@@ -607,6 +607,23 @@ def _watcher_status(
         # asked to do. The Claude hook tree is the recording path here.
         manager_running = None
 
+    task_workers = {
+        "scope": "process-local", "advisory": True, "status": "unknown",
+        "workers": [], "truncated": False,
+        "limitation": "Only this manager process is observed; missing local workers "
+                      "do not establish global absence or receipt readiness.",
+    }
+    if task_id and run_id and _SERVER is not None:
+        task_worker_status = getattr(_SERVER.watcher_manager, "task_worker_status", None)
+        if callable(task_worker_status):
+            try:
+                task_workers = task_worker_status(
+                    (find_harness_root(task_dir) or find_repo_root(task_dir))
+                    if task_dir else _control_root(), task_id, run_id,
+                )
+            except Exception as exc:
+                task_workers["error"] = _safe_reason(str(exc))
+
     registration_present = diagnostics.get("registration_present")
     last_registration_error = diagnostics.get("last_registration_error") or ""
     last_watcher_error = (
@@ -781,6 +798,7 @@ def _watcher_status(
         "receipts_unrecordable_reason": _safe_reason(unrecordable_reason),
         "receipts_unrecordable_summary": unrecordable_summary,
         "manager_running": manager_running,
+        "task_workers": task_workers,
         # Strict tri-state. This one comes from the diagnostics file too, and it
         # only has to survive an `is False` comparison to do its gating job, so
         # any JSON value would otherwise pass through verbatim — a planted
@@ -789,7 +807,10 @@ def _watcher_status(
         "registration_present": (
             registration_present if isinstance(registration_present, bool) else None
         ),
-        "root_thread_id": _safe_optional(diagnostics.get("root_thread_id")),
+        "root_thread_id": _safe_optional(
+            (getattr(_SERVER, "watcher_thread_id", "") or _current_session_identity() or None)
+            if _server_runtime() == "codex" else diagnostics.get("root_thread_id")
+        ),
         "rollout_offset": _safe_optional(diagnostics.get("rollout_offset")),
         "active_task_id": task_id or None,
         "active_run_id": run_id or None,

@@ -1002,6 +1002,12 @@ def _active_task_binding_for_session(repo_root: str, root_id: str) -> dict[str, 
     }
 
 
+_BINDING_UNAVAILABLE_REASONS = frozenset({
+    "binding unavailable", "unacknowledged coordinator conflict fence",
+    "conflicting workspace bindings", "workspace binding unavailable",
+})
+
+
 class _BindingUnavailable(RuntimeError):
     """An unknown binding must retry the worker, never discard a record."""
 
@@ -1045,7 +1051,16 @@ def _require_task_binding(
     # and rebind the same task/run. Only the manager may restart after that gap.
     binding = _active_task_binding_for_session(repo_root, root_id)
     if not binding.get("task_dir") or not binding.get("run_id"):
-        raise _BindingUnavailable("binding unavailable")
+        # Admission already failed. Classify an observed fence without changing
+        # the failure, consulting hints, or granting a new recording identity.
+        reason = "binding unavailable"
+        try:
+            if any(_has_binding_conflict_fence(read_active_session_marker(root, root_id))
+                   for root in workspace_roots(repo_root)):
+                reason = "unacknowledged coordinator conflict fence"
+        except Exception:
+            pass
+        raise _BindingUnavailable(reason)
     if expected_generation is not None:
         roots = workspace_roots(repo_root)
         if any(_has_binding_conflict_fence(read_active_session_marker(root, root_id))
@@ -2181,8 +2196,9 @@ def watch(
             failed_attempts = 0
     except _RegistrationChanged:
         return 0
-    except _BindingUnavailable:
-        notify("binding unavailable")
+    except _BindingUnavailable as exc:
+        reason = str(exc)
+        notify(reason if reason in _BINDING_UNAVAILABLE_REASONS else "binding unavailable")
         return 5
     finally:
         handle.close()
@@ -2223,18 +2239,24 @@ class WatcherManager:
         self.workers: dict[str, threading.Thread] = {}
         self.seen: dict[str, RegistrationGeneration] = {}
         self.worker_generations: dict[str, RegistrationGeneration] = {}
+        self.worker_observations: dict[str, tuple[RegistrationGeneration, str]] = {}
+        self.worker_result_generations: dict[str, RegistrationGeneration] = {}
+        self.worker_error_generations: dict[str, RegistrationGeneration] = {}
         self.worker_results: dict[str, int] = {}
         self.worker_errors: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def _worker(self, registration: dict[str, Any], lease: Any) -> None:
         thread_id = str(registration["thread_id"])
+        generation = _registration_generation(registration)
         def note_error(message: str) -> None:
             with self._lock:
                 if message:
                     self.worker_errors[thread_id] = message[:320]
+                    self.worker_error_generations[thread_id] = generation
                 else:
                     self.worker_errors.pop(thread_id, None)
+                    self.worker_error_generations.pop(thread_id, None)
         try:
             with self._lock:
                 recovering = bool(self.worker_errors.get(thread_id))
@@ -2252,10 +2274,14 @@ class WatcherManager:
                 expected_generation=_registration_generation(registration),
             )
             if result != 0:
-                note_error(
-                    "binding unavailable" if result == 5
-                    else f"watcher exited with status {result}"
-                )
+                reason = f"watcher exited with status {result}"
+                if result == 5:
+                    with self._lock:
+                        observed = (self.worker_errors.get(thread_id, "")
+                                    if self.worker_error_generations.get(thread_id) == generation else "")
+                    reason = (observed if observed in _BINDING_UNAVAILABLE_REASONS
+                              else "binding unavailable")
+                note_error(reason)
         except Exception as exc:
             result = 4
             note_error(f"{type(exc).__name__}: {' '.join(str(exc).split())[:240]}".rstrip())
@@ -2263,11 +2289,51 @@ class WatcherManager:
             lease.close()
         with self._lock:
             self.worker_results[thread_id] = result
+            self.worker_result_generations[thread_id] = generation
 
     def worker_error(self, thread_id: str) -> str:
         """Return a bounded advisory error for one registered root watcher."""
         with self._lock:
             return self.worker_errors.get(thread_id, "")
+
+    def task_worker_status(self, repo_root: str, task_id: str, run_id: str) -> dict:
+        """Bounded advisory observation, never global absence or readiness."""
+        root = os.path.realpath(repo_root)
+        rows = []
+        with self._lock:
+            for thread_id, (generation, worker_root) in self.worker_observations.items():
+                if (not repo_root or not task_id or not run_id or worker_root != root
+                        or generation[3:] != (task_id, run_id)):
+                    continue
+                active_generation = self.worker_generations.get(thread_id)
+                retained_generation = self.seen.get(thread_id)
+                if (active_generation is not None and active_generation != generation
+                        or retained_generation is not None and retained_generation != generation):
+                    continue
+                worker = self.workers.get(thread_id) if active_generation == generation else None
+                result = (self.worker_results.get(thread_id)
+                          if self.worker_result_generations.get(thread_id) == generation else None)
+                error = (self.worker_errors.get(thread_id, "")
+                         if self.worker_error_generations.get(thread_id) == generation else "")
+                status = ("running" if worker is not None and worker.is_alive() else
+                          "failed" if result is not None and result != 0 else
+                          "exited" if result == 0 else "unknown")
+                rows.append({
+                    "thread_id": " ".join(thread_id.split())[:128],
+                    "status": status,
+                    "error": " ".join(re.sub(r"[\x00-\x1f\x7f<>]", " ",
+                                             error).split())[:320],
+                })
+        rows.sort(key=lambda row: row["thread_id"])
+        statuses = {row["status"] for row in rows}
+        return {
+            "scope": "process-local", "advisory": True,
+            "status": next((status for status in ("running", "failed", "unknown", "exited")
+                            if status in statuses), "unknown"),
+            "workers": rows[:32], "truncated": len(rows) > 32,
+            "limitation": "Only this manager process is observed; missing local workers "
+                          "do not establish global absence or receipt readiness.",
+        }
 
     def is_running(self) -> bool:
         """Report the manager thread itself, not merely its container object."""
@@ -2314,6 +2380,8 @@ class WatcherManager:
                 lease = _acquire_registration_lease(str(item["repo_root"]), thread_id)
                 if lease is None:
                     continue
+                observation = (generation, os.path.realpath(str(item["repo_root"])))
+                self.worker_observations[thread_id] = observation
                 self.seen[thread_id] = generation
                 self.worker_generations[thread_id] = generation
                 worker = threading.Thread(

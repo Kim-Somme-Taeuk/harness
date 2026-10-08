@@ -4851,6 +4851,16 @@ def receipt_runtime_verdict(task_dir, state=None, snapshot=None):
     return "PENDING"
 
 
+def _completion_diagnostic_kind(item, receipts):
+    """Explain unusable evidence without changing completion authority."""
+    matching = [prior for prior in receipts
+                if _receipt_runtime_identity_matches(prior, item)]
+    starts = [prior for prior in matching if prior.get("event") == "started"]
+    if not starts or sum(prior.get("event") == "completed" for prior in matching) != 1:
+        return "unpaired"
+    return "ordering"
+
+
 def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
     """Lenses that completed for this run but whose final failed the verdict contract.
 
@@ -4882,12 +4892,17 @@ def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
     # When nothing bound, report the newest completion record whether or not it
     # passed identity validation. An untrusted completion is still a lens that
     # ran and reported, and dropping it here would restore the bare PENDING this
-    # whole diagnostic exists to explain — but it gets its own kind, because its
-    # cause is a receipt-pairing failure and every word of the format advice
-    # would be false for it.
+    # whole diagnostic exists to explain. Pairing and ordering failures need
+    # distinct advice; neither is a report-format problem.
     kinds = {}
     for lens, events in grouped.items():
         if _rerun_in_flight(events):
+            # A reversed/equal pair can look like a live rerun to the gate.
+            # Diagnose existing completions only; do not alter that gate.
+            for item in reversed(events):
+                if item.get("event") == "completed" and not _valid_completion(item, receipts):
+                    kinds[lens] = _completion_diagnostic_kind(item, receipts)
+                    break
             continue
         bound = _effective_completion(lens, events, receipts)
         if bound is not None and str(bound.get("verdict") or "").upper() != "PENDING":
@@ -4900,14 +4915,11 @@ def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
             # asks for a confirmation rather than a rerun.
             completions = [i for i in events if i.get("event") == "completed"]
             if completions and completions[-1] is not bound:
-                # A follow-up that also failed identity validation is a pairing
-                # failure first. Calling it `stale_followup` lands on advice that
-                # happens to be harmless, but never names the receipt problem —
-                # the same wrong-diagnosis-costs-a-loop failure one level down.
+                # Explain failed pairing or ordering before report shape.
                 kinds[lens] = (
                     "stale_followup"
                     if _valid_completion(completions[-1], receipts)
-                    else "unpaired"
+                    else _completion_diagnostic_kind(completions[-1], receipts)
                 )
             continue
         newest_completion = next(
@@ -4916,18 +4928,9 @@ def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
         )
         if newest_completion is None:
             continue
-        # Three different failures land on the same absence of a verdict, and
-        # each sends its coordinator somewhere different. Diagnosing the wrong
-        # one is what turned this diagnostic into a loop.
-        # An untrusted newest record is a pairing failure regardless of which
-        # branch reaches it. Asking `_pending_completion_kind` first would read
-        # its report shape and send the coordinator to route findings and
-        # respawn, when the actual fault is that no `SubagentStart` was
-        # recorded — a rerun loop that cannot terminate. The sibling branch
-        # above already checks this; checking it in only one place fixed the
-        # misdiagnosis for a bound lens and left it for a pending one.
+        # Establish pairing/order before interpreting the report shape.
         if bound is None or not _valid_completion(newest_completion, receipts):
-            kinds[lens] = "unpaired"
+            kinds[lens] = _completion_diagnostic_kind(newest_completion, receipts)
         else:
             kind = _pending_completion_kind(lens, newest_completion)
             # A named spawn lands on `shape` because that is what the report
@@ -4951,6 +4954,14 @@ def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
             ):
                 kind = "shape_named"
             kinds[lens] = kind
+    # Individually valid pairs can still have incomparable review/QA origins.
+    declared = required_review_lenses(task_dir, st) + _required_qa_lenses(task_dir, st)
+    relevant = [item for item in receipts
+                if item.get("task_run_id") == current_run_id and item.get("lens") in declared]
+    if _ordered_receipt_events(relevant) is None:
+        for item in relevant:
+            if item.get("event") == "completed":
+                kinds.setdefault(item["lens"], _completion_diagnostic_kind(item, receipts))
     return dict(sorted(kinds.items()))
 
 
@@ -5025,6 +5036,16 @@ def nonparsing_completion_note(lenses):
             "findings first — resolving them is the coordinator's move here — then "
             "spawn that lens fresh so it reports on the remediated state. Note that "
             "INVESTIGATE and OPTIONAL counts do not contradict PASS; only FIX_NOW does."
+        )
+    ordering = [lens for lens, kind in kinds.items() if kind == "ordering"]
+    if ordering:
+        parts.append(
+            f"Receipt ordering unresolved for {', '.join(ordering)}: matching lifecycle "
+            "identities exist, but causal ordering is incomparable, equal, or reversed, "
+            "or the required review/QA receipt streams have incompatible origins. "
+            "This does not establish a missing start or duplicate completion. "
+            "Receipt authority and valid negative evidence are unchanged; these "
+            "records do not establish ordered PASS evidence."
         )
     if unpaired:
         # Neither of the sentences above is true here, and saying either one
