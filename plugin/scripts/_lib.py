@@ -28,11 +28,8 @@ TASK_CONTROL_NAME = "TASK.json"
 
 CODEX_TASK_BINDING_TOOLS = frozenset({
     "task_start",
-    "task_context",
     "mcp__harness__task_start",
-    "mcp__harness__task_context",
     "mcp__plugin_harness_harness__task_start",
-    "mcp__plugin_harness_harness__task_context",
 })
 
 

@@ -485,7 +485,10 @@ def test_conflict_union_overflow_stays_fenced_for_hook_and_eager_main(tmp_path, 
     assert not hook.restore_watcher_registration(json.dumps({"cwd": str(main), "thread_id": LEAD}).encode())
     for tool in ("task_start", "task_context"):
         result = _call(main, tool, {"task_id": candidate["task_id"]})
-        assert result.get("isError"), result
+        if tool == "task_start":
+            assert result.get("isError"), result
+        else:
+            assert not result.get("isError"), result
         assert hook.read_active_session_marker(str(main), LEAD) == overflow
     assert not hook.resolve_session_task_binding(str(main), LEAD)
 

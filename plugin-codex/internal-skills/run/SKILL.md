@@ -173,17 +173,19 @@ the user requests a persistent multi-session division and no table exists,
 persist it under project doc/ and link it from AGENTS.md or the active PLAN before
 implementation.
 
-`task_context` is a binding operation, not a neutral lookup of another session's
-task. Inspect another task's files read-only instead. If a hook reports a binding
+`task_context` only observes task state; it does not bind the session or change
+focus or watcher registration. If a hook reports a binding
 conflict, resolve ownership before spawning lenses: never park another session's
 work just to clear the fence. Once only the intended task is eligible, obtain a
-successful explicit `task_start`/`task_context` result before review starts.
+successful explicit `task_start` result before review starts.
 Pre-checkpoint reviews cannot be recovered by a later lookup. See
 `doc/harness/REQ__codex-followup-receipts.md` for the separate followup contract.
 
 Before creating a new task, check whether this session already has an active
-harness task. If an active task exists, call `task_context` for that task and
-resume instead of creating a duplicate.
+harness task. If one exists, call `task_context` to observe its status. For an
+open or blocked task, resume instead of creating a duplicate: call `task_start`
+with the existing `task_id`, omitting `fresh_run`, before continuing. A closed task remains
+observational for coordinator cleanup; do not reopen it.
 
 Resume routing:
 - Source task already closed with owned temporary worktrees remaining → Phase 5
@@ -194,8 +196,8 @@ Resume routing:
 - `missing_for_close` names specific artifacts or AC blockers → fix that gate
   and then continue from the corresponding phase.
 
-Only call `task_start` when no active task can be resolved, or when the user
-explicitly asks for a new task.
+Use `task_start` with the existing id for resume. Create a new task only when no
+active task can be resolved, or when the user explicitly asks for a new task.
 
 If only a Goal is active, call `goal_next_task`; if none and unproven, attach a child.
 

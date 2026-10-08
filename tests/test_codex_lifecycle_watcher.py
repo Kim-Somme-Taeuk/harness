@@ -1941,7 +1941,7 @@ def test_watch_continues_after_malformed_record_and_transient_feed_error(
     assert errors[-1] == ""
 
 
-def test_watch_quarantines_persistent_feed_error_and_reads_next_line(
+def test_watch_preserves_failed_record_for_checkpoint_retry(
     tmp_path, monkeypatch,
 ):
     mod = _load()
@@ -1984,19 +1984,18 @@ def test_watch_quarantines_persistent_feed_error_and_reads_next_line(
             str(repo), root_id, str(rollout), len(session_meta) + 1,
             stop_event=mod.threading.Event(), idle_seconds=1.0,
             on_error=errors.append,
-        ) == 0
+        ) == 4
 
     assert fake.seen == [
         "first",
         "first",
         "first",
-        "second",
     ]
     assert sum("permanent receipt integrity failure" in error for error in errors) == 3
     assert errors[-1] != ""
 
 
-def test_watch_keeps_discarded_lifecycle_error_after_later_receipt_progress(
+def test_watch_stops_before_progress_can_hide_unconsumed_record(
     tmp_path, monkeypatch,
 ):
     mod = _load()
@@ -2038,7 +2037,7 @@ def test_watch_keeps_discarded_lifecycle_error_after_later_receipt_progress(
             str(repo), root_id, str(rollout), len(session_meta) + 1,
             stop_event=mod.threading.Event(), idle_seconds=1.0,
             on_error=errors.append,
-        ) == 0
+        ) == 4
 
     assert sum("permanent receipt integrity failure" in error for error in errors) == 3
     assert errors[-1] != ""
@@ -2226,14 +2225,15 @@ def test_watch_replays_real_spawn_after_transient_binding_failure(
             str(repo), root_id, str(rollout), offset,
             stop_event=mod.threading.Event(), idle_seconds=0.5,
             on_error=errors.append,
-        ) == 0
+        ) == 4
 
     assert attempts >= 2
     assert [(item["event"], item["lens"]) for item in receipts] == [
         ("started", "review-code"),
     ]
     assert "temporary task binding failure" in errors[0]
-    assert errors[-1] == ""
+    assert "" in errors
+    assert errors[-1] == "child lifecycle evidence pending at idle expiry"
 
 
 def test_watch_bounds_incomplete_oversized_tail_by_idle_deadline(tmp_path, monkeypatch):
@@ -2486,10 +2486,10 @@ def test_conflicting_delivery_retries_transient_pending_receipt_failure(
     assert watcher.by_agent[agent_path]["invalid"] is True
 
 
-def test_watch_keeps_failed_invalidation_sticky_after_independent_receipt(
+def test_watch_retries_failed_invalidation_before_independent_receipt(
     tmp_path, monkeypatch,
 ):
-    """Later PASS progress cannot repair a discarded conflicting terminal."""
+    """A failed conflicting terminal cannot be skipped for later PASS progress."""
     mod = _load()
     codex_home = tmp_path / ".codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
@@ -2581,10 +2581,10 @@ def test_watch_keeps_failed_invalidation_sticky_after_independent_receipt(
             str(repo), root_id, str(root_rollout), offset,
             session_cwd=str(repo), stop_event=mod.threading.Event(),
             idle_seconds=1.0, on_error=errors.append,
-        ) == 0
+        ) == 4
 
     assert pending_attempts == mod.MAX_RECORD_OBSERVATION_ATTEMPTS
-    assert any(
+    assert not any(
         item.get("agent_id") == second_path and item.get("verdict") == "PASS"
         for item in receipts
     )
@@ -2734,7 +2734,7 @@ def test_bound_watch_sustained_empty_binding_fails_boundedly_without_receipts(tm
     assert all('corrupt' not in e.lower() for e in errors)
 
 
-def test_bound_watch_unknown_preserves_stop_and_inherited_idle_deadline(tmp_path, monkeypatch):
+def test_bound_watch_honors_stop_but_checks_binding_for_old_backlog(tmp_path, monkeypatch):
     mod, repo, root_id, _, registration = _bound_lifecycle_fixture(tmp_path, monkeypatch)
     with mock.patch.object(mod, '_active_task_binding_for_session', return_value={}) as binding, \
          mock.patch.object(mod, 'record_subagent_receipt', side_effect=AssertionError('uncertain receipt')):
@@ -2744,10 +2744,11 @@ def test_bound_watch_unknown_preserves_stop_and_inherited_idle_deadline(tmp_path
         mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
                   task_id=registration['task_id'], run_id=registration['run_id'], stop_event=stop)
         assert time.monotonic() - started < 0.5
+        assert binding.call_count == 0
         os.utime(registration['rollout'], (time.time() - 10, time.time() - 10))
         mod.watch(str(repo), root_id, registration['rollout'], registration['offset'],
                   task_id=registration['task_id'], run_id=registration['run_id'], idle_seconds=0.1)
-        assert binding.call_count == 0
+        assert binding.call_count == 1
 
 
 def test_bound_watch_validated_different_task_or_run_retires_normally(tmp_path, monkeypatch):
@@ -3124,3 +3125,40 @@ def test_direct_bound_watch_rejects_missing_or_mismatched_initial_registration(t
                                idle_seconds=0.03)
         assert result != 0, field
         record.assert_not_called()
+
+
+def test_watch_does_not_apply_idle_timeout_between_unread_records(tmp_path, monkeypatch):
+    mod = _load()
+    home = tmp_path / 'codex'
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    repo = tmp_path / 'repo'
+    (repo / '.git').mkdir(parents=True)
+    root = '019f825b-f25f-70c3-8ee8-071f79fa1c42'
+    path = _rollout_path(home, root)
+    _write_jsonl(path, [{'type': 'session_meta', 'payload': {
+        'id': root, 'session_id': root, 'cwd': str(repo), 'thread_source': 'user',
+    }}])
+    offset = path.stat().st_size
+    with path.open('a') as handle:
+        for value in ('first', 'second'):
+            handle.write(json.dumps({'type': value}) + '\n')
+    clock = [100.0]
+    seen = []
+
+    class SlowObserver:
+        calls = {}
+        by_agent = {}
+        receipt_progress = 0
+        replay_recovery_progress = 0
+
+        def feed(self, event, **kwargs):
+            seen.append(event['type'])
+            clock[0] += 1.0  # processing exceeds the idle window
+
+        def retry(self):
+            pass
+
+    with mock.patch.object(mod, 'Watcher', return_value=SlowObserver()), \
+         mock.patch.object(mod.time, 'monotonic', side_effect=lambda: clock[0]):
+        assert mod.watch(str(repo), root, str(path), offset, idle_seconds=.5) == 0
+    assert seen == ['first', 'second']

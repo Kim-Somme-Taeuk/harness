@@ -2051,9 +2051,13 @@ def watch(
     )
     stop_event = stop_event or threading.Event()
     rollout_age = max(0.0, time.time() - rollout_info.st_mtime)
-    last_data = time.monotonic() - min(rollout_age, idle_seconds)
+    # Registered unread data is work, regardless of its age. A failed worker
+    # must also retry pending child evidence when parent output has stopped.
+    has_backlog = rollout_info.st_size > max(0, offset)
+    last_data = time.monotonic() - (
+        0.0 if recovering or has_backlog else min(rollout_age, idle_seconds)
+    )
     observation_failed = bool(recovering)
-    discarded_lifecycle_failure = False
     failed_position: int | None = None
     failed_attempts = 0
 
@@ -2093,7 +2097,6 @@ def watch(
             return False
         if (
             observation_failed
-            and not discarded_lifecycle_failure
             and (
                 watcher.receipt_progress > progress_before
                 or getattr(watcher, "replay_recovery_progress", 0) > replay_before
@@ -2116,7 +2119,7 @@ def watch(
                 raise _BindingUnavailable("binding unavailable")
         watcher.expected_generation = expected_generation
         handle.seek(max(0, offset))
-        while not stop_event.is_set() and time.monotonic() - last_data < idle_seconds:
+        while not stop_event.is_set():
             if task_id or run_id:
                 binding = _require_task_binding(
                     repo_root, thread_id, expected_generation, session_cwd,
@@ -2137,6 +2140,8 @@ def watch(
                     return 3
                 handle.seek(position)
                 observe(watcher.retry)
+                if time.monotonic() - last_data >= idle_seconds:
+                    break
                 stop_event.wait(POLL_SECONDS)
                 continue
             if len(raw) > MAX_LINE_BYTES:
@@ -2155,6 +2160,8 @@ def watch(
                 continue
             if not raw.endswith(b"\n"):
                 handle.seek(position)
+                if time.monotonic() - last_data >= idle_seconds:
+                    break
                 stop_event.wait(POLL_SECONDS)
                 continue
             event = _load_json_line(raw)
@@ -2170,10 +2177,10 @@ def watch(
                 continue
             last_data = time.monotonic()
             if not observe(lambda: watcher.feed(event, origin_offset=position)):
-                # Retry a transient failure from the rolled-back lifecycle
-                # state, but never let one permanently rejected record blind
-                # the tail to later independent agents. Externally appended
-                # receipts remain idempotently detectable during replay.
+                # Retry from rolled-back memory. Never consume a valid record
+                # whose lifecycle effects have not been applied: the manager
+                # can restart from its immutable checkpoint, and externally
+                # appended receipts remain idempotently detectable on replay.
                 if failed_position == position:
                     failed_attempts += 1
                 else:
@@ -2183,15 +2190,7 @@ def watch(
                     handle.seek(position)
                     stop_event.wait(POLL_SECONDS)
                     continue
-                # Advancing past a valid lifecycle record after exhausting
-                # retries loses information that may have been required to
-                # invalidate earlier evidence. Keep the live failure sticky;
-                # unrelated later receipt progress cannot prove that skipped
-                # record was safely applied.
-                discarded_lifecycle_failure = True
-                failed_position = None
-                failed_attempts = 0
-                continue
+                return 4
             failed_position = None
             failed_attempts = 0
     except _RegistrationChanged:
@@ -2202,7 +2201,16 @@ def watch(
         return 5
     finally:
         handle.close()
-    return 0
+    if not stop_event.is_set() and any(
+        not item.get("invalid") and not item.get("completed")
+        and all(item.get(key) for key in ("task_name", "child_id", "agent_path", "output_path"))
+        for item in watcher.calls.values()
+    ):
+        # A normally returning retry can still be waiting for child evidence.
+        # Successful idle retirement would suppress this generation forever.
+        notify("child lifecycle evidence pending at idle expiry")
+        return 4
+    return 4 if observation_failed else 0
 
 
 RegistrationGeneration = tuple[str, int, int | float, str, str]

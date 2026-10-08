@@ -1,4 +1,4 @@
-"""A session that resumes an open task through `task_context` gets bound to it.
+"""Explicit task_start resumes bind sessions; observational context never does.
 
 Covers `doc/harness/REQ__receipt-subsystem-failures-are-observable.md` Defect B.
 
@@ -8,10 +8,8 @@ Field symptom: session `d1866f9e` resumed an already-open task, never called
 No receipt was written, so neither `task_close` (needs PASS) nor the
 attestation park path was reachable.
 
-`task_start` also preserves and binds the session. `task_context` remains the
-narrower read/rebind surface when callers do not need lifecycle transition or
-watcher registration. These tests pin both halves: the binding happens, and
-nothing else about the run moves.
+`task_start` preserves the run and receipts while binding the session.
+`task_context` is a read surface with no ownership side effects.
 """
 from __future__ import annotations
 
@@ -141,10 +139,10 @@ def test_resume_binds_the_new_session_and_receipts_flow_again(tmp_path, monkeypa
 
     _lib.write_session_hint(repo, SESSION_B)
     with mock.patch.object(server, "find_repo_root", return_value=repo):
-        context = server.call_tool("task_context", {"task_id": TASK_ID})
+        context = server.call_tool("task_start", {"task_id": TASK_ID})
     assert "isError" not in context, context
 
-    # The whole reason this is task_context and not task_start.
+    # Explicit resume preserves the generation and all existing evidence.
     assert _lib.read_task_control(task_dir)["run_id"] == run_id
     assert _receipts(task_dir) == before
 
@@ -224,18 +222,7 @@ def test_reading_a_parked_task_does_not_steal_write_focus(tmp_path):
 
 
 def test_a_session_holding_nothing_at_all_binds_on_resume(tmp_path):
-    """The unbound branch itself, with neither marker present.
-
-    Every other resume case here reaches `write_active_marker` through the
-    already-names-this-task branch, because `.active` still points at the task
-    being resumed. It stops pointing anywhere the moment that task is parked
-    or closed — both call `clear_active_marker`, which unlinks the legacy file
-    when it names them — and a session that never called `task_start` has no
-    marker of its own. A
-    guard that treats "holding nothing" as "holding something else" refuses
-    exactly the resume this REQ exists to make work, and no other test here
-    would notice.
-    """
+    """Explicit resume admits an unbound session without a legacy pointer."""
     server = _server()
     repo, task_dir = _open_task(tmp_path, SESSION_A)
     Path(repo, "doc/harness/tasks/.active").unlink()
@@ -243,7 +230,7 @@ def test_a_session_holding_nothing_at_all_binds_on_resume(tmp_path):
     assert _lib.resolve_active_task_dir(repo, session_id=SESSION_B) == ""
 
     with mock.patch.object(server, "find_repo_root", return_value=repo):
-        assert "isError" not in server.call_tool("task_context", {"task_id": TASK_ID})
+        assert "isError" not in server.call_tool("task_start", {"task_id": TASK_ID})
 
     bound = _lib.resolve_session_task_binding(repo, SESSION_B)
     assert os.path.realpath(str(bound.get("task_dir") or "")) == os.path.realpath(
@@ -264,7 +251,7 @@ def test_a_refused_marker_write_is_reported_not_swallowed(tmp_path):
     refusal = PermissionError("active task binding requires the task-control runtime")
     with mock.patch.object(server, "find_repo_root", return_value=repo), \
             mock.patch.object(server, "write_active_marker", side_effect=refusal):
-        context = server.call_tool("task_context", {"task_id": TASK_ID})
+        context = server.call_tool("task_start", {"task_id": TASK_ID})
     assert context.get("isError") is True, context
     assert "task-control runtime" in str(context)
 
@@ -364,16 +351,7 @@ def test_a_peek_without_a_session_hint_does_not_steal_write_focus(
 
 
 def test_resuming_the_same_task_refreshes_a_rotated_run_id(tmp_path):
-    """Why the same-task branch is kept rather than dropped.
-
-    An explicit fresh `task_start` from a second session rotates `run_id`, which
-    leaves the first session's marker naming the right task with the wrong run.
-    `resolve_session_task_binding` rejects exactly that mismatch, so the first
-    session is unbound for receipt purposes while looking bound to every other
-    reader. Re-writing its own marker here is what repairs it; without the
-    branch the session stays receipt-dead until it calls `task_start` and
-    resets the run's evidence.
-    """
+    """Explicit preserving resume repairs a stale run binding after fresh_run."""
     server = _server()
     repo, task_dir = _open_task(tmp_path, SESSION_A)
     first_run = _lib.read_task_control(task_dir)["run_id"]
@@ -389,7 +367,7 @@ def test_resuming_the_same_task_refreshes_a_rotated_run_id(tmp_path):
     assert _lib.resolve_session_task_binding(repo, SESSION_A) == {}
 
     with mock.patch.object(server, "find_repo_root", return_value=repo):
-        assert "isError" not in server.call_tool("task_context", {"task_id": TASK_ID})
+        assert "isError" not in server.call_tool("task_start", {"task_id": TASK_ID})
 
     bound = _lib.resolve_session_task_binding(repo, SESSION_A)
     assert bound.get("run_id") == second_run
@@ -416,7 +394,7 @@ def test_a_legacy_pointer_to_an_unvalidatable_task_does_not_block_a_resume(tmp_p
     does not validate holds no write focus, so treating its pointer as a
     competing binding would lock every markerless session out of the very
     resume this REQ exists to make work, permanently and with no route back
-    except a safe `task_start`/`task_context` rebind.
+    except an explicit `task_start` resume.
     """
     server = _server()
     repo, task_dir = _open_task(tmp_path, SESSION_A)
@@ -431,7 +409,7 @@ def test_a_legacy_pointer_to_an_unvalidatable_task_does_not_block_a_resume(tmp_p
 
     _lib.write_session_hint(repo, SESSION_B)
     with mock.patch.object(server, "find_repo_root", return_value=repo):
-        assert "isError" not in server.call_tool("task_context", {"task_id": TASK_ID})
+        assert "isError" not in server.call_tool("task_start", {"task_id": TASK_ID})
 
     bound = _lib.resolve_session_task_binding(repo, SESSION_B)
     assert os.path.realpath(str(bound.get("task_dir") or "")) == os.path.realpath(

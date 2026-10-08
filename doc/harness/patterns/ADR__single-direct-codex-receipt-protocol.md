@@ -98,7 +98,7 @@ acquisition protocol. See also
 [the observable followup requirement](../REQ__codex-followup-receipts.md).
 
 SessionStart may create the versioned root registration. A successful Harness
-`task_start` or `task_context` PostToolUse event is the binding authority because
+`task_start` PostToolUse event is the binding authority because
 it contains both the exact hook session id and returned task/run. It publishes
 only `.active_sessions/<session-id>.json`. Eligibility is an explicit allowlist
 of the bare Codex ids and exact Harness MCP-qualified ids; suffix matches from
@@ -146,10 +146,10 @@ failed invalidation leaves the fences in force; ambiguity-interval events cannot
 be replayed into receipts.
 
 Positively observed conflicts have a distinct registration status. Task
-PostToolUse and spawn-selective PreToolUse explain that `task_context` also
-binds the session, that conflicting work must be resolved without altering
-another session's state, and that a fresh successful `task_start` or
-`task_context` for the sole intended open task restores only future evidence.
+PostToolUse and spawn-selective PreToolUse explain that `task_context` only
+observes state, that conflicting work must be resolved without altering
+another session's state, and that a fresh successful `task_start` for the sole
+intended open task restores only future evidence.
 Overflow requires a new coordinator; earlier results stay non-attesting and
 must not be replayed or fabricated. Unavailable binding observations are not
 reported as known conflicts. Hooks remain fail-open for substantive work.

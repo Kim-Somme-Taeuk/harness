@@ -656,7 +656,7 @@ class TestCodexHookWrappers(unittest.TestCase):
         callback = mock.Mock(side_effect=RuntimeError("watcher unavailable"))
         payload = json.dumps({
             "cwd": str(REPO_ROOT), "session_id": "019f834e-1e91-7662-9024-f548103d751e",
-            "tool_name": "mcp__harness__task_context", "tool_use_id": "call_route_context",
+            "tool_name": "mcp__harness__task_start", "tool_use_id": "call_route_start",
             "tool_response": {"structuredContent": {
                 "task_dir": "/ignored", "task_id": "TASK__ignored", "run_id": "run",
             }},

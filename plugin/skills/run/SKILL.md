@@ -92,7 +92,9 @@ Present the selected next task as status, including its route and effective capa
 
 Before creating a new task, check whether this session already has an active
 harness task. If one exists, call `mcp__plugin_harness_harness__task_context`
-and resume rather than creating a duplicate.
+to observe its status. For an open or blocked task, resume rather than creating a duplicate:
+call `task_start` with the existing `task_id`, omitting `fresh_run`, before continuing.
+A closed task remains observational for coordinator cleanup; do not reopen it.
 
 Resume routing:
 - Already closed with outstanding coordinator disposal → Phase 5's shared
@@ -103,8 +105,8 @@ Resume routing:
 - `missing_for_close` names specific artifacts or AC blockers → fix that gate
   and then continue from the corresponding phase.
 
-Only call `task_start` when no active task can be resolved, or when the user
-explicitly asks for a new task.
+Use `task_start` with the existing id for resume. Create a new task only when no
+active task can be resolved, or when the user explicitly asks for a new task.
 
 If only a Goal is active, call `goal_next_task`; if none and unproven, attach a child.
 

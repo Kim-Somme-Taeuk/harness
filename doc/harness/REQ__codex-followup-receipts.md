@@ -1,7 +1,7 @@
 ---
 tags: [harness, codex, receipts, lifecycle]
 summary: Authenticated native Codex followups create fresh receipt generations without reviving an earlier PASS.
-updated: 2026-10-07
+updated: 2026-10-08
 freshness: current
 invalidated_by_paths:
   - plugin/scripts/_lib.py
@@ -40,8 +40,9 @@ without scanning history: only a unique trusted candidate within the UTC day
 derived from the thread UUIDv7 and its neighboring days is eligible.
 
 When task bindings conflict, hooks must explain the conflict and explicit
-future-only recovery. Inspecting another open task with `task_context` can bind
-the session; users must not be directed to replay or fabricate receipts, alter
+future-only recovery. `task_context` is observational, including another open
+task; explicit `task_start` with the existing id and no `fresh_run` resumes and
+binds the preserved run. Users must not be directed to replay or fabricate receipts, alter
 another session's state, or repair a timeout that was never observed. Overflow
 fences require a new coordinator.
 

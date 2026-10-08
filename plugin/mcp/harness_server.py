@@ -47,8 +47,9 @@ def _initialize_instructions(runtime: str) -> str:
         "for native /goal orchestration. A Goal owns a child task queue; create "
         "or attach child tasks as scope expands. "
         "When no native goal context is active, a plain repo-mutating request "
-        "may create or continue a harness task directly with task_start/task_context; "
+        "may create or continue a harness task directly with task_start; "
         "hooks do not create tasks automatically. "
+        "task_context only observes state and does not bind or resume a task. "
         "For an existing open or blocked task, task_start preserves the current "
         "run and review/QA receipts by default. Pass fresh_run=true only to "
         "deliberately rotate the run and discard that evidence. "
@@ -1747,44 +1748,12 @@ def _session_resumes(repo_root: str, task_dir: str, session_id: str) -> bool:
 
 
 def handle_task_context(args: dict) -> dict:
-    return _with_codex_main_focus(args, _handle_task_context)
-
-
-def _handle_task_context(args: dict, *, defer_binding: bool = False) -> dict:
     ti = _req(args, "task_id")
-    control_root, repo_root = _task_roots(args)
+    _, repo_root = _task_roots(args)
     td = canonical_task_dir(task_id=ti, repo_root=repo_root)
     control = _validated_task_control(td)
     if not control:
         return _invalid_task_control_error("task_context", td)
-    # Only a process-owned identity may publish here. Ordinary Codex binding is
-    # performed by PostToolUse from this successful structured result.
-    exact_session_id = _current_session_identity(control_root)
-    if _server_runtime() == "codex" and (args.get("workspace") is not None or defer_binding):
-        exact_session_id = ""
-    defer_codex_binding = _server_runtime() == "codex" and not exact_session_id
-    session_id = exact_session_id or current_session_id()
-    if not defer_codex_binding and task_control_status(td, control) == "open" and _session_resumes(
-        repo_root, td, session_id,
-    ):
-        # A session that resumes an open task arrives here, and until it owns a
-        # marker every subagent stop it produces fails with
-        # `session-task-binding-unresolved` — no receipt, so no close path.
-        # task_start would also preserve and bind this open run. task_context
-        # remains the narrower read/rebind surface when no lifecycle transition
-        # or watcher registration is needed.
-        #
-        # The write is additive across sessions: write_active_marker creates
-        # only this session's own marker file, so markers other sessions hold
-        # keep resolving and their receipts stay valid. It does also rewrite
-        # the shared single-valued legacy `.active`, which is why
-        # `_session_resumes` gates the call — see its docstring.
-        #
-        # A refusal here is not swallowed. write_active_marker raises when the
-        # task-control runtime is not bound, and that is a real defect in the
-        # receipt subsystem, not a degraded-context nicety — handle_task_start
-        # lets the same call raise for the same reason.
-        write_active_marker(repo_root, td, session_id=session_id)
     snapshot = receipt_snapshot(td)
     ctx = emit_compact_context(td, snapshot)
     if "error" in ctx:
@@ -2229,7 +2198,7 @@ TOOL_DEFS: list[dict[str, Any]] = [
          "additionalProperties": False},
      "handler": handle_task_start},
     {"name": "task_context", "title": "Read the task pack",
-     "description": "Return compact task context with on-the-fly routing.",
+     "description": "Observe compact task context and routing without changing task ownership, focus, or watcher registration. To resume an open/blocked task, call task_start with its task_id and omit fresh_run to preserve its run and receipts.",
      "inputSchema": {"type": "object", "properties": {
          "task_id": {"type": "string"},
          "workspace": {"type": "string", "description": "Absolute path of a linked git worktree of this repository whose task this call targets (harness:batch leads). Omit for the main checkout."}},
