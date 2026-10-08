@@ -34,6 +34,7 @@ SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPTS_DIR)
 
 from _lib import (  # type: ignore
+    SUPPORTED_LENSES,
     _REVIEW_DETAIL_MAX_BYTES,
     _read_regular_text_file,
     _has_binding_conflict_fence, read_active_session_marker,
@@ -1138,7 +1139,7 @@ def _spawn_call(event: dict[str, Any], *, lens_only: bool = True) -> tuple[str, 
     if not TASK_NAME_RE.fullmatch(task_name):
         return None
     lens = _infer_receipt_lens(task_name)
-    if lens_only and not lens.startswith(("review-", "qa-", "ux-")):
+    if lens_only and lens not in SUPPORTED_LENSES:
         return None
     return call_id, task_name
 
@@ -1605,7 +1606,7 @@ class Watcher:
             or active_task != task_dir
             or not item.get("task_run_id")
             or binding.get("run_id") != item.get("task_run_id")
-            or not lens.startswith(("review-", "qa-", "ux-"))
+            or lens not in SUPPORTED_LENSES
         ):
             item["invalid"] = True
             return
