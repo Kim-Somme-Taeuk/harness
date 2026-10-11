@@ -1223,7 +1223,7 @@ def _child_status(
     root_id: str,
     agent_path: str,
     session_cwd: str,
-    *, generation: int = 0, not_before: str = "",
+    *, generation: int = 0, not_before: str = "", not_after: str = "",
 ) -> tuple[str, Path | None, str]:
     try:
         coordinator = ({"session_id": root_id, "agent_path": "/root", "depth": 0}
@@ -1314,10 +1314,11 @@ def _child_status(
                 if (not isinstance(turn_id, str) or not THREAD_RE.fullmatch(turn_id)
                         or any(t["id"] == turn_id for t in native_turns)
                         or (native_turn is None and child_turn)
-                        or (native_turn is not None and len(native_turn["completes"]) != 1)):
+                        or (native_turn is not None and not native_turn["terminal"])):
                     return "invalid", path, ""
                 native_turn = {"id": turn_id, "timestamp": event.get("timestamp"),
-                               "boundaries": 0, "finals": [], "completes": []}
+                               "boundaries": 0, "finals": [], "completes": [],
+                               "terminal": "", "terminal_timestamp": ""}
                 native_turns.append(native_turn)
             if event.get("type") == "response_item" and payload.get("type") == "agent_message":
                 if payload.get("author") == coordinator["agent_path"] and payload.get("recipient") == agent_path:
@@ -1331,13 +1332,33 @@ def _child_status(
                             metadata = payload.get("internal_chat_message_metadata_passthrough")
                             if not isinstance(metadata, dict) or metadata.get("turn_id") != native_turn["id"]:
                                 return "invalid", path, ""
+                            if native_turn["terminal"]:
+                                return "invalid", path, ""
                             native_turn["boundaries"] += 1
                         child_boundaries += 1
                         child_turn = True
                         finals.clear()
                         completes.clear()
                         continue
+            if (matching_meta and event.get("type") == "event_msg"
+                    and payload.get("type") == "turn_aborted"):
+                if (native_turn is None or payload.get("turn_id") != native_turn["id"]
+                        or payload.get("reason") != "interrupted"
+                        or native_turn["boundaries"] != 1 or native_turn["terminal"]
+                        or native_turn["finals"] or native_turn["completes"]):
+                    return "invalid", path, ""
+                try:
+                    started = datetime.fromisoformat(str(native_turn["timestamp"]).replace("Z", "+00:00"))
+                    ended = datetime.fromisoformat(str(event.get("timestamp")).replace("Z", "+00:00"))
+                    if started.tzinfo is None or ended.tzinfo is None or ended < started:
+                        return "invalid", path, ""
+                except (ValueError, TypeError, OverflowError):
+                    return "invalid", path, ""
+                native_turn["terminal"] = "interrupted"
+                native_turn["terminal_timestamp"] = event.get("timestamp")
             if child_turn and event.get("type") == "event_msg" and payload.get("type") == "agent_message" and payload.get("phase") == "final_answer":
+                if native_turn is not None and native_turn["terminal"] == "interrupted":
+                    return "invalid", path, ""
                 value = str(payload.get("message") or "")
                 finals.append(value)
                 if native_turn is not None:
@@ -1346,9 +1367,11 @@ def _child_status(
                 value = str(payload.get("last_agent_message") or "")
                 completes.append(value)
                 if native_turn is not None:
-                    if payload.get("turn_id") != native_turn["id"]:
+                    if payload.get("turn_id") != native_turn["id"] or native_turn["terminal"]:
                         return "invalid", path, ""
                     native_turn["completes"].append(value)
+                    native_turn["terminal"] = "complete"
+                    native_turn["terminal_timestamp"] = event.get("timestamp")
     except OSError:
         return "pending", path, ""
     finally:
@@ -1364,6 +1387,8 @@ def _child_status(
         if generation >= len(native_turns):
             return "pending", path, ""
         for previous in native_turns[:generation]:
+            if previous["terminal"] == "interrupted":
+                continue
             if (previous["boundaries"] != 1 or len(previous["completes"]) != 1
                     or len(previous["finals"]) > 1 or not previous["completes"][0]
                     or (previous["finals"] and previous["finals"] != previous["completes"])):
@@ -1377,6 +1402,18 @@ def _child_status(
                     return "invalid", path, ""
             except (ValueError, TypeError, OverflowError):
                 return "invalid", path, ""
+        if not_after and selected["terminal"]:
+            try:
+                upper = datetime.fromisoformat(not_after.replace("Z", "+00:00"))
+                ended = datetime.fromisoformat(str(selected["terminal_timestamp"]).replace("Z", "+00:00"))
+                if upper.tzinfo is None or ended.tzinfo is None or ended > upper:
+                    return "invalid", path, ""
+            except (ValueError, TypeError, OverflowError):
+                return "invalid", path, ""
+        if selected["terminal"] == "interrupted":
+            if selected["boundaries"] != 1 or selected["finals"] or selected["completes"]:
+                return "invalid", path, ""
+            return "interrupted", path, ""
         child_boundaries = selected["boundaries"]
         finals, completes = selected["finals"], selected["completes"]
     elif generation:
@@ -1573,6 +1610,49 @@ class Watcher:
         item[key] = value
         return True
 
+    def _followup_ready(self, item: dict[str, Any]) -> bool:
+        previous = item["previous"]
+        if not item.get("eligible") or (previous.get("invalid") and not item.get("previous_fenced")):
+            self._invalidate(previous, "overlapping or unbound followup activity")
+            item["invalid"] = True
+            return False
+        if not previous.get("started") or (previous.get("followup") and not previous.get("followup_success")):
+            return False
+        if item.get("previous_completed"):
+            return True
+        status, _, final = _child_status(
+            previous["child_id"], self.root_id, previous["agent_path"], self.session_cwd,
+            generation=previous.get("generation", 0),
+            not_before=previous.get("followup_timestamp", ""),
+            not_after=item["followup_timestamp"],
+        )
+        if status in {"pending", "running"}:
+            return False
+        if status == "complete" and not previous.get("root_final"):
+            return False
+        if ((status == "interrupted" and not previous.get("root_final"))
+                or (status == "complete" and final == previous.get("root_final"))):
+            # A native terminal is not a receipt. In particular, an aborted
+            # predecessor retires only when its authenticated successor starts.
+            return True
+        self._invalidate(previous, "followup predecessor terminal was not authenticated")
+        item["invalid"] = True
+        return False
+
+    def _fence_previous(self, item: dict[str, Any]) -> None:
+        previous = item["previous"]
+        if not previous.get("invalid") and (
+            previous.get("completed") or any(
+                row.get("runtime_id") == previous.get("runtime_id")
+                and row.get("event") == "completed"
+                for row in receipt_snapshot(previous["task_dir"]).entries
+            )
+        ):
+            self._invalidate(previous, "successful followup awaits authenticated predecessor or activity")
+            # Keep the successor retryable after intentionally fencing an old
+            # PASS. Native predecessor proof is still independently required.
+            item["previous_fenced"] = True
+
     def _maybe_start(self, call_id: str) -> None:
         item = self.calls.get(call_id) or {}
         if not all(item.get(key) for key in (
@@ -1583,6 +1663,8 @@ class Watcher:
             self._invalidate(item, "structured activity and spawn output identities differed")
             return
         if item.get("invalid") or item.get("started"):
+            return
+        if item.get("followup") and not self._followup_ready(item):
             return
         try:
             identity = _coordinator_identity(self.root_id, self.session_cwd)
@@ -1641,6 +1723,8 @@ class Watcher:
                 "runtime_id": runtime_id,
             })
             self.by_agent[item["agent_path"]] = item
+            if item.get("followup"):
+                item["previous"]["superseded"] = True
             return
         # A correlated followup activity proves new work on the already trusted
         # child. Publish its pending start even while output/turn files lag, so
@@ -1655,7 +1739,7 @@ class Watcher:
         # The registration offset proves this spawn was observed in order.
         # A delayed manager may reach it after the trusted depth-1 child
         # already completed; that remains real replay, not history scan.
-        if child_status not in {"running", "complete"}:
+        if child_status not in {"running", "complete", "interrupted"}:
             self._invalidate(item, "child evidence was invalid at start capture")
             return
         with active_session_transaction(self.repo_root):
@@ -1701,6 +1785,8 @@ class Watcher:
             "runtime_id": runtime_id,
         })
         self.by_agent[item["agent_path"]] = item
+        if item.get("followup"):
+            item["previous"]["superseded"] = True
 
     def _maybe_complete(self, item: dict[str, Any]) -> None:
         root_final = str(item.get("root_final") or "")
@@ -1801,11 +1887,15 @@ class Watcher:
             target = arguments.get("target")
             # A prior final/start may still await independent authentication.
             # Accepted followup work must also fence that pending generation.
-            known = list(self.by_agent.values()) + [
-                item for item in self.calls.values()
-                if not item.get("started") and not item.get("followup")
-                and not item.get("invalid") and item.get("child_id")
-            ]
+            known: list[dict[str, Any]] = []
+            for candidate in self.calls.values():
+                if not candidate.get("child_id") or not candidate.get("agent_path"):
+                    continue
+                if candidate.get("followup"):
+                    if not candidate.get("output_path") and not candidate.get("followup_success"):
+                        continue
+                    known = [prior for prior in known if prior is not candidate["previous"]]
+                known.append(candidate)
             candidates = [item for item in known
                           if target in (item.get("task_name"), item.get("agent_path"), item.get("child_id"))]
             if len(candidates) != 1:
@@ -1828,14 +1918,15 @@ class Watcher:
             if origin_offset is not None:
                 item["started_order"] = f"codex:{self.root_id}:{origin_offset}"
             item["eligible"] = bool(
-                previous.get("completed") and not previous.get("invalid")
+                not previous.get("invalid")
                 and binding.get("task_dir") == item["task_dir"]
                 and binding.get("run_id") == item["task_run_id"]
                 and not _event_precedes_run(event, item["task_run_id"])
             )
+            item["previous_completed"] = bool(previous.get("completed"))
             competing = [candidate for candidate in self.calls.values()
                          if candidate.get("followup") and candidate.get("eligible")
-                         and candidate["previous"].get("runtime_id") == previous.get("runtime_id")
+                         and candidate["previous"] is previous
                          and ("followup_output" not in candidate or candidate.get("followup_success"))]
             if competing:
                 item["eligible"] = False
@@ -1861,6 +1952,8 @@ class Watcher:
                         return True
                     if self._set_once(item, "output_path", item["agent_path"]):
                         self._maybe_start(call_id)
+                    if not item.get("started"):
+                        self._fence_previous(item)
                     if "followup_output" in item and not item.get("followup_success"):
                         self._invalidate(item, "followup output was not a native success")
                     self._maybe_complete(item)
@@ -1878,8 +1971,8 @@ class Watcher:
                     # Accepted work voids the old PASS even if its activity is
                     # missing. This negative evidence cannot authorize a new
                     # start; a later exact activity may still establish it.
-                    self._invalidate(item["previous"], "successful followup awaits authenticated activity")
-                if not item["followup_success"] and item.get("started"):
+                    self._fence_previous(item)
+                if not item["followup_success"] and item.get("output_path"):
                     self._invalidate(item, "followup output was not a native success")
                 self._maybe_complete(item)
                 return True
@@ -1956,6 +2049,8 @@ class Watcher:
                    and entry.get("eligible") and not entry.get("invalid")
                    and not entry.get("started")
                    and ("followup_output" not in entry or entry.get("followup_success"))]
+        pending = [entry for entry in pending
+                   if not any(candidate["previous"] is entry for candidate in pending)]
         # Keep one early delivery with its unique pending call. Text alone is
         # never authority: publication still waits for activity/output/turn.
         item = pending[0] if len(pending) == 1 else self.by_agent.get(agent_path)
@@ -2203,7 +2298,7 @@ def watch(
     finally:
         handle.close()
     if not stop_event.is_set() and any(
-        not item.get("invalid") and not item.get("completed")
+        not item.get("invalid") and not item.get("completed") and not item.get("superseded")
         and all(item.get(key) for key in ("task_name", "child_id", "agent_path", "output_path"))
         for item in watcher.calls.values()
     ):

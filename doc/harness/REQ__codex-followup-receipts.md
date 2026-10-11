@@ -1,7 +1,7 @@
 ---
 tags: [harness, codex, receipts, lifecycle]
 summary: Authenticated native Codex followups create fresh receipt generations without reviving an earlier PASS.
-updated: 2026-10-08
+updated: 2026-10-12
 freshness: current
 invalidated_by_paths:
   - plugin/scripts/_lib.py
@@ -15,13 +15,24 @@ invalidated_by_paths:
 
 ## Expected behavior
 
-A completed native Codex review or QA child may receive substantive new work
+A completed or authentically interrupted native Codex review or QA child may receive substantive new work
 through direct `collaboration.followup_task`. The watcher must distinguish that
 new generation from the child's earlier final. A correlated followup start
 makes the earlier generation's PASS insufficient; only independently matched
 native evidence for the new generation can complete it. Successful followup
 output without authenticated activity also invalidates the earlier PASS but
 cannot establish a new start by itself.
+
+An interrupted turn is not a successful completion. Its exact trusted native
+`turn_aborted` event must name the current turn and the `interrupted` reason,
+follow one authenticated task boundary, and conflict with neither a final nor a
+completion. A fresh correlated followup after that terminal can complete only
+from its own matching child and coordinator finals. A parent interrupt request
+or activity alone is insufficient; interrupting an already completed agent
+must not revoke its completed result. Delayed child terminal publication must
+remain pending and retryable, including across worker restart, rather than
+permanently rejecting the followup when its call first arrives. Recovery must
+remain duplicate-free and bound to the unchanged task/run and registration.
 
 Malformed, missing, overlapping, or conflicting followup evidence must never
 restore an earlier PASS. Native turn ids bind task boundaries and completions;

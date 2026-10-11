@@ -64,7 +64,7 @@ match the same text. Duplicate, conflicting, historical, cross-run, or
 out-of-order boundaries invalidate the lifecycle rather than selecting a
 convenient candidate.
 
-A completed authenticated child may receive a new generation through direct
+A completed or authentically interrupted child may receive a new generation through direct
 `collaboration.followup_task`. Its target must uniquely identify the known child
 by task name, agent path, or thread id. The same exact task/run binding must
 remain current. A matching `SubAgentActivity` of kind `interacted` supplies the
@@ -81,7 +81,7 @@ delivery can wait on a unique pending call but cannot authorize completion.
 
 Native child `task_started` turn ids must be valid UUIDv7 values. Exactly one
 coordinator NEW_TASK boundary must carry matching turn metadata, and its
-`task_complete` must name the same turn. Prior generations must be complete;
+`task_complete` must name the same turn. Prior generations must have a valid completion or interrupted terminal;
 duplicate or overlapping turns are invalid. A followup selects its own ordinal
 generation whose timezone-aware start timestamp cannot precede the followup
 call. A legacy transcript without native turns cannot attest a followup.
@@ -89,6 +89,20 @@ For a child explicitly forked from this coordinator, only leading turns whose
 UUIDv7 creation time predates the child are excluded as inherited history.
 Rewritten event timestamps do not prove inherited age. Once the child's own
 execution begins, later overlapping turns cannot be discarded as history.
+
+An interrupted terminal is exactly one trusted child `turn_aborted` with
+`reason: interrupted` and the current native turn ID, after exactly one
+authenticated NEW_TASK boundary and without a final-answer or task_complete.
+Its timezone-aware event timestamp must not precede its turn start or follow
+the next followup call. Duplicate or conflicting terminals remain invalid.
+This terminal grants no completed receipt or PASS; it permits a fresh exact
+followup generation. A parent interrupt activity alone grants no terminal
+authority, including when it targets an already completed child. Delayed
+predecessor evidence is rechecked during normal watcher retry; absence at
+followup-call observation is not permanent invalidity. Initial spawn replay
+may recover an authenticated start for an interrupted generation, without
+inventing completion. All new completions still require matching child and
+coordinator finals, current binding, and the unchanged protected writer.
 
 The watcher also records native coordinator byte positions for lifecycle
 origins, so delayed receipt publication cannot change semantic order. The
