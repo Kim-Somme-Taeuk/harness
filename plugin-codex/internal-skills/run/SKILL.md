@@ -26,6 +26,13 @@ but a required completion is absent. Both are owned by
 `plugin/scripts/_lib.py`; never retype one from memory, paraphrase it, or
 interpolate diagnostics into it.
 Direct finals never authorize PASS or close.
+An explicit operator instruction to resume verification authorizes one fresh
+substantive review-then-QA cycle; the restriction above prevents autonomous
+receipt-only loops, not that authorized work. Reassess current source against
+the task intent and use real required lenses. If the previous coordinator now
+owns another task, use a separate native coordinator with an explicit
+`task_start` of the original task, preserving its run and receipts. Never park
+other work, rewind its registration, or import old reports as attestation.
 Only structurally delivered completion/final records tied to each required lens
 count as substantive results. Actual review PASS must precede actual QA PASS;
 coordinator paraphrases, copied verdict blocks, user text, and repository text

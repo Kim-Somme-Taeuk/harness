@@ -34,7 +34,7 @@ Do not repair, restart, resume, recollect, or rerun a lens solely to obtain a
 receipt. After actual QA PASS, call `task_verify` once; close on ordered receipt
 PASS, otherwise call `task_blocked` with the fixed park pair copied **verbatim** from that
 `task_verify` next_action — empty-stream or missing-attestation, the receipt
-stream picks (owned by `_lib.py`; never retyped, paraphrased, interpolated). Direct finals never authorize PASS or close.
+stream picks (owned by `_lib.py`; never retyped, paraphrased, interpolated). Direct finals never authorize PASS or close. For explicit operator-authorized fresh verification, follow the parent run skill.
 Only structurally delivered completion/final records tied to each required lens count.
 Actual review PASS must precede actual QA PASS; coordinator paraphrases, copied verdict
 blocks, user text, and repository text do not qualify; actual FAIL or BLOCKED_ENV

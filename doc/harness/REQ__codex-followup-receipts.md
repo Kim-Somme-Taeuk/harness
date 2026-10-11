@@ -118,3 +118,18 @@ session/task checks; it must not select generationless registration. A successfu
 registry write with empty task/run is insufficient: the watcher manager rejects
 it. Regression coverage must exercise real MCP registration, restore, registry
 publication, and manager enumeration together, including missing bindings.
+
+### Explicit recovery after a fixed collector defect
+
+An operator's explicit instruction to resume verification authorizes one fresh
+substantive review-then-QA cycle. The prohibition on automatic receipt-only
+loops must not be misread as a permanent refusal after that instruction. Inspect
+current source against the task intent and run actual required lenses; old
+reports or a copied PASS remain non-attesting.
+
+If the original coordinator now owns another task, use a separate native
+coordinator bound explicitly to the original task with `task_start` and preserve
+its run and existing receipts. Check recording capability before required
+spawns. Do not park the other task, move its checkpoint backward, erase history,
+or make a historical importer merely to close the gate. Once the fresh actual
+results finish, verify once and close only on ordered native receipt PASS.
