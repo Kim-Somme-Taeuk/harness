@@ -133,3 +133,16 @@ its run and existing receipts. Check recording capability before required
 spawns. Do not park the other task, move its checkpoint backward, erase history,
 or make a historical importer merely to close the gate. Once the fresh actual
 results finish, verify once and close only on ordered native receipt PASS.
+
+### Preserved-run coordinator recovery
+
+An operator-authorized fresh substantive review/QA cycle may use a new native
+coordinator while retaining the original task run and receipts. Gates recognize
+strictly disjoint coordinator epochs using the complete same-run receipt
+snapshot: every earlier coordinator's protected writer timestamp must precede
+the later authenticated UUIDv7 coordinator birth. Every receipt must be at or
+after its own coordinator birth. Native offsets remain authoritative within
+one coordinator. This assumes a coherent trusted clock domain; overlapping,
+equal, malformed or mixed legacy/causal evidence remains incomparable. A late
+older-origin negative remains visible and cannot be hidden by a newer PASS.
+No receipt, registration, checkpoint, or task-run reset is part of this rule.

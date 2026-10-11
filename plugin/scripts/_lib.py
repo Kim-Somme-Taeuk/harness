@@ -3250,14 +3250,58 @@ def _receipt_event_order(item):
     return match[1], int(match[2])
 
 
-def _ordered_receipt_events(events):
+def _receipt_origin_epochs(events, receipts):
+    """Prove disjoint coordinator epochs from the complete same-run snapshot.
+
+    Protected writer times bound observed events above; authenticated UUIDv7
+    coordinator births bound their events below. This requires a coherent
+    trusted clock domain. Unknown/overlapping intervals establish no order.
+    """
+    runs = {item.get("task_run_id") for item in events}
+    if len(runs) != 1 or not next(iter(runs)):
+        return None
+    context = [item for item in receipts if item.get("task_run_id") in runs]
+    origins = [_receipt_event_order(item) for item in context]
+    if not origins or any(origin is None for origin in origins):
+        return None
+    roots = {origin[0] for origin in origins}
+    if len(roots) == 1:
+        return {next(iter(roots)): 0}
+    try:
+        births = {root: datetime.fromtimestamp(uuid7_timestamp_ms(root) / 1000,
+                                               timezone.utc) for root in roots}
+        ends = dict(births)
+        for item, origin in zip(context, origins):
+            stamp = datetime.fromisoformat(item["ts"].replace("Z", "+00:00"))
+            if stamp.tzinfo is None or stamp < births[origin[0]]:
+                return None
+            ends[origin[0]] = max(ends[origin[0]], stamp)
+    except (ValueError, TypeError, OverflowError, OSError, AttributeError, KeyError):
+        return None
+    ordered = sorted(roots, key=births.__getitem__)
+    if any(ends[left] >= births[right] for left, right in zip(ordered, ordered[1:])):
+        return None
+    return {root: index for index, root in enumerate(ordered)}
+
+
+def _ordered_receipt_events(events, receipts=None):
     """Return a comparable semantic sequence, or None for unknown ordering."""
     origins = [_receipt_event_order(item) for item in events]
     if all(origin is None for origin in origins):
+        runs = {item.get("task_run_id") for item in events}
+        if receipts is not None and any(
+            item.get("task_run_id") in runs and _receipt_event_order(item) is not None
+            for item in receipts
+        ):
+            return None
         return list(events)
-    if any(origin is None for origin in origins) or len({origin[0] for origin in origins}) != 1:
+    if any(origin is None for origin in origins):
         return None
-    return sorted(events, key=lambda item: _receipt_event_order(item)[1])
+    epochs = _receipt_origin_epochs(events, events if receipts is None else receipts)
+    if epochs is None or any(origin[0] not in epochs for origin in origins):
+        return None
+    return sorted(events, key=lambda item: (
+        epochs[_receipt_event_order(item)[0]], _receipt_event_order(item)[1]))
 
 
 def _receipt_precedes(left, right, receipts):
@@ -3265,9 +3309,13 @@ def _receipt_precedes(left, right, receipts):
     first, second = _receipt_event_order(left), _receipt_event_order(right)
     if first is None and second is None:
         return receipts.index(left) < receipts.index(right)
-    if first is None or second is None or first[0] != second[0]:
+    if first is None or second is None:
         return False
-    return first[1] < second[1]
+    if first[0] == second[0]:
+        return first[1] < second[1]
+    epochs = _receipt_origin_epochs([left, right], receipts)
+    return (epochs is not None and first[0] in epochs and second[0] in epochs
+            and epochs[first[0]] < epochs[second[0]])
 
 
 _RECEIPT_DIGEST_RE = re.compile(r"^DETAIL_SHA256:[0-9a-f]{64}$")
@@ -4468,11 +4516,11 @@ def _lens_events_by_lens(receipts, prefix, current_run_id):
         lens = str(item.get("lens") or "").lower()
         if lens.startswith(prefix) and item.get("task_run_id") == current_run_id:
             grouped.setdefault(lens, []).append(item)
-    return {lens: (_ordered_receipt_events(events) or events)
+    return {lens: (_ordered_receipt_events(events, receipts) or events)
             for lens, events in grouped.items()}
 
 
-def _rerun_in_flight(events):
+def _rerun_in_flight(events, receipts=None):
     """True when the lens's newest receipt is a start, i.e. it is running again.
 
     An in-flight rerun still suppresses any earlier completion. That is not the
@@ -4480,7 +4528,7 @@ def _rerun_in_flight(events):
     reported yet, and treating its previous PASS as current could close a task
     mid-review. Only completion-versus-completion selection changed.
     """
-    ordered = _ordered_receipt_events(events)
+    ordered = _ordered_receipt_events(events, receipts)
     if ordered is None or not ordered:
         return False
     if _receipt_event_order(ordered[0]) is None:
@@ -4490,7 +4538,7 @@ def _rerun_in_flight(events):
         return False
     newest = starts[-1]
     return not any(_receipt_runtime_identity_matches(newest, item)
-                   and _valid_completion(item, ordered) for item in ordered)
+                   and _valid_completion(item, ordered if receipts is None else receipts) for item in ordered)
 
 
 def _completed_review_by_lens(task_dir, snapshot=None):
@@ -4501,7 +4549,7 @@ def _completed_review_by_lens(task_dir, snapshot=None):
         return {}
     completed = {}
     for lens, events in _lens_events_by_lens(receipts, "review-", current_run_id).items():
-        if _rerun_in_flight(events):
+        if _rerun_in_flight(events, receipts):
             continue
         item = _effective_completion(lens, events, receipts)
         if item is not None:
@@ -4685,7 +4733,7 @@ def _effective_completion(lens, events, receipts):
     # The same authenticated Codex child can take a new task through followup.
     # Once that start is observed, even malformed or conflicting new finals
     # must not resurrect an earlier generation's PASS.
-    ordered = _ordered_receipt_events(events)
+    ordered = _ordered_receipt_events(events, receipts)
     if ordered is None:
         # Unknown relative age can never promote PASS or hide actual negatives.
         for verdict in ("FAIL", "BLOCKED_ENV"):
@@ -4727,7 +4775,7 @@ def _valid_completion(item, receipts):
             return True
         # Incomparable evidence retains authenticated negatives, never PASS.
         if (item.get("verdict") in {"FAIL", "BLOCKED_ENV"}
-                and _ordered_receipt_events([start, item]) is None):
+                and _ordered_receipt_events([start, item], receipts) is None):
             return True
     return False
 
@@ -4777,7 +4825,7 @@ def receipt_review_verdict(task_dir, state=None, snapshot=None):
         return "PENDING"
     relevant = [item for item in snapshot.entries
                 if item.get("task_run_id") == st.get("run_id") and item.get("lens") in required]
-    if _ordered_receipt_events(relevant) is None:
+    if _ordered_receipt_events(relevant, snapshot.entries) is None:
         return "PENDING"
     return "PASS" if all(verdict == "PASS" for verdict in verdicts) else "PENDING"
 
@@ -4792,10 +4840,10 @@ def _completed_qa_by_lens(task_dir, snapshot=None):
     current_run_id = str(read_task_control(task_dir).get("run_id") or "")
     if not current_run_id:
         return {}
-    receipts = snapshot.subagents
+    receipts = snapshot.entries
     latest = {}
     for lens, events in _lens_events_by_lens(receipts, "qa-", current_run_id).items():
-        if _rerun_in_flight(events):
+        if _rerun_in_flight(events, receipts):
             continue
         # Same "last binding wins" rule as the review selector above.
         item = _effective_completion(lens, events, receipts)
@@ -4833,7 +4881,7 @@ def receipt_runtime_verdict(task_dir, state=None, snapshot=None):
     relevant = [item for item in snapshot.entries
                 if item.get("task_run_id") == st.get("run_id")
                 and item.get("lens") in required + required_review_lenses(task_dir, st)]
-    if _ordered_receipt_events(relevant) is None:
+    if _ordered_receipt_events(relevant, snapshot.entries) is None:
         return "PENDING"
     valid = {
         lens: completed[lens] for lens in required
@@ -4893,7 +4941,7 @@ def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
     # distinct advice; neither is a report-format problem.
     kinds = {}
     for lens, events in grouped.items():
-        if _rerun_in_flight(events):
+        if _rerun_in_flight(events, receipts):
             # A reversed/equal pair can look like a live rerun to the gate.
             # Diagnose existing completions only; do not alter that gate.
             for item in reversed(events):
@@ -4955,7 +5003,7 @@ def nonparsing_completion_lenses(task_dir, state=None, snapshot=None):
     declared = required_review_lenses(task_dir, st) + _required_qa_lenses(task_dir, st)
     relevant = [item for item in receipts
                 if item.get("task_run_id") == current_run_id and item.get("lens") in declared]
-    if _ordered_receipt_events(relevant) is None:
+    if _ordered_receipt_events(relevant, receipts) is None:
         for item in relevant:
             if item.get("event") == "completed":
                 kinds.setdefault(item["lens"], _completion_diagnostic_kind(item, receipts))

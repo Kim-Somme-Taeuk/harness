@@ -192,10 +192,18 @@ evidence, append position establishes lifecycle order and review-before-QA
 order. When all relevant rows carry `event_order` from the same coordinator,
 native byte position establishes that order independently of append timing.
 Precedence is strict: equal offsets establish no edge. Mixed legacy/native
-origins or distinct coordinators are incomparable and cannot establish PASS.
+origins are incomparable and cannot establish PASS. Distinct native
+coordinators are comparable only through strictly disjoint epochs proven from
+all protected receipts in the same run: valid timezone-aware writer timestamps
+are at or after each authenticated UUIDv7 root birth, and every timestamp for
+an earlier root strictly precedes the next root birth. Native byte positions
+still order each root's events. This assumes a coherent trusted clock domain;
+equality, overlap, invalid timestamps or non-UUIDv7 roots establish no epoch
+order. Evidence from other lenses participates in the same proof, and a late
+older-origin row can revoke comparability without rewriting earlier receipts.
 Valid authenticated FAIL or BLOCKED_ENV evidence remains visible despite
 incomparable ordering; uncertainty cannot promote PASS or hide those negatives.
-Wall-clock comparison does not establish gate order. Transcript paths and
+Receipt timestamps alone never establish gate order. Transcript paths and
 digests are verification inputs before append, not persistent receipt state.
 
 For PASS, each completion must follow its exact matching start, and each QA

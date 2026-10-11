@@ -249,3 +249,23 @@ cannot see that spawn and cannot manufacture a missing start.
   conflict guidance distinguishes positive conflict from unavailable reads.
 - Focused watcher/hook/receipt tests and contract checks validate source changes;
   this port does not require or perform a live reinstall.
+
+### Ordering a preserved run across native coordinators
+
+The complete same-run protected receipt snapshot may establish disjoint native
+coordinator epochs. Authenticated UUIDv7 root creation is a lower bound on its
+native events; the receipt owner's write timestamp is an upper bound on the
+observed event. For distinct roots, require timezone-aware valid timestamps,
+canonical UUIDv7 roots, each write at or after its own root birth, and every
+write for an earlier root strictly before the next root birth. This proof
+assumes runtime UUID timestamps and receipt writer clocks share a coherent
+trusted clock domain; it is not general distributed causal ordering.
+
+Derive epoch order from all lenses in the same run before projecting to a
+particular lens or review/QA edge. Preserve native offset ordering inside each
+root and legacy-only ordering. Mixed legacy/causal streams, equality, overlap,
+and malformed epoch evidence cannot establish PASS. Later publication from an
+older origin invalidates the disjoint proof when intervals overlap; authentic
+negative completions remain visible. Exact lifecycle pairing, followup fences,
+and duplicate-terminal rejection are unchanged. This gate rule neither grants
+new acquisition authority nor rewrites registrations or historical receipts.
