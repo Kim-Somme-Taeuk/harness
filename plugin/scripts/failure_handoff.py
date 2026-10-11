@@ -7,8 +7,6 @@ from pathlib import Path
 import sys
 import tempfile
 
-from model_routing import route
-
 IDENTITY = ('task_id', 'run_id', 'ac_id', 'issue_id')
 DETAILS = ('worker', 'model', 'summary', 'attempted', 'changed_files', 'checks', 'remaining', 'recorded_by')
 
@@ -88,8 +86,10 @@ def resume(directory, data):
     records = history(directory, data)
     if not records:
         raise ValueError('no failure history for this task/run/AC/issue')
-    decision = route({key: data[key] for key in ('impact', 'recovery', 'available_models') if key in data}
-                     | {'failed_attempts': len(records)})
+    # Legacy impact/recovery/catalog inputs are inert compatibility metadata.
+    # Replacement eligibility comes only from the immutable issue history.
+    decision = ({'action': 'stop', 'reason': 'three-attempt limit'}
+                if len(records) >= 3 else {'action': 'spawn'})
     return decision | {'identity': identity(data), 'failed_attempts': len(records),
                        'handoff_paths': [str(path.resolve()) for path, _ in records]}
 

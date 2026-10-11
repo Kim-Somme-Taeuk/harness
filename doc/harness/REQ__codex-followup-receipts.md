@@ -100,12 +100,14 @@ protocol behavior, reviewing the resulting diff, and rerunning the receipt and
 contract regressions before accepting a replacement. Model routing is outside
 this port's scope.
 
-### Subsequent model gate
+### Retired model gate
 
-The fork adds a model-decision gate to `hook_pre_tool_use.py` before best-effort
-watcher registration. Existing binding-conflict and receipt behavior remains;
-review/QA model exemptions preserve substantive lenses when watcher registration
-is unavailable. Model-decision failures are separate from receipt failures.
+The fork previously added model-decision admission before watcher registration.
+That policy is superseded by the model-neutral execution requirement in
+REQ__failure-cost-model-routing.md. Removing that branch must preserve native
+spawn classification, formal-review identity validation, binding-conflict fences
+and best-effort watcher registration. Model selection belongs to the user/runtime
+and is separate from receipt authority.
 
 ### Eager MCP registration
 

@@ -59,10 +59,10 @@ out-of-plan edit. Persist the choice in PLAN.md, a checkpoint note, or a durable
 Never halt with bare BLOCKED or silently cut an approved AC. Report the exact
 blocker and let the user choose a concrete recovery.
 
-## Model Routing
+## Worker context and model selection
 
-Read [failure-cost routing](model-routing.md) before implementation dispatch.
-For each AC apply its helper’s native spawn arguments; retain independent review/QA and admission/ownership rules.
+Read [worker context and failed-work handoff](failure-handoff.md) before implementation dispatch.
+For each AC provide explicit scope, acceptance evidence and failure context; inherit the runtime model unless the user/environment selects one. Retain independent review/QA and admission/ownership rules.
 
 ## Flow
 
@@ -176,7 +176,7 @@ regression evidence. Full-suite verification belongs to the required
 qa-* agents; browser evidence may run inline only when that is the available
 path.
 
-Per-AC implementation failures consume the model-routing attempt budget and trigger escalation. Only Phase 7 full-suite failures consume the separate 3-cycle QA budget.
+Per-AC implementation failures consume the failed-work attempt budget and require an evidence-backed handoff; model choice remains with the user/runtime. Only Phase 7 full-suite failures consume the separate 3-cycle QA budget.
 
 **Per-AC visual verification** (browser projects only): run inline with available browser tools. If browser verification is required and unavailable, record the affected ACs as browser-lens `BLOCKED_ENV` evidence.
 

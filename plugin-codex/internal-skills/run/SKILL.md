@@ -162,12 +162,12 @@ Present the selected next task as status, including its route and effective capa
 Before choosing, dispatching, or resuming implementation work, read AGENTS.md and
 the active PLAN, then the project task classification/routing table they explicitly
 link; conversation history is not a substitute. Re-read before each next task.
-For a persistent Sol/Astra session split, select ready tasks assigned to this
-session's role, respecting dependencies and exclusive file ownership. Check the
-actual running model separately; a role mismatch requires reporting both and
-handoff to the matching session or operator resolution before implementation,
-never a claimed model switch. The table cannot override model admission or task
-focus. Resolve a declared missing/ambiguous table or table/router conflict first.
+Select ready tasks assigned to this session's responsibility, respecting
+dependencies and exclusive file ownership. Model selection belongs to the
+user/runtime; historical model labels do not create a mandatory admission gate.
+Honor explicit current user choices within native tool constraints, and never
+claim a role label switched the coordinator. The table cannot override task
+focus. Resolve declared missing or ambiguous ownership before implementation.
 If no table is declared, continue ordinary routing without inventing a role. When
 the user requests a persistent multi-session division and no table exists,
 persist it under project doc/ and link it from AGENTS.md or the active PLAN before

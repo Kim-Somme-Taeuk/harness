@@ -52,8 +52,8 @@ ROUTING_BLOCK = """## Harness routing
 
 ### Project task routing
 
-Before choosing or resuming work, read the project task classification/routing table explicitly linked from AGENTS.md or the active PLAN.md; conversation history is not a substitute. Re-read it before each next task. Follow the assigned session role, dependencies and exclusive file ownership; one persistent Sol session may handle all Sol tasks and one Astra session all Astra tasks. Check the actual running model separately: if it differs from the assigned role, report both and hand off or wait before implementation; never claim an automatic model switch. The table does not override authoritative model_routing/routing_state admission or active-task focus.
-If no table is declared, use ordinary routing without inventing a role. If the user requests a persistent multi-session division and no table exists, persist it under doc/ and link it from AGENTS.md or the active PLAN before implementation. Report a declared missing/ambiguous table or table/router conflict and resolve it before implementation.
+Before choosing or resuming work, read the project task classification/routing table explicitly linked from AGENTS.md or the active PLAN.md; conversation history is not a substitute. Re-read it before each next task. Follow the assigned responsibilities, dependencies and exclusive file ownership. Model choice belongs to the user or native runtime; omit worker model overrides to inherit it, and honor explicit choices under native model/fork constraints. A role label does not switch the running model. The table does not override active-task focus.
+If no table is declared, use ordinary routing without inventing a role. If the user requests a persistent multi-session division and no table exists, persist it under doc/ and link it from AGENTS.md or the active PLAN before implementation. Report a declared missing/ambiguous table or responsibility or ownership conflict and resolve it before implementation.
 
 ### Durable Decision Documentation Gate
 

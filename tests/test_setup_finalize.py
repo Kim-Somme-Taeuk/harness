@@ -248,7 +248,8 @@ def test_project_doc_routing_discovers_declared_task_table(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     project_doc = repo / "AGENTS.md"
-    user_rule = "Read [task assignments](doc/team/tasks.md).\n"
+    user_rule = ("Read [task assignments](doc/team/tasks.md).\n"
+                 "User assignment: Astra owns design; Sol owns implementation.\n")
     project_doc.write_text(user_rule, encoding="utf-8")
     for _ in range(2):
         setup_finalize.update_project_doc(
@@ -263,12 +264,13 @@ def test_project_doc_routing_discovers_declared_task_table(tmp_path):
     for required in (
         "explicitly linked from AGENTS.md or the active PLAN.md",
         "Re-read it before each next task", "exclusive file ownership",
-        "one persistent Sol session", "one Astra session",
-        "actual running model", "never claim an automatic model switch",
-        "model_routing/routing_state", "If no table is declared",
+        "If no table is declared",
         "persist it under doc/", "before implementation",
     ):
         assert required in block
+    assert 'model_routing/routing_state' not in block
+    assert 'one persistent Sol session' not in block
+    assert 'one Astra session' not in block
 
 
 def test_project_doc_routing_preserves_user_rule_after_legacy_eof_block(tmp_path):

@@ -20,22 +20,35 @@ def failure(attempt=1, **updates):
 
 
 def request(**updates):
-    return {k: failure()[k] for k in handoff.IDENTITY} | dict(
-        available_models=['gpt-6.1-sol', 'gpt-6-astra']) | updates
+    return {k: failure()[k] for k in handoff.IDENTITY} | updates
 
 
-def test_roundtrip_and_retry_limit(tmp_path):
+@pytest.mark.parametrize('model', ['gpt-6-astra', 'user-selected-model', 'unknown'])
+def test_roundtrip_and_retry_limit(tmp_path, model):
+    originals = {}
     for attempt in range(1, 4):
-        saved = handoff.record_failure(tmp_path, failure(attempt))
-        assert json.loads(Path(saved['path']).read_text()) == failure(attempt)
+        saved = handoff.record_failure(tmp_path, failure(attempt, model=model))
+        path = Path(saved['path'])
+        assert json.loads(path.read_text()) == failure(attempt, model=model)
+        originals[str(path)] = path.read_bytes()
         decision = handoff.resume(tmp_path, request())
+        assert decision['identity'] == request()
         assert decision['failed_attempts'] == attempt
-        assert len(decision['handoff_paths']) == attempt
+        assert decision['handoff_paths'] == list(originals)
+        assert not {'model', 'spawn_args', 'risk'} & decision.keys()
         if attempt < 3:
-            assert decision['spawn_args'] == dict(model='gpt-6-astra', fork_turns='none')
+            assert decision['action'] == 'spawn'
         else:
             assert decision['action'] == 'stop'
-            assert 'spawn_args' not in decision
+        assert {name: Path(name).read_bytes() for name in originals} == originals
+
+
+def test_legacy_catalog_and_risk_inputs_cannot_change_resume_or_reset_limit(tmp_path):
+    for attempt in range(1, 4):
+        handoff.record_failure(tmp_path, failure(attempt, model='gpt-6-astra'))
+        expected = handoff.resume(tmp_path, request())
+        assert handoff.resume(tmp_path, request(available_models=[], impact='critical',
+                                              recovery='hard')) == expected
 
 
 def test_duplicate_does_not_overwrite(tmp_path):
@@ -95,5 +108,8 @@ def test_cli_persist_then_read_in_new_process(tmp_path):
     assert call('record', failure()).returncode == 0
     result = call('resume', request())
     assert result.returncode == 0
-    assert json.loads(result.stdout)['spawn_args']['model'] == 'gpt-6-astra'
+    decision = json.loads(result.stdout)
+    assert decision['action'] == 'spawn'
+    assert not {'model', 'spawn_args', 'risk'} & decision.keys()
+    assert decision['identity'] == request()
     assert call('record', failure()).returncode == 2
