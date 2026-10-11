@@ -17,7 +17,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 PROBE = r'''
-import copy, json, os, sys, time
+import copy, json, os, sys, time, threading
 from pathlib import Path
 sys.path[:0] = [str(Path(sys.argv[1]) / 'tests'), str(Path(sys.argv[1]) / 'plugin/scripts')]
 import codex_lifecycle_watcher as mod
@@ -83,7 +83,7 @@ def followup(index, minute):
             'agent_thread_id': child, 'agent_path': agent}}},
         {'type': 'response_item', 'payload': {
             'type': 'function_call_output', 'call_id': call, 'output': ''}}]
-    if mode == 'missing_activity':
+    if mode == 'missing_activity' or (mode.startswith('live_') and index == 1):
         events.pop(1)
     elif mode == 'wrong_activity':
         events[1]['payload']['item']['agent_thread_id'] = root
@@ -99,7 +99,7 @@ def followup(index, minute):
         events[1]['payload']['item']['agent_thread_id'] = '019f82a6-ce64-75a3-b01d-92f7b0b4fe70'
     return events
 
-first = native_turn(turns[0], 0, 'complete' if mode in {'completed_predecessor', 'delayed_complete', 'old_final_reuse'} else 'abort',
+first = native_turn(turns[0], 0, 'complete' if mode.startswith('live_') or mode in {'completed_predecessor', 'delayed_complete', 'old_final_reuse'} else 'abort',
                     text='VERDICT: PASS\nOld generation.')
 if mode == 'wrong_abort_id':
     first[-1]['payload']['turn_id'] = turns[1]
@@ -126,7 +126,7 @@ if mode == 'wrong_parent':
     metadata[0]['payload']['parent_thread_id'] = child
 child_events = metadata + first
 parent_events = f._spawn_events(root, child, 'qa_browser_incident', agent, 'call_initial_browser')
-if mode in {'completed_predecessor', 'delayed_complete', 'old_final_reuse'}:
+if mode.startswith('live_') or mode in {'completed_predecessor', 'delayed_complete', 'old_final_reuse'}:
     parent_events.append(f._delivery(agent, 'VERDICT: PASS\nOld generation.'))
 if mode == 'ambiguous_agent':
     other = '019f82a6-ce64-75a3-b01d-92f7b0b4fe70'
@@ -137,6 +137,7 @@ if mode == 'ambiguous_agent':
     parent_events += f._spawn_events(root, other, 'qa_browser_incident', agent, 'call_ambiguous_browser')
 # Both review completions must precede the *resumed* browser start, not the
 # aborted initial start. This exercises the gate's actual causal ordering.
+browser_prefix = len(parent_events)
 for i, name in enumerate(['review_code_incident', 'review_security_incident']):
     cid = '019f82a6-ce64-75a3-b01d-%012x' % (200 + i)
     who = '/root/' + name
@@ -147,8 +148,12 @@ for i, name in enumerate(['review_code_incident', 'review_security_incident']):
     parent_events += f._spawn_events(root, cid, name, who, 'call_review_%d' % i)
     parent_events.append(f._delivery(who, text))
 
+if mode.startswith('live_'):
+    # An obsolete browser PASS would be gate-eligible in this ordering. The
+    # newer accepted followup must fence it even while child evidence lags.
+    parent_events = parent_events[browser_prefix:] + parent_events[:browser_prefix]
 parent_events += followup(1, 5)
-if mode == 'repeated_abort':
+if mode in {'repeated_abort', 'live_repeated_chain'}:
     child_events += native_turn(turns[1], 6, 'abort')
     parent_events += followup(2, 9)
     child_events += native_turn(turns[2], 10, 'complete')
@@ -172,7 +177,7 @@ if mode == 'late_interrupt':
         {'type': 'response_item', 'payload': {'type': 'function_call_output',
          'call_id': 'call_late_interrupt', 'output': json.dumps({'status': 'completed'})}}]
 child_path = f._rollout_path(home, child)
-f._write_jsonl(child_path, metadata + first[:-1] if mode in {'delayed', 'delayed_complete'} else child_events)
+f._write_jsonl(child_path, metadata + first[:-1] if mode.startswith('live_') or mode in {'delayed', 'delayed_complete'} else child_events)
 with rollout.open('a') as handle:
     for event in parent_events:
         handle.write(json.dumps(event) + '\n')
@@ -191,7 +196,26 @@ def watch():
 
 attempts = 0
 before = []
-if mode in {'delayed', 'delayed_complete'}:
+if mode.startswith('live_'):
+    def publish_activity():
+        event = {'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {
+            'type': 'SubAgentActivity', 'kind': 'interacted', 'id': 'call_followup_1',
+            'agent_thread_id': child, 'agent_path': agent}}}
+        with rollout.open('a') as handle:
+            handle.write(json.dumps(event) + '\n')
+    timers = [threading.Timer(.3, f._write_jsonl, args=(child_path, child_events))]
+    if mode != 'live_missing_activity':
+        timers.append(threading.Timer(.45, publish_activity))
+    for timer in timers:
+        timer.start()
+    try:
+        first_result = mod.watch(str(repo), root, registration['rollout'], registration['offset'],
+                                 task_id=registration['task_id'], run_id=registration['run_id'],
+                                 idle_seconds=.7, recovering=True)
+    finally:
+        for timer in timers:
+            timer.join()
+elif mode in {'delayed', 'delayed_complete'}:
     # First a real bounded worker expires on unpublished native evidence. A
     # brand new manager must replay its immutable checkpoint after publication.
     first_result = watch()
@@ -211,10 +235,12 @@ if mode in {'delayed', 'delayed_complete'}:
 else:
     first_result = watch()
 initial = rows()
+gate_before_replay = lib.receipt_runtime_verdict(task)
 receipt = task / 'RECEIPTS.jsonl'
 first_bytes = receipt.read_bytes() if receipt.exists() else b''
 replay_result = watch()
 print(json.dumps({'rows': initial, 'replayed': rows(), 'first_result': first_result,
+                  'gate_before_replay': gate_before_replay,
                   'replay_result': replay_result,
                   'same_bytes': first_bytes == (receipt.read_bytes() if receipt.exists() else b''),
                   'gate': lib.receipt_runtime_verdict(task), 'before': before, 'attempts': attempts,
@@ -277,3 +303,24 @@ def test_invalid_resume_cannot_authorize_browser_pass(tmp_path, mode):
                    and (mode != 'old_final_reuse' or ':call_initial_browser:' not in r['runtime_id'])
                    for r in result['rows']), result
     assert result['same_bytes'] and result['replayed'] == result['rows']
+
+
+def test_live_missing_activity_fences_delayed_old_pass_before_replay(tmp_path):
+    result = run_probe(tmp_path, 'live_missing_activity')
+    assert result['gate_before_replay'] != 'PASS', result
+    assert result['gate'] != 'PASS', result
+    assert not any(r['lens'] == 'qa-browser' and ':call_followup_1:' in r['runtime_id']
+                   and r['event'] == 'completed' for r in result['rows'])
+
+
+@pytest.mark.parametrize('mode', ['live_delayed_activity', 'live_repeated_chain'])
+def test_live_delayed_activity_recovers_authenticated_successor(tmp_path, mode):
+    result = run_probe(tmp_path, mode)
+    assert result['first_result'] == 0, result
+    assert result['gate_before_replay'] == 'PASS', result
+    browser = [r for r in result['rows'] if r['lens'] == 'qa-browser']
+    call = 'call_followup_2' if mode == 'live_repeated_chain' else 'call_followup_1'
+    assert any(':' + call + ':' in r['runtime_id'] and r['event'] == 'completed'
+               and r['verdict'] == 'PASS' for r in browser), result
+    assert result['replay_result'] == 0 and result['gate'] == 'PASS'
+    assert result['same_bytes'] and result['registration_unchanged']

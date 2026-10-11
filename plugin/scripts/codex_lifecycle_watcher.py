@@ -39,6 +39,7 @@ from _lib import (  # type: ignore
     _read_regular_text_file,
     _has_binding_conflict_fence, read_active_session_marker,
     _infer_receipt_lens,
+    _receipt_event_order,
     active_session_transaction,
     extract_qa_verdict,
     find_harness_root,
@@ -1641,6 +1642,10 @@ class Watcher:
 
     def _fence_previous(self, item: dict[str, Any]) -> None:
         previous = item["previous"]
+        # Accepted new work suppresses even a completion that has not reached
+        # the writer yet. Keep its start and native terminal available to the
+        # successor; this is not a terminal receipt or permanent invalidity.
+        previous["completion_fenced"] = True
         if not previous.get("invalid") and (
             previous.get("completed") or any(
                 row.get("runtime_id") == previous.get("runtime_id")
@@ -1790,7 +1795,8 @@ class Watcher:
 
     def _maybe_complete(self, item: dict[str, Any]) -> None:
         root_final = str(item.get("root_final") or "")
-        if not item.get("started") or not root_final or item.get("completed") or item.get("invalid"):
+        if (not item.get("started") or not root_final or item.get("completed")
+                or item.get("invalid") or item.get("completion_fenced") or item.get("superseded")):
             return
         binding = _require_task_binding(
             self.repo_root, self.root_id, self.expected_generation, self.session_cwd,
@@ -1803,6 +1809,36 @@ class Watcher:
         ):
             self._invalidate(item, "active task changed while agent was running")
             return
+        # On replay, a protected later start proves this older completion was
+        # superseded. Do not invent an old PASS that live delivery suppressed.
+        # Recover an already stored completion normally, including its origin
+        # checks; only an absent terminal can be suppressed by this evidence.
+        entries = receipt_snapshot(item["task_dir"]).entries
+        if item.get("completed_order") and not any(
+            row.get("runtime_id") == item["runtime_id"] and row.get("event") == "completed"
+            for row in entries
+        ):
+            source = self._receipt_source(item)
+            origin = _receipt_event_order({
+                "source": source, "runtime_id": item["runtime_id"],
+                "event_order": item["completed_order"],
+            })
+            runtime = parse_receipt_runtime_id(item["runtime_id"])
+            for row in entries:
+                if (row.get("event") != "started" or row.get("source") != source
+                        or row.get("task_run_id") != item["task_run_id"]
+                        or row.get("agent_id") != self._receipt_agent_id(item)
+                        or row.get("agent_type") != item["task_name"]
+                        or row.get("lens") != _infer_receipt_lens(item["task_name"])
+                        or row.get("runtime_id") == item["runtime_id"]):
+                    continue
+                successor = parse_receipt_runtime_id(row.get("runtime_id"))
+                later = _receipt_event_order(row)
+                if (len(successor) == 4 and successor[:2] == runtime[:2]
+                        and successor[3] == runtime[3] and later is not None
+                        and later[0] == origin[0] and later[1] > origin[1]):
+                    item["completion_fenced"] = True
+                    return
         if item.get("generation") and not item.get("followup_success"):
             return
         options = ({"generation": item["generation"], "not_before": item["followup_timestamp"]}
