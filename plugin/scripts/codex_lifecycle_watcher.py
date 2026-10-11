@@ -39,7 +39,6 @@ from _lib import (  # type: ignore
     _read_regular_text_file,
     _has_binding_conflict_fence, read_active_session_marker,
     _infer_receipt_lens,
-    _receipt_event_order,
     active_session_transaction,
     extract_qa_verdict,
     find_harness_root,
@@ -1509,6 +1508,7 @@ class Watcher:
         self.calls: dict[str, dict[str, Any]] = {}
         self.by_agent: dict[str, dict[str, Any]] = {}
         self.receipt_progress = 0
+        self.defer_completions = False
         self.expected_generation: RegistrationGeneration | None = None
         # State reconstructed from exact, already-persisted receipts during a
         # restart. This proves replay recovery without pretending a new write
@@ -1809,36 +1809,6 @@ class Watcher:
         ):
             self._invalidate(item, "active task changed while agent was running")
             return
-        # On replay, a protected later start proves this older completion was
-        # superseded. Do not invent an old PASS that live delivery suppressed.
-        # Recover an already stored completion normally, including its origin
-        # checks; only an absent terminal can be suppressed by this evidence.
-        entries = receipt_snapshot(item["task_dir"]).entries
-        if item.get("completed_order") and not any(
-            row.get("runtime_id") == item["runtime_id"] and row.get("event") == "completed"
-            for row in entries
-        ):
-            source = self._receipt_source(item)
-            origin = _receipt_event_order({
-                "source": source, "runtime_id": item["runtime_id"],
-                "event_order": item["completed_order"],
-            })
-            runtime = parse_receipt_runtime_id(item["runtime_id"])
-            for row in entries:
-                if (row.get("event") != "started" or row.get("source") != source
-                        or row.get("task_run_id") != item["task_run_id"]
-                        or row.get("agent_id") != self._receipt_agent_id(item)
-                        or row.get("agent_type") != item["task_name"]
-                        or row.get("lens") != _infer_receipt_lens(item["task_name"])
-                        or row.get("runtime_id") == item["runtime_id"]):
-                    continue
-                successor = parse_receipt_runtime_id(row.get("runtime_id"))
-                later = _receipt_event_order(row)
-                if (len(successor) == 4 and successor[:2] == runtime[:2]
-                        and successor[3] == runtime[3] and later is not None
-                        and later[0] == origin[0] and later[1] > origin[1]):
-                    item["completion_fenced"] = True
-                    return
         if item.get("generation") and not item.get("followup_success"):
             return
         options = ({"generation": item["generation"], "not_before": item["followup_timestamp"]}
@@ -1888,6 +1858,12 @@ class Watcher:
                 event_order=item.get("completed_order"),
             )
             if exact_existing is None:
+                if self.defer_completions:
+                    # Native final matching can establish predecessor readiness
+                    # during catch-up, but no PASS becomes externally visible
+                    # until accepted followups already in the root tail fence it.
+                    item["completion_ready"] = True
+                    return
                 record_subagent_receipt(item["task_dir"], {
                     **({"event_order": item["completed_order"]} if "completed_order" in item else {}),
                     "source": self._receipt_source(item),
@@ -1959,7 +1935,7 @@ class Watcher:
                 and binding.get("run_id") == item["task_run_id"]
                 and not _event_precedes_run(event, item["task_run_id"])
             )
-            item["previous_completed"] = bool(previous.get("completed"))
+            item["previous_completed"] = bool(previous.get("completed") or previous.get("completion_ready"))
             competing = [candidate for candidate in self.calls.values()
                          if candidate.get("followup") and candidate.get("eligible")
                          and candidate["previous"] is previous
@@ -2181,6 +2157,9 @@ def watch(
         thread_id,
         session_cwd=session_cwd,
     )
+    # Drain the root tail before publishing new terminal receipts. Otherwise a
+    # replay can briefly restore an old PASS before reading its later followup.
+    watcher.defer_completions = True
     stop_event = stop_event or threading.Event()
     rollout_age = max(0.0, time.time() - rollout_info.st_mtime)
     # Registered unread data is work, regardless of its age. A failed worker
@@ -2271,7 +2250,11 @@ def watch(
                 except OSError:
                     return 3
                 handle.seek(position)
-                observe(watcher.retry)
+                watcher.defer_completions = False
+                try:
+                    observe(watcher.retry)
+                finally:
+                    watcher.defer_completions = True
                 if time.monotonic() - last_data >= idle_seconds:
                     break
                 stop_event.wait(POLL_SECONDS)

@@ -238,8 +238,21 @@ initial = rows()
 gate_before_replay = lib.receipt_runtime_verdict(task)
 receipt = task / 'RECEIPTS.jsonl'
 first_bytes = receipt.read_bytes() if receipt.exists() else b''
-replay_result = watch()
+publication_gates = []
+def observe_publication(frame, event, arg):
+    # Passive observation preserves the production function objects and their
+    # protected-writer authority. Read the real gate after terminal attempts:
+    # a later fence must not conceal an intermediate stale PASS.
+    if event == 'return' and frame.f_code.co_name == '_maybe_complete':
+        publication_gates.append(lib.receipt_runtime_verdict(task))
+if mode == 'live_missing_activity':
+    sys.setprofile(observe_publication)
+try:
+    replay_result = watch()
+finally:
+    sys.setprofile(None)
 print(json.dumps({'rows': initial, 'replayed': rows(), 'first_result': first_result,
+                  'publication_gates': publication_gates,
                   'gate_before_replay': gate_before_replay,
                   'replay_result': replay_result,
                   'same_bytes': first_bytes == (receipt.read_bytes() if receipt.exists() else b''),
@@ -265,9 +278,11 @@ def test_authenticated_resume_reaches_real_browser_gate(tmp_path, mode):
     assert result['gate'] == 'PASS', result
     assert result['first_result'] == 0, 'an interrupted predecessor must not keep a successful successor pending'
     browser = [r for r in result['rows'] if r['lens'] == 'qa-browser']
-    assert len(browser) == (4 if mode in {'repeated_abort', 'completed_predecessor'} else 3)
+    assert len(browser) == (4 if mode == 'repeated_abort' else 3)
     initial = [r for r in browser if ':call_initial_browser:' in r['runtime_id']]
-    assert [r['event'] for r in initial] == (['started', 'completed'] if mode == 'completed_predecessor' else ['started'])
+    # Catchup authenticates the completed predecessor without publishing its
+    # obsolete terminal once accepted successor work is already in the tail.
+    assert [r['event'] for r in initial] == ['started']
     if mode == 'repeated_abort':
         assert [r['event'] for r in browser if ':call_followup_1:' in r['runtime_id']] == ['started']
     assert browser[-1]['event'] == 'completed' and browser[-1]['verdict'] == 'PASS'
@@ -283,7 +298,8 @@ def test_delayed_terminal_and_final_survive_worker_expiry_and_manager_restart(tm
     assert not any(r['lens'] == 'qa-browser' and r['event'] == 'completed' for r in result['before'])
     assert result['attempts'] >= 1
     assert result['gate'] == 'PASS', result
-    assert len(result['rows']) == (8 if mode == 'delayed_complete' else 7)
+    assert len(result['rows']) == 7
+    assert [r['event'] for r in result['rows'] if ':call_initial_browser:' in r['runtime_id']] == ['started']
     assert result['same_bytes'] and result['replayed'] == result['rows']
     assert result['registration_unchanged']
     assert result['replay_result'] == 0
@@ -311,6 +327,13 @@ def test_live_missing_activity_fences_delayed_old_pass_before_replay(tmp_path):
     assert result['gate'] != 'PASS', result
     assert not any(r['lens'] == 'qa-browser' and ':call_followup_1:' in r['runtime_id']
                    and r['event'] == 'completed' for r in result['rows'])
+
+
+def test_replay_never_publishes_transient_old_pass_for_unattested_followup(tmp_path):
+    result = run_probe(tmp_path, 'live_missing_activity')
+    assert result['publication_gates'], 'observer must inspect actual production completion attempts'
+    assert 'PASS' not in result['publication_gates'], result
+    assert result['gate_before_replay'] != 'PASS' and result['gate'] != 'PASS'
 
 
 @pytest.mark.parametrize('mode', ['live_delayed_activity', 'live_repeated_chain'])

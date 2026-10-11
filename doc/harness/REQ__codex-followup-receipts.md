@@ -35,7 +35,11 @@ permanently rejecting the followup when its call first arrives. Recovery must
 remain duplicate-free and bound to the unchanged task/run and registration.
 
 Malformed, missing, overlapping, or conflicting followup evidence must never
-restore an earlier PASS. Native turn ids bind task boundaries and completions;
+restore an earlier PASS, including transiently during checkpoint replay. The
+watcher must consume available coordinator backlog and reconstruct accepted-work
+fences before publishing a previously absent completion. Authentication may be
+retained in memory for successor eligibility without publishing an obsolete
+terminal. Native turn ids bind task boundaries and completions;
 inherited fork history cannot supply the child's own completion. An ordinary
 message or repeated final text is not followup authority. This requirement is
 specific to Codex; it does not change Claude resumed-agent receipt behavior.

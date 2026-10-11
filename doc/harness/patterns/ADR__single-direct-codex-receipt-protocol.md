@@ -104,6 +104,14 @@ may recover an authenticated start for an interrupted generation, without
 inventing completion. All new completions still require matching child and
 coordinator finals, current binding, and the unchanged protected writer.
 
+While catching up on available coordinator events, the watcher authenticates
+terminals but defers publication of absent completions until it has reconstructed
+accepted-followup fences. Already stored terminals retain their original
+identity checks. This prevents checkpoint replay from transiently resurrecting
+a suppressed PASS when successor activity is missing. Native event positions
+preserve causal ordering despite deferred publication; obsolete completions
+that were never stored need not be synthesized.
+
 The watcher also records native coordinator byte positions for lifecycle
 origins, so delayed receipt publication cannot change semantic order. The
 optional `event_order` schema, comparison rules, and fail-closed handling of
